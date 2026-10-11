@@ -11,16 +11,53 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 from pathlib import Path
+import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _load_root_env():
+    """Minimal stdlib `.env` loader (no third-party dependency).
+
+    Reads KEY=VALUE lines from the repository-root `.env` (one level above
+    BASE_DIR) and applies them with `setdefault`, so real environment
+    variables always win. Missing file, blank lines, `#` comments, and a
+    leading `export ` are tolerated. Values may be single/double quoted.
+    Quirk-free on purpose: no interpolation, no multiline values.
+    """
+    env_path = BASE_DIR.parent / ".env"
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if (len(value) >= 2 and value[0] == value[-1]
+                and value[0] in ("'", '"')):
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_root_env()
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-h4d8ta4a*&1il3pivw9lx$9yslbnx2e$gm4bfsn607awll&p-*'
+# Overridable via the SECRET_KEY environment variable (see .env.example).
+# The committed default is a local-development key only.
+SECRET_KEY = os.environ.get(
+    'SECRET_KEY',
+    'django-insecure-h4d8ta4a*&1il3pivw9lx$9yslbnx2e$gm4bfsn607awll&p-*')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -133,7 +170,6 @@ STATIC_URL = 'static/'
 # ---------- File storage (abstraction: local dev, S3-compatible prod) ----------
 # Local development needs nothing. Production sets STORAGE_BACKEND=s3 and the
 # AWS_* variables; application code only uses default_storage / FileFields.
-import os
 
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
