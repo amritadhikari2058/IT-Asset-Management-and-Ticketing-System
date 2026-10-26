@@ -56,6 +56,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
 class BulkEmployeeRowSerializer(serializers.Serializer):
     """One CSV/Excel row for preview. Employee ID is the matching key."""
     employee_id = serializers.CharField()
+    username = serializers.CharField(required=False, allow_blank=True)
     email = serializers.EmailField(required=False, allow_blank=True)
     first_name = serializers.CharField(required=False, allow_blank=True)
     last_name = serializers.CharField(required=False, allow_blank=True)
@@ -63,3 +64,4 @@ class BulkEmployeeRowSerializer(serializers.Serializer):
     job_title = serializers.CharField(required=False, allow_blank=True)
     home_department = serializers.CharField(required=False, allow_blank=True)
     is_active = serializers.BooleanField(required=False)
+    receive_ticket_emails = serializers.BooleanField(required=False)

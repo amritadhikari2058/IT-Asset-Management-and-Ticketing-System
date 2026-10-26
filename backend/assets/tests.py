@@ -1,4 +1,5 @@
 """Asset API tests: bulk safety (assignment guard), bulk assignment."""
+from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
@@ -7,7 +8,7 @@ from accounts.tests import auth, make_users
 from assets.models import (
     Asset, AssetAttachment, AssetCategory, AssetHistory, Assignment,
 )
-from common.models import AuditLog
+from common.models import AuditLog, Notification
 
 
 class AssetBulkSafetyTests(TestCase):
@@ -48,8 +49,9 @@ class AssetBulkSafetyTests(TestCase):
         self.assertEqual(len(header), 1)  # header only, no sample rows
         self.assertEqual(header[0].split(","),
                          ["asset_tag", "name", "category",
-                          "serial_number", "status", "location",
-                          "purchase_date"])
+                          "serial_number", "status", "department", "location",
+                          "description", "purchase_date", "warranty_expiry",
+                          "purchase_cost"])
 
     def test_asset_template_forbidden_for_employee(self):
         auth(self.c, self.emp)
@@ -371,6 +373,98 @@ class BulkAssignTests(TestCase):
         self.assertEqual(self.free.status, "available")
 
 
+class AssetNotificationTests(TestCase):
+    """In-app notifications for asset assignment + return only.
+
+    No emails, no preference checks — pure Notification rows sharing the
+    mutation's transaction.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        self.free = Asset.objects.create(asset_tag="FREE", name="free",
+                                         category=self.acat)
+        self.e2 = User.objects.create_user(
+            username="e2@x", email="e2@example.com", employee_id="E2",
+            password="pw12345678", home_department=self.dep)
+        auth(self.c, self.mgr)
+
+    def _for_asset(self, asset):
+        return Notification.objects.filter(
+            entity_type="assets.Asset", object_id=str(asset.pk))
+
+    def test_assign_notifies_new_holder_not_actor(self):
+        res = self.c.post(f"/api/assets/{self.free.pk}/assign/",
+                          {"assigned_to": self.e2.pk}, format="json")
+        self.assertEqual(res.status_code, 200)
+        notes = self._for_asset(self.free)
+        self.assertEqual(notes.count(), 1)
+        self.assertEqual(notes.get().recipient, self.e2)
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.mgr).count(), 0)
+
+    def test_assign_to_self_notifies_nobody(self):
+        res = self.c.post(f"/api/assets/{self.free.pk}/assign/",
+                          {"assigned_to": self.mgr.pk}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self._for_asset(self.free).count(), 0)
+
+    def test_return_notifies_previous_holder(self):
+        self.c.post(f"/api/assets/{self.free.pk}/assign/",
+                    {"assigned_to": self.e2.pk}, format="json")
+        self.assertEqual(self._for_asset(self.free).count(), 1)
+        res = self.c.post(f"/api/assets/{self.free.pk}/return_asset/",
+                          {}, format="json")
+        self.assertEqual(res.status_code, 200)
+        notes = self._for_asset(self.free)
+        self.assertEqual(notes.count(), 2)
+        self.assertEqual(notes.filter(recipient=self.e2).count(), 2)
+        self.assertEqual(
+            Notification.objects.filter(recipient=self.mgr).count(), 0)
+
+    def test_return_with_no_holder_notifies_nobody(self):
+        res = self.c.post(f"/api/assets/{self.free.pk}/return_asset/",
+                          {}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self._for_asset(self.free).count(), 0)
+
+    def test_bulk_assign_notifies_only_successes(self):
+        busy = Asset.objects.create(asset_tag="BUSY", name="busy",
+                                    category=self.acat, status="assigned",
+                                    assigned_to=self.emp)
+        res = self.c.post("/api/assets/bulk_assign/",
+                          {"assignments": [
+                              {"asset_tag": "FREE", "employee_id": "E2"},
+                              {"asset_tag": "BUSY", "employee_id": "E2"},
+                              {"asset_tag": "NOPE", "employee_id": "E2"}],
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"],
+                         {"ok": 1, "skipped": 1, "failed": 1})
+        notes = self._for_asset(self.free)
+        self.assertEqual(notes.count(), 1)
+        self.assertEqual(notes.get().recipient, self.e2)
+        self.assertEqual(self._for_asset(busy).count(), 0)
+
+    def test_preview_writes_no_notifications(self):
+        res = self.c.post("/api/assets/bulk_assign/",
+                          {"assignments": [
+                              {"asset_tag": "FREE", "employee_id": "E2"}]},
+                          format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_failed_validation_notifies_nobody(self):
+        res = self.c.post("/api/assets/bulk_assign/",
+                          {"assignments": [
+                              {"asset_tag": "FREE", "employee_id": "ZZZ"}],
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.data["summary"]["failed"], 1)
+        self.assertEqual(Notification.objects.count(), 0)
+
+
 class HistoryAssignmentFilterTests(TestCase):
     """?asset= narrows history/assignments without widening permissions."""
 
@@ -569,3 +663,542 @@ class AssetAttachmentTests(TestCase):
         att.file.storage.delete(att.file.name)
         dl = self.c.get(f"/api/assets/attachments/{aid}/download/")
         self.assertEqual(dl.status_code, 410)
+
+
+class AssetStatusWorkflowTests(TestCase):
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        auth(self.c, self.mgr)
+
+    def _asset(self, **kw):
+        base = {"asset_tag": "T1", "name": "n", "category": self.acat}
+        base.update(kw)
+        return Asset.objects.create(**base)
+
+    def test_generic_assigned_rejected(self):
+        a = self._asset()
+        res = self.c.patch(f"/api/assets/{a.pk}/", {"status": "assigned"},
+                           format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("status", res.data)
+        a.refresh_from_db()
+        self.assertEqual(a.status, "available")
+        self.assertEqual(a.history.count(), 0)
+        self.assertFalse(AuditLog.objects.filter(object_id=str(a.pk)).exists())
+
+    def test_generic_retired_rejected(self):
+        a = self._asset()
+        res = self.c.patch(f"/api/assets/{a.pk}/", {"status": "retired"},
+                           format="json")
+        self.assertEqual(res.status_code, 400)
+        a.refresh_from_db()
+        self.assertEqual(a.status, "available")
+
+    def test_generic_lost_rejected(self):
+        a = self._asset()
+        res = self.c.patch(f"/api/assets/{a.pk}/", {"status": "lost"},
+                           format="json")
+        self.assertEqual(res.status_code, 400)
+        a.refresh_from_db()
+        self.assertEqual(a.status, "available")
+
+    def test_unchanged_status_resubmit_ok(self):
+        a = self._asset(status="retired")
+        res = self.c.patch(f"/api/assets/{a.pk}/",
+                           {"name": "n2", "status": "retired"},
+                           format="json")
+        self.assertEqual(res.status_code, 200)
+        a.refresh_from_db()
+        self.assertEqual(a.name, "n2")
+        self.assertEqual(a.status, "retired")
+
+    def test_ordinary_status_edit_ok(self):
+        a = self._asset()
+        res = self.c.patch(f"/api/assets/{a.pk}/",
+                           {"status": "in_repair"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        a.refresh_from_db()
+        self.assertEqual(a.status, "in_repair")
+
+    def test_mark_lost_requires_reason(self):
+        a = self._asset()
+        for body in ({}, {"reason": ""}, {"reason": "   "}):
+            res = self.c.post(f"/api/assets/{a.pk}/mark_lost/", body,
+                              format="json")
+            self.assertEqual(res.status_code, 400)
+        a.refresh_from_db()
+        self.assertEqual(a.status, "available")
+        self.assertEqual(a.history.count(), 0)
+
+    def test_mark_lost_writes_history_and_audit(self):
+        a = self._asset()
+        res = self.c.post(f"/api/assets/{a.pk}/mark_lost/",
+                          {"reason": "Not returned after offboarding."},
+                          format="json")
+        self.assertEqual(res.status_code, 200)
+        a.refresh_from_db()
+        self.assertEqual(a.status, "lost")
+        self.assertEqual(
+            a.history.filter(action="lost").count(), 1)
+        self.assertIn("offboarding", a.history.get(action="lost").note)
+        self.assertTrue(AuditLog.objects.filter(
+            object_id=str(a.pk), action="status_change").exists())
+
+    def test_mark_lost_closes_assignment(self):
+        a = self._asset(status="assigned", assigned_to=self.emp)
+        from assets.models import Assignment
+        Assignment.objects.create(asset=a, assigned_to=self.emp,
+                                  assigned_by=self.mgr)
+        res = self.c.post(f"/api/assets/{a.pk}/mark_lost/",
+                          {"reason": "Vanished from desk."}, format="json")
+        self.assertEqual(res.status_code, 200)
+        a.refresh_from_db()
+        self.assertEqual(a.status, "lost")
+        self.assertIsNone(a.assigned_to)
+        open_rows = Assignment.objects.filter(
+            asset=a, returned_at__isnull=True).count()
+        self.assertEqual(open_rows, 0)
+        # Assignment history itself is preserved.
+        self.assertEqual(Assignment.objects.filter(asset=a).count(), 1)
+
+    def test_mark_lost_idempotent(self):
+        a = self._asset()
+        self.c.post(f"/api/assets/{a.pk}/mark_lost/",
+                    {"reason": "Gone."}, format="json")
+        res = self.c.post(f"/api/assets/{a.pk}/mark_lost/",
+                          {"reason": "Gone again."}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(
+            a.history.filter(action="lost").count(), 1)
+        self.assertEqual(AuditLog.objects.filter(
+            object_id=str(a.pk), action="status_change").count(), 1)
+
+    def test_mark_lost_forbidden_for_employee(self):
+        a = self._asset()
+        auth(self.c, self.emp)
+        res = self.c.post(f"/api/assets/{a.pk}/mark_lost/",
+                          {"reason": "Gone."}, format="json")
+        self.assertEqual(res.status_code, 403)
+        a.refresh_from_db()
+        self.assertEqual(a.status, "available")
+
+
+class AssetOrderingTests(TestCase):
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        auth(self.c, self.mgr)
+
+    def _tags(self, res):
+        self.assertEqual(res.status_code, 200)
+        data = res.data
+        rows = data["results"] if isinstance(data, dict) else data
+        return [r["asset_tag"] for r in rows]
+
+    def test_name_ordering(self):
+        for tag in ("Z9", "A1", "M5"):
+            Asset.objects.create(asset_tag=tag, name=f"n-{tag}",
+                                 category=self.acat)
+        res = self.c.get("/api/assets/", {"ordering": "name"})
+        self.assertEqual(self._tags(res), ["A1", "M5", "Z9"])
+        res = self.c.get("/api/assets/", {"ordering": "-name"})
+        self.assertEqual(self._tags(res), ["Z9", "M5", "A1"])
+
+    def test_unsupported_ordering_falls_back_to_tag_order(self):
+        for tag in ("Z9", "A1"):
+            Asset.objects.create(asset_tag=tag, name=f"n-{tag}",
+                                 category=self.acat)
+        res = self.c.get("/api/assets/", {"ordering": "owner"})
+        self.assertEqual(self._tags(res), ["A1", "Z9"])
+
+
+class AssetSerialUniquenessTests(TestCase):
+    """Serial numbers stay optional but unique across ALL assets.
+
+    Enforcement is layered: serializer validation (readable field error),
+    bulk-endpoint pre-checks (row-level messages), and the SQLite triggers
+    from migration 0003 (concurrency backstop). Soft-deleted assets keep
+    reserving their serial so a restore can never collide.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        self.first = Asset.objects.create(asset_tag="S1", name="one",
+                                          category=self.acat,
+                                          serial_number="SN-1")
+        auth(self.c, self.mgr)
+
+    def _create(self, **kw):
+        payload = {"asset_tag": "S2", "name": "two",
+                   "category": self.acat.pk, "serial_number": ""}
+        payload.update(kw)
+        return self.c.post("/api/assets/", payload, format="json")
+
+    # ---------- serializer-level (readable errors) ----------
+
+    def test_duplicate_serial_rejected_on_create(self):
+        res = self._create(serial_number="SN-1")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("serial_number", res.data)
+        self.assertIn("already used", str(res.data["serial_number"]))
+        self.assertEqual(Asset.all_objects.count(), 1)
+
+    def test_duplicate_serial_rejected_on_update(self):
+        other = Asset.objects.create(asset_tag="S2", name="two",
+                                     category=self.acat)
+        res = self.c.patch(f"/api/assets/{other.pk}/",
+                           {"serial_number": "SN-1"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        other.refresh_from_db()
+        self.assertEqual(other.serial_number, "")
+
+    def test_serial_is_trimmed_before_the_duplicate_check(self):
+        res = self._create(serial_number="  SN-1  ")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("SN-1", str(res.data["serial_number"]))
+
+    def test_unchanged_serial_still_saves(self):
+        res = self.c.patch(f"/api/assets/{self.first.pk}/",
+                           {"serial_number": "SN-1", "name": "renamed"},
+                           format="json")
+        self.assertEqual(res.status_code, 200)
+        self.first.refresh_from_db()
+        self.assertEqual(self.first.serial_number, "SN-1")
+        self.assertEqual(self.first.name, "renamed")
+
+    def test_blank_serial_allowed_repeatedly(self):
+        for tag in ("A", "B", "C"):
+            res = self._create(asset_tag=tag, serial_number="")
+            self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(
+            self._create(asset_tag="D", serial_number="   ").status_code, 201)
+        self.assertEqual(
+            Asset.all_objects.filter(serial_number="").count(), 4)
+
+    def test_soft_deleted_asset_keeps_reserving_its_serial(self):
+        self.first.soft_delete(by_user=self.admin, reason="retired")
+        res = self._create(serial_number="SN-1")
+        self.assertEqual(res.status_code, 400)
+        # Deleted rows are hidden from the default manager but still
+        # occupy the serial (all_objects is what validation consults).
+        self.assertFalse(Asset.objects.filter(serial_number="SN-1").exists())
+        self.assertTrue(
+            Asset.all_objects.filter(serial_number="SN-1").exists())
+
+    # ---------- database-level (concurrency backstop) ----------
+
+    def test_database_trigger_blocks_duplicate_insert(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Asset.objects.create(asset_tag="S9", name="x",
+                                     category=self.acat,
+                                     serial_number="SN-1")
+        # The failed write rolled back cleanly; the row was not created.
+        self.assertFalse(Asset.all_objects.filter(asset_tag="S9").exists())
+
+    def test_database_trigger_blocks_duplicate_update(self):
+        other = Asset.objects.create(asset_tag="S2", name="two",
+                                     category=self.acat)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Asset.objects.filter(pk=other.pk).update(
+                    serial_number="SN-1")
+        other.refresh_from_db()
+        self.assertEqual(other.serial_number, "")
+
+    def test_database_trigger_ignores_blank_serials(self):
+        for tag in ("S2", "S3", "S4"):
+            Asset.objects.create(asset_tag=tag, name="n",
+                                 category=self.acat, serial_number="")
+        self.assertEqual(Asset.all_objects.count(), 4)
+
+    def test_database_trigger_lets_an_asset_keep_its_own_serial(self):
+        # UPDATE OF serial_number still fires on every ORM save(), so an
+        # ordinary edit of an asset whose serial is unchanged must pass.
+        self.first.name = "renamed"
+        self.first.save()
+        self.first.refresh_from_db()
+        self.assertEqual(self.first.serial_number, "SN-1")
+
+    def test_concurrent_duplicate_maps_to_a_400_field_error(self):
+        # Simulate the race the serializer cannot see: the row passes
+        # validation, then the DB trigger aborts the insert. The view must
+        # answer 400 with a field error, never a 500 page.
+        from assets import serializers as asset_serializers
+        original = asset_serializers.AssetSerializer.validate_serial_number
+        asset_serializers.AssetSerializer.validate_serial_number = (
+            lambda self, value: (value or "").strip())
+        try:
+            res = self._create(serial_number="SN-1")
+        finally:
+            asset_serializers.AssetSerializer.validate_serial_number = (
+                original)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("serial_number", res.data)
+        self.assertIn("already used", str(res.data["serial_number"]))
+        self.assertEqual(Asset.all_objects.count(), 1)
+
+
+class AssetBulkSerialTests(TestCase):
+    """Bulk create/update honour the same serial uniqueness policy."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        Asset.objects.create(asset_tag="OLD", name="old",
+                             category=self.acat, serial_number="SN-1")
+        auth(self.c, self.mgr)
+
+    def _rows(self):
+        return [
+            {"asset_tag": "N1", "name": "n", "category": "Laptop",
+             "serial_number": "SN-1"},   # clashes with OLD
+            {"asset_tag": "N2", "name": "n", "category": "Laptop",
+             "serial_number": "SN-2"},   # fresh
+            {"asset_tag": "N3", "name": "n", "category": "Laptop",
+             "serial_number": "SN-2"},   # clashes with N2 in the same file
+        ]
+
+    def test_preview_flags_duplicate_serials(self):
+        res = self.c.post("/api/assets/bulk_create/",
+                          {"rows": self._rows(), "preview": True},
+                          format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([r["asset_tag"] for r in res.data["preview"]],
+                         ["N2"])
+        messages = " | ".join(e["errors"] for e in res.data["errors"])
+        self.assertIn("duplicate serial number SN-1", messages)
+        self.assertIn("duplicate serial number SN-2", messages)
+        self.assertEqual(
+            sorted(e["row"] for e in res.data["errors"]), [2, 4])
+
+    def test_confirm_fails_duplicate_serial_rows_and_creates_the_rest(self):
+        res = self.c.post("/api/assets/bulk_create/",
+                          {"rows": self._rows(), "preview": False,
+                           "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["successful"], ["N2"])
+        self.assertEqual(len(res.data["failed"]), 2)
+        for row in res.data["failed"]:
+            self.assertIn("duplicate serial number", row["errors"])
+        self.assertFalse(Asset.all_objects.filter(asset_tag="N1").exists())
+        self.assertFalse(Asset.all_objects.filter(asset_tag="N3").exists())
+        self.assertEqual(Asset.all_objects.count(), 2)  # OLD + N2
+
+    def test_blank_serials_are_not_treated_as_duplicates(self):
+        rows = [{"asset_tag": f"B{i}", "name": "n", "category": "Laptop",
+                 "serial_number": ""} for i in range(3)]
+        res = self.c.post("/api/assets/bulk_create/",
+                          {"rows": rows, "preview": False, "confirm": True},
+                          format="json")
+        self.assertEqual(res.data["successful"], ["B0", "B1", "B2"])
+        self.assertEqual(res.data["failed"], [])
+
+    def test_bulk_update_rejects_a_duplicate_serial(self):
+        other = Asset.objects.create(asset_tag="S2", name="two",
+                                     category=self.acat, serial_number="")
+        res = self.c.post("/api/assets/bulk_update/",
+                          {"rows": [{"asset_tag": "S2",
+                                     "serial_number": "SN-1"}],
+                           "preview": False, "confirm": True},
+                          format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data["failed"]), 1)
+        self.assertIn("duplicate serial number SN-1",
+                      res.data["failed"][0]["errors"])
+        other.refresh_from_db()
+        self.assertEqual(other.serial_number, "")
+
+    def test_bulk_update_accepts_a_fresh_serial(self):
+        other = Asset.objects.create(asset_tag="S2", name="two",
+                                     category=self.acat, serial_number="")
+        res = self.c.post("/api/assets/bulk_update/",
+                          {"rows": [{"asset_tag": "S2",
+                                     "serial_number": "SN-9"}],
+                           "preview": False, "confirm": True},
+                           format="json")
+        self.assertEqual(res.data["successful"], ["S2"])
+        other.refresh_from_db()
+        self.assertEqual(other.serial_number, "SN-9")
+
+    def test_bulk_update_can_blank_a_serial(self):
+        other = Asset.objects.create(asset_tag="S2", name="two",
+                                     category=self.acat, serial_number="SN-2")
+        res = self.c.post("/api/assets/bulk_update/",
+                          {"rows": [{"asset_tag": "S2", "serial_number": ""}],
+                           "preview": False, "confirm": True},
+                           format="json")
+        self.assertEqual(res.data["successful"], ["S2"])
+        other.refresh_from_db()
+        self.assertEqual(other.serial_number, "")
+
+
+class AssetBulkUploadParseTests(TestCase):
+    """Unreadable bulk uploads answer 400 JSON, never a Django 500 page."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        auth(self.c, self.mgr)
+
+    def _upload(self, name, content, **fields):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        data = {"file": SimpleUploadedFile(name, content,
+                                           content_type="text/plain")}
+        data.update(fields)
+        return self.c.post("/api/assets/bulk_create/", data,
+                           format="multipart")
+
+    def _assert_clean_400(self, res):
+        self.assertEqual(res.status_code, 400)
+        body = res.content.decode("utf-8", "replace")
+        self.assertNotIn("Traceback", body)
+        self.assertNotIn("DEBUG", body)
+        self.assertNotIn("OperationalError", body)
+        self.assertNotIn("UnicodeDecodeError", body)
+        self.assertTrue(res["Content-Type"].startswith("application/json"))
+
+    def test_binary_junk_csv_is_rejected(self):
+        res = self._upload("data.csv", b"\xff\xfe\x00\x01junk\x00\xff")
+        self._assert_clean_400(res)
+        self.assertIn("file", res.data)
+
+    def test_fake_xlsx_is_rejected(self):
+        res = self._upload("assets.xlsx", b"this is not a zip archive")
+        self._assert_clean_400(res)
+        self.assertIn("file", res.data)
+
+    def test_empty_csv_is_rejected(self):
+        res = self._upload("empty.csv", b"")
+        self._assert_clean_400(res)
+        self.assertIn("file", res.data)
+
+    def test_header_only_csv_previews_cleanly(self):
+        res = self._upload("ok.csv",
+                           b"asset_tag,name,category\n",
+                           preview="true")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["preview"], [])
+        self.assertEqual(res.data["errors"], [])
+
+    def test_valid_csv_still_imports(self):
+        csv = ("asset_tag,name,category,serial_number\n"
+               "P1,Printer,Laptop,PS-1\n").encode("utf-8")
+        res = self._upload("good.csv", csv, preview="false", confirm="true")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["successful"], ["P1"])
+        self.assertEqual(res.data["failed"], [])
+        self.assertTrue(
+            Asset.all_objects.filter(asset_tag="P1",
+                                     serial_number="PS-1").exists())
+
+    def test_parse_errors_are_logged_server_side_only(self):
+        with self.assertLogs("assets.views", level="ERROR") as captured:
+            res = self._upload("data.csv", b"\xff\xfe\x00junk")
+        self._assert_clean_400(res)
+        self.assertTrue(any("bulk" in line or "parse" in line
+                            for line in captured.output))
+
+
+class AssetCreateWithFileTests(TestCase):
+    """POST /api/assets/ may carry a file; success and failure paths."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        auth(self.c, self.mgr)
+
+    def tearDown(self):
+        for att in AssetAttachment.all_objects.all():
+            try:
+                if att.file:
+                    att.file.storage.delete(att.file.name)
+            except Exception:
+                pass
+
+    def _post(self, name="spec.pdf", content=b"%PDF-1.4 fake",
+              ctype="application/pdf", **fields):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        payload = {
+            "asset_tag": "U1", "name": "unit",
+            "category": self.acat.pk,
+            "file": SimpleUploadedFile(name, content, content_type=ctype),
+        }
+        payload.update(fields)
+        return self.c.post("/api/assets/", payload, format="multipart")
+
+    def test_create_with_file_creates_asset_and_attachment(self):
+        res = self._post()
+        self.assertEqual(res.status_code, 201, res.data)
+        aid = res.data["id"]
+        att = AssetAttachment.objects.get(asset__pk=aid)
+        self.assertTrue(att.file.name)
+        self.assertTrue(att.original_filename.endswith("spec.pdf"))
+        self.assertEqual(att.uploaded_by, self.mgr)
+        self.assertTrue(AssetHistory.objects.filter(
+            asset__pk=aid, action="created").exists())
+        self.assertTrue(AuditLog.objects.filter(
+            entity_type="assets.asset", object_id=str(aid),
+            action="create").exists())
+
+    def test_create_without_file_still_works(self):
+        res = self.c.post("/api/assets/",
+                          {"asset_tag": "U2", "name": "n",
+                           "category": self.acat.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(Asset.all_objects.filter(asset_tag="U2").count(), 1)
+        self.assertEqual(AssetAttachment.objects.count(), 0)
+
+    @override_settings(ATTACHMENT_ALLOWED_EXTENSIONS=["pdf"])
+    def test_invalid_file_type_is_rejected_and_no_asset_is_created(self):
+        res = self._post(name="evil.exe", content=b"MZ",
+                         ctype="application/octet-stream")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("file", res.data)
+        self.assertEqual(Asset.all_objects.count(), 0)
+        self.assertEqual(AssetAttachment.objects.count(), 0)
+
+    @override_settings(ATTACHMENT_MAX_SIZE_MB=0.001)
+    def test_oversized_file_is_rejected_and_no_asset_is_created(self):
+        res = self._post(content=b"x" * 2000)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("file", res.data)
+        self.assertEqual(Asset.all_objects.count(), 0)
+        self.assertEqual(AssetAttachment.objects.count(), 0)
+
+    def test_rejected_file_leaves_no_partial_state_on_serial_conflict(self):
+        Asset.objects.create(asset_tag="OLD", name="old",
+                             category=self.acat, serial_number="SN-1")
+        res = self._post(serial_number="SN-1")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("serial_number", res.data)
+        self.assertEqual(Asset.all_objects.count(), 1)
+        self.assertEqual(AssetAttachment.objects.count(), 0)
+
+    def test_file_on_patch_is_rejected_explicitly(self):
+        created = self.c.post("/api/assets/",
+                              {"asset_tag": "U3", "name": "n",
+                               "category": self.acat.pk}, format="json")
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        res = self.c.patch(
+            f"/api/assets/{created.data['id']}/",
+            {"name": "renamed",
+             "file": SimpleUploadedFile("x.pdf", b"%PDF")},
+            format="multipart")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("file", res.data)
+        self.assertEqual(AssetAttachment.objects.count(), 0)
+
+    def test_employee_cannot_create_with_a_file(self):
+        auth(self.c, self.emp)
+        res = self._post()
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(Asset.all_objects.count(), 0)

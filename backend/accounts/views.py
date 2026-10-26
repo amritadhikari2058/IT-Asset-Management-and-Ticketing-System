@@ -131,17 +131,40 @@ class DepartmentViewSet(viewsets.ModelViewSet):
         return Response({"permanently_deleted": True})
 
 
-def _parse_upload(file_obj):
-    """Return list of dict rows from CSV or Excel."""
+def _parse_upload(file_obj, allowed=None):
+    """Return list of dict rows from CSV or Excel.
+
+    When ``allowed`` is given, every header must be in that set; an
+    unknown column is rejected instead of being silently ignored.
+    """
     name = (file_obj.name or "").lower()
     if name.endswith((".xlsx", ".xlsm", ".xltx")):
         wb = load_workbook(file_obj, read_only=True, data_only=True)
         ws = wb.active
         rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            raise ValueError("spreadsheet is empty; header row missing")
         header = [str(h or "").strip() for h in rows[0]]
+        if allowed is not None:
+            unknown = [h for h in header if h and h not in allowed]
+            if unknown:
+                raise ValueError(
+                    "unknown columns: " + ", ".join(unknown))
+            if not any(h in allowed for h in header):
+                raise ValueError("header row missing")
         return [dict(zip(header, r)) for r in rows[1:] if any(r)]
     text = file_obj.read().decode("utf-8-sig")
-    return list(csv.DictReader(io.StringIO(text)))
+    reader = csv.DictReader(io.StringIO(text))
+    if reader.fieldnames is None:
+        raise ValueError("CSV is empty; header row missing")
+    header = [str(h or "").strip() for h in reader.fieldnames]
+    if allowed is not None:
+        unknown = [h for h in header if h and h not in allowed]
+        if unknown:
+            raise ValueError("unknown columns: " + ", ".join(unknown))
+        if not any(h in allowed for h in header):
+            raise ValueError("header row missing")
+    return list(reader)
 
 
 def _employee_preview(rows):
@@ -249,6 +272,22 @@ def _employee_report_rows(preview, ok, skipped, failed):
     return rows
 
 
+#: Sortable directory fields (strict allowlist — anything else falls
+#: back to employee-ID order). Every branch ends in a unique key so
+#: pages are stable.
+_USER_ORDER_FIELDS = {"employee_id", "email"}
+
+
+def _apply_user_ordering(qs, raw):
+    field = (raw or "").lstrip("-")
+    if field not in _USER_ORDER_FIELDS:
+        return qs.order_by("employee_id", "id")
+    desc = raw.startswith("-")
+    head = f"-{field}" if desc else field
+    tie = "-id" if desc else "id"
+    return qs.order_by(head, tie)
+
+
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     parser_classes = [JSONParser, MultiPartParser, FormParser]
@@ -275,7 +314,8 @@ class UserViewSet(viewsets.ModelViewSet):
         if q:
             qs = qs.filter(employee_id__icontains=q) | qs.filter(
                 email__icontains=q)
-        return qs
+        return _apply_user_ordering(qs, self.request.query_params.get(
+            "ordering"))
 
     def perform_create(self, serializer):
         # Only admins/managers reach here (permission above); IT Support may
@@ -384,9 +424,10 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get", "post"])
     def bulk_import(self, request):
         if request.method == "GET":
-            columns = ["employee_id", "email", "first_name",
+            columns = ["employee_id", "username", "email", "first_name",
                        "last_name", "phone", "job_title",
-                       "home_department", "is_active"]
+                       "home_department", "is_active",
+                       "receive_ticket_emails"]
             if request.query_params.get("download") == "csv":
                 # Downloadable CSV template: header row only, so importing
                 # the file as-is creates nothing (no sample data to forget).
@@ -405,9 +446,26 @@ class UserViewSet(viewsets.ModelViewSet):
         upload = request.FILES.get("file")
         rows_data = request.data.get("rows")
         if upload:
-            rows = _parse_upload(upload)
+            allowed = {"employee_id", "username", "email", "first_name",
+                       "last_name", "phone", "job_title",
+                       "home_department", "is_active",
+                       "receive_ticket_emails"}
+            rows = _parse_upload(upload, allowed=allowed)
         elif rows_data:
             rows = rows_data if isinstance(rows_data, list) else []
+            if rows:
+                allowed = {"employee_id", "username", "email", "first_name",
+                           "last_name", "phone", "job_title",
+                           "home_department", "is_active",
+                           "receive_ticket_emails"}
+                unknown = set()
+                for r in rows:
+                    if isinstance(r, dict):
+                        unknown |= set(r) - allowed
+                if unknown:
+                    return Response(
+                        {"file": "unknown columns: " + ", ".join(sorted(unknown))},
+                        status=400)
         else:
             return Response({"detail": "Provide 'file' or 'rows'."},
                             status=400)
@@ -439,7 +497,8 @@ class UserViewSet(viewsets.ModelViewSet):
                         continue
                     user = User(
                         employee_id=item["employee_id"],
-                        username=d.get("email") or item["employee_id"],
+                        username=(d.get("username") or d.get("email")
+                                  or item["employee_id"]),
                         email=d.get("email") or f"{item['employee_id']}@local",
                         first_name=d.get("first_name", ""),
                         last_name=d.get("last_name", ""),
@@ -447,6 +506,10 @@ class UserViewSet(viewsets.ModelViewSet):
                         job_title=d.get("job_title", ""),
                         home_department=dept,
                         is_active=d.get("is_active", True),
+                        receive_ticket_emails=(
+                            d.get("receive_ticket_emails")
+                            if d.get("receive_ticket_emails") is not None
+                            else True),
                     )
                     user.set_unusable_password()
                     user.save()

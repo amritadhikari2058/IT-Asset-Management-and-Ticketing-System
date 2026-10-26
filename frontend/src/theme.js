@@ -1,4 +1,5 @@
-// Single source of truth for the palette (mirrors backend config.settings.THEME).
+// Single source of truth for the palette (mirrors backend config.settings.THEME,
+// extended with semantic tokens; CSS variables in index.css carry the same values).
 export const THEME = {
   primaryDarkRed: '#7F1D1D',
   secondaryIndigo: '#4F46E5',
@@ -7,4 +8,18 @@ export const THEME = {
   supportingBackground: '#F8FAFC',
   mainText: '#1F2937',
   borders: '#E5E7EB',
+  // Semantic extensions (see :root in index.css).
+  mutedText: '#6B7280',
+  success: '#166534',
+  successBg: '#F0FDF4',
+  successBorder: '#BBF7D0',
+  danger: '#991B1B',
+  dangerBg: '#FEF2F2',
+  dangerBorder: '#FECACA',
+  warning: '#92400E',
+  warningBg: '#FFFBEB',
+  warningBorder: '#FDE68A',
+  info: '#1E40AF',
+  infoBg: '#EFF6FF',
+  infoBorder: '#BFDBFE',
 };

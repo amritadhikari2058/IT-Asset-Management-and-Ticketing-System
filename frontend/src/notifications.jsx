@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from './api';
-import { ConfirmDialog } from './components';
+import { ConfirmDialog, EmptyState, PageHeader } from './components';
 
 export function Notifications() {
   const [items, setItems] = useState([]);
@@ -70,12 +70,19 @@ export function Notifications() {
     }
   };
 
-  if (loading) return <p>Loading notifications…</p>;
+  if (loading) {
+    return (
+      <p className="page-loading" role="status">
+        <span className="spinner" aria-hidden="true" />Loading notifications…
+      </p>
+    );
+  }
   return (
     <div>
-      <div className="detail-head">
-        <h3>Notifications {unread > 0 && <span className="muted">({unread} unread)</span>}</h3>
-        <div className="row-gap">
+      <PageHeader
+        title="Notifications"
+        sub={unread > 0 ? `${unread} unread` : 'All caught up.'}
+        actions={<>
           <button type="button" className="btn-ghost" onClick={load}>Refresh</button>
           <button
             type="button" className="btn-secondary"
@@ -84,17 +91,17 @@ export function Notifications() {
           >
             {busyAll ? 'Working…' : 'Mark all as read'}
           </button>
-        </div>
-      </div>
+        </>}
+      />
       {error && <div className="error-summary" role="alert">{error}</div>}
       {allMsg && <div className="success-summary" role="status">{allMsg}</div>}
       {items.length === 0 ? (
-        <p className="muted">No notifications.</p>
+        <EmptyState title="No notifications." hint="Ticket and asset events that involve you will show up here." />
       ) : (
         <ul className="note-list">
           {items.map((n) => (
-            <li key={n.id} style={n.is_read ? undefined : { borderLeft: '4px solid var(--secondary-indigo)' }}>
-              <div style={{ fontWeight: n.is_read ? 400 : 700 }}>{n.title}</div>
+            <li key={n.id} className={n.is_read ? undefined : 'is-unread'}>
+              <div className={n.is_read ? 'notif-title' : 'notif-title is-strong'}>{n.title}</div>
               {n.body && <div className="pre-wrap">{n.body}</div>}
               <div className="muted small">
                 {n.created_at ? new Date(n.created_at).toLocaleString() : ''}
@@ -102,8 +109,11 @@ export function Notifications() {
                 {n.entity_type === 'tickets.Ticket' && n.object_id ? (
                   <> · <a href={`#/tickets/${n.object_id}`}>Open ticket</a></>
                 ) : null}
+                {n.entity_type === 'assets.Asset' && n.object_id ? (
+                  <> · <a href={`#/assets/${n.object_id}`}>Open asset</a></>
+                ) : null}
               </div>
-              <div className="row-gap" style={{ marginTop: 6 }}>
+              <div className="notif-actions">
                 {!n.is_read && (
                   <button type="button" className="btn-ghost" onClick={() => markOneRead(n)}>
                     Mark as read
@@ -156,14 +166,5 @@ export function NotifBadge() {
     };
   }, []);
   if (!unread) return null;
-  return (
-    <span
-      style={{
-        background: '#7F1D1D', color: '#fff', borderRadius: 10,
-        fontSize: 11, padding: '1px 7px', marginLeft: 4,
-      }}
-    >
-      {unread}
-    </span>
-  );
+  return <span className="count-badge">{unread}</span>;
 }

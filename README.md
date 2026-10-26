@@ -26,6 +26,11 @@ Copy nothing — local dev works with defaults. For production set:
 
 | Variable | Default (dev) | Purpose |
 |---|---|---|
+| `SECRET_KEY` | committed dev key | Long random string; **required in production** (boot refuses `DEBUG=False` without it) |
+| `DEBUG` | true | Set `false` in production |
+| `ALLOWED_HOSTS` | empty (local runserver) | Comma-separated production hostnames |
+| `CORS_ALLOWED_ORIGINS` | both localhost:5173 origins | Comma-separated frontend origins |
+| `CSRF_TRUSTED_ORIGINS` | empty | Only needed for cross-origin session-auth cookie use |
 | `EMAIL_BACKEND` | console (dev) / smtp (prod) | `django.core.mail.backends.smtp.EmailBackend` in prod |
 | `EMAIL_HOST` / `EMAIL_PORT` | empty / 587 | SMTP server |
 | `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` | empty | SMTP credentials (never commit) |

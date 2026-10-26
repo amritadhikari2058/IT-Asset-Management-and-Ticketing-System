@@ -68,6 +68,34 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = AuditLogSerializer
     permission_classes = [IsSystemAdmin]
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        p = self.request.query_params
+        action = p.get("action")
+        if action:
+            allowed = {key for key, _label in AuditLog.ACTION_CHOICES}
+            if action not in allowed:
+                from rest_framework.exceptions import ValidationError
+                raise ValidationError(
+                    {"action": f"Unknown action. Allowed: {sorted(allowed)}."})
+            qs = qs.filter(action=action)
+        entity_type = p.get("entity_type")
+        if entity_type:
+            qs = qs.filter(entity_type=entity_type)
+        for param, lookup in (("date_from", "timestamp__date__gte"),
+                              ("date_to", "timestamp__date__lte")):
+            raw = p.get(param)
+            if raw:
+                import datetime
+                try:
+                    day = datetime.date.fromisoformat(raw)
+                except ValueError:
+                    from rest_framework.exceptions import ValidationError
+                    raise ValidationError(
+                        {param: "Use ISO date format YYYY-MM-DD."})
+                qs = qs.filter(**{lookup: day})
+        return qs
+
 
 class NotificationViewSet(viewsets.ModelViewSet):
     serializer_class = NotificationSerializer

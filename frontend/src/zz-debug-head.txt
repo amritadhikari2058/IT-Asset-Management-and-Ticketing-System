@@ -1,0 +1,6 @@
+﻿import { describe, it, expect, vi } from 'vitest';
+import { render } from '@testing-library/react';
+const { mockGet, mockPost, mockPatch, mockDelete, mockAuth } = vi.hoisted(() => ({ mockGet: vi.fn(), mockPost: vi.fn(), mockPatch: vi.fn(), mockDelete: vi.fn(), mockAuth: vi.fn() }));
+vi.mock('./api', () => ({ default: { get: (...a) => mockGet(...a), post: (...a) => mockPost(...a), patch: (...a) => mockPatch(...a), delete: (...a) => mockDelete(...a) } }));
+vi.mock('./auth', () => ({ useAuth: (...a) => mockAuth(...a), AuthProvider: ({ children }) => children }));
+import App from './App';

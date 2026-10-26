@@ -31,8 +31,18 @@ export function AuthProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    // Session recovery: the API layer dispatches this when a refresh
+    // fails; follow the same path as an explicit logout.
+    const onExpired = () => logout();
+    window.addEventListener('auth-expired', onExpired);
+    return () => window.removeEventListener('auth-expired', onExpired);
+  }, []);
+
   const login = async (email, password) => {
-    const res = await api.post('/token/', { username: email, password });
+    // Backend USERNAME_FIELD is 'email', so SimpleJWT's token endpoint
+    // requires {email, password} (not {username, password}).
+    const res = await api.post('/token/', { email, password });
     localStorage.setItem('access', res.data.access);
     localStorage.setItem('refresh', res.data.refresh);
     setAccess(res.data.access);

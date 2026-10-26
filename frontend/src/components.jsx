@@ -1,41 +1,233 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from './api';
+import { parseApiError } from './api-utils';
 import { useAuth } from './auth';
 
-/** Flatten a DRF error response to {fields: {name: msg}, global: msg}. */
-export function parseApiError(e) {
-  const data = e?.response?.data;
-  const out = { fields: {}, global: '' };
-  if (!data) {
-    out.global = e?.message ? `Request failed: ${e.message}` : 'Request failed.';
-    return out;
-  }
-  if (typeof data === 'string') {
-    out.global = data;
-    return out;
-  }
-  for (const [k, v] of Object.entries(data)) {
-    const msg = Array.isArray(v) ? v.join(' ') : (typeof v === 'object' ? JSON.stringify(v) : String(v));
-    if (k === 'detail' || k === 'non_field_errors') out.global = out.global ? `${out.global} ${msg}` : msg;
-    else out.fields[k] = msg;
-  }
-  if (!out.global && Object.keys(out.fields).length === 0) out.global = 'Request failed.';
-  if (e?.response?.status === 403 && !out.global) out.global = 'Forbidden: you lack permission for this action.';
-  return out;
+const STATUS_TONE = {
+  open: 'blue', in_progress: 'purple', resolved: 'green', closed: 'gray',
+  reopened: 'amber', archived: 'gray',
+  available: 'green', assigned: 'blue', in_repair: 'amber', retired: 'gray',
+  lost: 'red', active: 'green', inactive: 'gray',
+};
+const PRIORITY_TONE = { low: 'gray', medium: 'blue', high: 'amber', critical: 'red' };
+
+/** Small status/priority indicator. kind: 'status' | 'priority'. */
+export function Badge({ kind, value, label }) {
+  const tone = kind === 'priority'
+    ? (PRIORITY_TONE[value] ?? 'gray')
+    : (STATUS_TONE[value] ?? 'gray');
+  const text = label ?? String(value ?? '—').replace(/_/g, ' ');
+  return <span className={`badge badge-${tone}`}>{text}</span>;
 }
 
-export function fieldMsg(fieldErrors, name) {
-  return fieldErrors?.[name] ?? '';
+export function PageHeader({ title, sub, actions }) {
+  return (
+    <div className="page-head">
+      <div>
+        <h1>{title}</h1>
+        {sub ? <div className="page-sub">{sub}</div> : null}
+      </div>
+      <div className="spacer" />
+      <div className="row-gap">{actions}</div>
+    </div>
+  );
+}
+
+export function EmptyState({ title, hint, action }) {
+  return (
+    <div className="empty-state">
+      <div className="empty-title">{title}</div>
+      {hint ? <div className="small">{hint}</div> : null}
+      {action ? <div className="empty-action">{action}</div> : null}
+    </div>
+  );
+}
+
+/** Table-shaped skeleton: same row rhythm as `table.grid`. */
+const SK_WIDTHS = [['10%', '30%', '14%', '14%'], ['10%', '24%', '14%', '18%'], ['10%', '34%', '14%', '12%']];
+
+export function LoadingRows({ n = 5 }) {
+  return (
+    <div role="status" aria-label="Loading">
+      {Array.from({ length: n }).map((_, i) => (
+        <div key={i} className="skeleton-row">
+          {SK_WIDTHS[i % SK_WIDTHS.length].map((w, j) => (
+            <span key={j} className="sk-cell" style={{ width: w }} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Compact data table. columns: [{key, label, render?(row), thClass?}].
+ * Selectable via selectKey + selected Set + onToggle(id).
+ */
+/** Sort state for server-side sorted tables. Cycles asc → desc → none.
+ * Returns [sort, changeSort, orderingParam]. changeSort(field) updates
+ * state and returns the next value synchronously for immediate loads;
+ * orderingParam() yields the `ordering` query value ("" when unset). */
+export function useSort() {
+  const [sort, setSort] = useState(null);
+  const ref = useRef(null);
+  const changeSort = (field) => {
+    const cur = ref.current;
+    const next = !cur || cur.field !== field ? { field, dir: 'asc' }
+      : cur.dir === 'asc' ? { field, dir: 'desc' } : null;
+    ref.current = next;
+    setSort(next);
+    return next;
+  };
+  const orderingParam = (s) => {
+    const v = s === undefined ? ref.current : s;
+    return !v ? '' : (v.dir === 'desc' ? `-${v.field}` : v.field);
+  };
+  return [sort, changeSort, orderingParam];
+}
+
+export function useTableColumns(allKeys, defaultKeys) {
+  const [visible, setVisible] = useState(() => new Set(defaultKeys || allKeys));
+  const [tableVisible, setTableVisible] = useState(true);
+  const toggleColumn = (key) => {
+    setVisible((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        if (next.size > 1) next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+  const resetColumns = () => setVisible(new Set(defaultKeys || allKeys));
+  const toggleTable = () => setTableVisible((v) => !v);
+  return {
+    visibleColumns: visible,
+    toggleColumn,
+    resetColumns,
+    tableVisible,
+    toggleTable,
+  };
+}
+
+export function TableControls({ tableVisible, onToggleTable, columns, visible, onToggleColumn, onReset }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="table-controls row-gap" style={{ marginBottom: 'var(--sp-2)' }}>
+      <button type="button" className="btn-small" onClick={onToggleTable}>
+        {tableVisible ? 'Hide table' : 'Show table'}
+      </button>
+      <button type="button" className="btn-small" onClick={() => setOpen((v) => !v)}>
+        Columns
+      </button>
+      <button type="button" className="btn-small" onClick={onReset}>
+        Reset columns
+      </button>
+      {open && (
+        <div className="column-chooser">
+          {columns.map((c) => (
+            <label key={c.key} className="check-row">
+              <input
+                type="checkbox"
+                checked={visible.has(c.key)}
+                disabled={visible.size <= 1 && visible.has(c.key)}
+                onChange={() => onToggleColumn(c.key)}
+                aria-label={`Show ${c.label} column`}
+              />
+              {c.label}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function DataTable({ columns, rows, keyOf, selected, onToggle, emptyTitle, emptyHint, sort, onSort }) {
+  if (!rows.length) return <EmptyState title={emptyTitle ?? 'Nothing here yet.'} hint={emptyHint} />;
+  const selectable = typeof onToggle === 'function';
+  const sortable = typeof onSort === 'function';
+  const arrow = (field) => {
+    if (!sort || sort.field !== field) return '';
+    return sort.dir === 'desc' ? ' ▼' : ' ▲';
+  };
+  return (
+    <div className="table-wrap">
+      <table className="grid">
+        <thead>
+          <tr>
+            {selectable && <th className="th-select"><span className="visually-hidden">Select rows</span><span className="muted small" aria-hidden="true">✓</span></th>}
+            {columns.map((c) => (
+              <th
+                key={c.key}
+                className={c.thClass}
+                aria-sort={sort && sort.field === c.sortable ? (sort.dir === 'desc' ? 'descending' : 'ascending') : undefined}
+              >
+                {sortable && c.sortable ? (
+                  <button
+                    type="button" className="th-sort"
+                    onClick={() => onSort(c.sortable)}
+                    aria-label={`Sort by ${c.label}`}
+                  >
+                    {c.label}{arrow(c.sortable)}
+                  </button>
+                ) : c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const k = keyOf(r);
+            const isSel = selected?.has(k);
+            return (
+              <tr key={k} className={isSel ? 'selected' : ''}>
+                {selectable && (
+                  <td>
+                    <input
+                      type="checkbox" checked={!!isSel} onChange={() => onToggle(k)}
+                      aria-label={`Select row ${k}`}
+                    />
+                  </td>
+                )}
+                {columns.map((c) => (
+                  <td key={c.key}>{c.render ? c.render(r) : String(r[c.key] ?? '—')}</td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function Pager({ count, hasNext, hasPrev, onPrev, onNext, busy }) {
+  if (count == null && !hasNext && !hasPrev) return null;
+  return (
+    <div className="pager">
+      <span>{count != null ? `${count} total` : ''}</span>
+      <span className="spacer" />
+      <button type="button" className="btn-small" onClick={onPrev} disabled={!hasPrev || busy}>← Prev</button>
+      <button type="button" className="btn-small" onClick={onNext} disabled={!hasNext || busy}>Next →</button>
+    </div>
+  );
 }
 
 export function Field({ label, error, hint, required, children }) {
+  const control = error && children && typeof children === 'object' && 'props' in children
+    ? { ...children, props: { ...children.props, 'aria-invalid': 'true' } }
+    : children;
   return (
     <div className="form-field">
       <label className="form-label">
-        {label}
-        {required && <span className="required" aria-hidden="true"> *</span>}
+        <span>
+          {label}
+          {required && <span className="required" aria-hidden="true"> *</span>}
+        </span>
+        {control}
       </label>
-      {children}
       {error ? <div className="field-error" role="alert">{error}</div> : null}
       {!error && hint ? <div className="field-hint">{hint}</div> : null}
     </div>
@@ -47,18 +239,22 @@ export function ErrorSummary({ parsed }) {
   return <div className="error-summary" role="alert">{parsed.global}</div>;
 }
 
-export function Modal({ title, onClose, children }) {
+export function Modal({ title, onClose, children, size }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
   }, [onClose]);
+  useEffect(() => {
+    const first = document.querySelector('.modal .input, .modal button');
+    if (first) first.focus();
+  }, []);
   return (
     <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`modal${size ? ` modal-${size}` : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-head">
           <h3>{title}</h3>
-          <button type="button" className="btn-ghost" onClick={onClose} aria-label="Close">✕</button>
+          <button type="button" className="btn-close" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <div className="modal-body">{children}</div>
       </div>

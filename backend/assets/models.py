@@ -62,7 +62,26 @@ class Asset(SoftDeleteModel):
     category = models.ForeignKey(
         AssetCategory, on_delete=models.PROTECT, related_name="assets"
     )
+    # Optional (blank allowed, several blanks fine); non-blank values are
+    # unique across ALL assets, including soft-deleted ones: a recycled
+    # asset still reserves its serial so a restore can never collide.
+    # Enforced twice: AssetSerializer.validate_serial_number (friendly
+    # field error) and DB triggers in 0003 (concurrency backstop). Triggers
+    # instead of a UNIQUE index because the live database already holds
+    # duplicate serials that must be preserved (see 0003 report) - an index
+    # could not be created over conflicting rows without deleting or
+    # rewriting existing assets.
     serial_number = models.CharField(max_length=100, blank=True, default="")
+    # Optional owning department. Nullable so legacy/unknown assets still
+    # import cleanly; PROTECT keeps a department from being removed while
+    # assets still reference it (deactivate instead).
+    department = models.ForeignKey(
+        "accounts.Department",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="assets",
+    )
     status = models.CharField(
         max_length=20, choices=STATUS_CHOICES, default="available"
     )

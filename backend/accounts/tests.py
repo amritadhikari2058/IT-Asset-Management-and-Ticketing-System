@@ -144,9 +144,10 @@ class ImportTemplateTests(TestCase):
         header = res.content.decode("utf-8-sig").strip().splitlines()
         self.assertEqual(len(header), 1)  # header only, no sample rows
         self.assertEqual(header[0].split(","),
-                         ["employee_id", "email", "first_name",
+                         ["employee_id", "username", "email", "first_name",
                           "last_name", "phone", "job_title",
-                          "home_department", "is_active"])
+                          "home_department", "is_active",
+                          "receive_ticket_emails"])
 
     def test_employee_template_forbidden_for_employee(self):
         auth(self.c, self.emp)
@@ -266,3 +267,127 @@ class BulkImportReportTests(TestCase):
                           {"rows": self._rows(), "preview": False,
                            "confirm": True}, format="json")
         self.assertEqual(res.status_code, 403)
+
+
+class UserAdminActionTests(TestCase):
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+
+    def test_privileged_deactivate_reactivate(self):
+        auth(self.c, self.mgr)
+        res = self.c.post(f"/api/accounts/users/{self.emp.pk}/deactivate/",
+                          {}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertFalse(self.emp.is_active)
+        self.assertTrue(AuditLog.objects.filter(
+            object_id=str(self.emp.pk), action="deactivate").exists())
+        res = self.c.post(f"/api/accounts/users/{self.emp.pk}/reactivate/",
+                          {}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertTrue(self.emp.is_active)
+
+    def test_employee_cannot_deactivate(self):
+        auth(self.c, self.emp)
+        res = self.c.post(f"/api/accounts/users/{self.mgr.pk}/deactivate/",
+                          {}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.mgr.refresh_from_db()
+        self.assertTrue(self.mgr.is_active)
+
+    def test_admin_change_role(self):
+        auth(self.c, self.admin)
+        res = self.c.post(f"/api/accounts/users/{self.emp.pk}/change_role/",
+                          {"role": "it_support",
+                           "can_create_tickets": False}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.role, "it_support")
+        self.assertFalse(self.emp.can_create_tickets)
+        self.assertTrue(AuditLog.objects.filter(
+            object_id=str(self.emp.pk), action="update").exists())
+
+    def test_change_role_forbidden_and_validated(self):
+        auth(self.c, self.mgr)
+        res = self.c.post(f"/api/accounts/users/{self.emp.pk}/change_role/",
+                          {"role": "it_support"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        auth(self.c, self.admin)
+        res = self.c.post(f"/api/accounts/users/{self.emp.pk}/change_role/",
+                          {"role": "owner"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.role, "employee")
+
+
+class UserOrderingTests(TestCase):
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+
+    def _ids(self, res):
+        self.assertEqual(res.status_code, 200)
+        data = res.data
+        rows = data["results"] if isinstance(data, dict) else data
+        return [r["employee_id"] for r in rows]
+
+    def test_email_ordering(self):
+        res = self.c.get("/api/accounts/users/", {"ordering": "email"})
+        self.assertEqual(self._ids(res), ["A1", "E1", "M1"])
+        res = self.c.get("/api/accounts/users/", {"ordering": "-email"})
+        self.assertEqual(self._ids(res), ["M1", "E1", "A1"])
+
+    def test_unsupported_ordering_falls_back_to_employee_id(self):
+        res = self.c.get("/api/accounts/users/", {"ordering": "password"})
+        self.assertEqual(self._ids(res), ["A1", "E1", "M1"])
+
+
+class ChangePasswordTests(TestCase):
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+
+    def test_change_password_success(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/accounts/change-password/",
+                          {"current_password": "pw12345678",
+                           "new_password": "brand-new-pass-99"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertTrue(self.emp.check_password("brand-new-pass-99"))
+        self.assertFalse(self.emp.check_password("pw12345678"))
+
+    def test_wrong_current_password_rejected(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/accounts/change-password/",
+                          {"current_password": "wrong-pw",
+                           "new_password": "brand-new-pass-99"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.emp.refresh_from_db()
+        self.assertTrue(self.emp.check_password("pw12345678"))
+
+    def test_weak_new_password_rejected(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/accounts/change-password/",
+                          {"current_password": "pw12345678",
+                           "new_password": "123"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("new_password", res.data)
+        self.emp.refresh_from_db()
+        self.assertTrue(self.emp.check_password("pw12345678"))
+
+    def test_requires_authentication(self):
+        res = self.c.post("/api/accounts/change-password/",
+                          {"current_password": "pw12345678",
+                           "new_password": "brand-new-pass-99"}, format="json")
+        self.assertEqual(res.status_code, 401)
+
+    def test_me_exposes_email_verified_flag(self):
+        auth(self.c, self.emp)
+        res = self.c.get("/api/accounts/me/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("email_verified", res.data)
+        self.assertFalse(res.data["email_verified"])

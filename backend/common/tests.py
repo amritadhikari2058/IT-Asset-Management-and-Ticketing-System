@@ -433,3 +433,68 @@ class TicketEmailPreferenceTests(TestCase):
                           {"email": "e@x"}, format="json")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(len(mail.outbox), 2)
+
+
+class AuditLogFilterTests(TestCase):
+    def setUp(self):
+        from common.models import AuditLog
+
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        AuditLog.objects.create(actor=self.admin, action="create",
+                                entity_type="tickets.Ticket", object_id="1")
+        AuditLog.objects.create(actor=self.mgr, action="update",
+                                entity_type="assets.Asset", object_id="2")
+
+    def _rows(self, res):
+        self.assertEqual(res.status_code, 200)
+        data = res.data
+        return data["results"] if isinstance(data, dict) else data
+
+    def test_admin_sees_all(self):
+        auth(self.c, self.admin)
+        rows = self._rows(self.c.get("/api/common/audit-logs/"))
+        self.assertEqual(len(rows), 2)
+
+    def test_non_admin_forbidden(self):
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/audit-logs/")
+        self.assertEqual(res.status_code, 403)
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/audit-logs/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_filter_action(self):
+        auth(self.c, self.admin)
+        rows = self._rows(
+            self.c.get("/api/common/audit-logs/", {"action": "create"}))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["action"], "create")
+
+    def test_filter_action_rejects_unknown(self):
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/audit-logs/",
+                         {"action": "drop table"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_filter_entity_type(self):
+        auth(self.c, self.admin)
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"entity_type": "assets.Asset"}))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["entity_type"], "assets.Asset")
+
+    def test_filter_dates(self):
+        from django.utils import timezone
+
+        auth(self.c, self.admin)
+        today = timezone.now().date().isoformat()
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"date_from": today}))
+        self.assertEqual(len(rows), 2)
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"date_from": "2999-01-01"}))
+        self.assertEqual(rows, [])
+        res = self.c.get("/api/common/audit-logs/",
+                         {"date_from": "not-a-date"})
+        self.assertEqual(res.status_code, 400)

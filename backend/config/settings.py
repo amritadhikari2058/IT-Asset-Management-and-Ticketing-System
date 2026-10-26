@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 import os
+import sys
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -55,14 +56,26 @@ _load_root_env()
 # SECURITY WARNING: keep the secret key used in production secret!
 # Overridable via the SECRET_KEY environment variable (see .env.example).
 # The committed default is a local-development key only.
-SECRET_KEY = os.environ.get(
-    'SECRET_KEY',
-    'django-insecure-h4d8ta4a*&1il3pivw9lx$9yslbnx2e$gm4bfsn607awll&p-*')
+_SECRET_KEY_FROM_ENV = os.environ.get('SECRET_KEY', '')
+SECRET_KEY = (_SECRET_KEY_FROM_ENV
+              or 'django-insecure-h4d8ta4a*&1il3pivw9lx$9yslbnx2e$gm4bfsn607awll&p-*')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Local dev default stays True; production sets DEBUG=false.
+DEBUG = os.environ.get('DEBUG', 'true').lower() == 'true'
 
-ALLOWED_HOSTS = []
+# Comma-separated in production, e.g. ALLOWED_HOSTS=tickets.example.com.
+# Empty keeps local `runserver` behavior (localhost still allowed there).
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get('ALLOWED_HOSTS', '').split(',')
+                 if h.strip()]
+
+# Fail clearly instead of booting an insecure production server. The test
+# runner forces DEBUG=False itself, so real test runs are exempt.
+if not DEBUG and not _SECRET_KEY_FROM_ENV and 'test' not in sys.argv:
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured(
+        "Refusing to start with DEBUG=False and the committed development "
+        "SECRET_KEY. Set a unique SECRET_KEY environment variable.")
 
 
 # Application definition
@@ -166,6 +179,8 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+# Required for `collectstatic` in production; git-ignored, unused in dev.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # ---------- File storage (abstraction: local dev, S3-compatible prod) ----------
 # Local development needs nothing. Production sets STORAGE_BACKEND=s3 and the
@@ -231,6 +246,8 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
+    'PAGE_SIZE_QUERY_PARAM': 'page_size',
+    'MAX_PAGE_SIZE': 100,
 }
 
 from datetime import timedelta
@@ -240,10 +257,18 @@ SIMPLE_JWT = {
 }
 
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
+    o.strip() for o in os.environ.get(
+        'CORS_ALLOWED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173').split(',')
+    if o.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
+# Needed only if session auth is used cross-origin in production;
+# empty preserves current behavior. No wildcards accepted here on purpose.
+CSRF_TRUSTED_ORIGINS = [
+    o.strip() for o in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
+    if o.strip()
+]
 
 # Theme palette (single source of truth, mirrored in frontend/src/theme.js)
 THEME = {

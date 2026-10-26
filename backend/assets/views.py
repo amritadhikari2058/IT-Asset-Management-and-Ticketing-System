@@ -6,12 +6,15 @@
 """
 import csv
 import io
+import logging
+from zipfile import BadZipFile
 
-from django.db import transaction
-from django.db.models import Count
+from django.db import IntegrityError, transaction
+from django.db.models import Count, OuterRef, Q, Subquery
 from openpyxl import load_workbook
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
@@ -25,6 +28,9 @@ from assets.serializers import (
 )
 from common.audit import log_action
 from common.permissions import IsITStaff, IsSystemAdmin
+from tickets.serializers import validate_attachment_file
+
+logger = logging.getLogger(__name__)
 
 
 def _can_manage(user):
@@ -37,6 +43,30 @@ def _history(asset, actor, action, old=None, new=None, note=""):
     AssetHistory.objects.create(asset=asset, actor=actor, action=action,
                                 old_values=old or {}, new_values=new or {},
                                 note=note)
+
+
+def _notify_assignee(recipient, actor, title, body, asset):
+    """Create an in-app notification for an asset assignment event.
+
+    Same conventions as ticket notifications: never notify the actor
+    about their own action, never notify inactive/deleted users or empty
+    recipients. In-app only — asset events never send email. Created
+    inline so the row shares the mutation's fate on rollback.
+    """
+    from common.models import Notification
+
+    if recipient is None or getattr(recipient, "pk", None) is None:
+        return None
+    actor_pk = getattr(actor, "pk", None)
+    if actor_pk is not None and recipient.pk == actor_pk:
+        return None
+    if not getattr(recipient, "is_active", True):
+        return None
+    if getattr(recipient, "is_deleted", False):
+        return None
+    return Notification.objects.create(
+        recipient=recipient, title=title[:255], body=body or "",
+        entity_type="assets.Asset", object_id=str(asset.pk))
 
 
 def _as_key(value):
@@ -256,39 +286,107 @@ class AssetCategoryViewSet(viewsets.ModelViewSet):
 
 
 class AssetViewSet(viewsets.ModelViewSet):
-    queryset = Asset.objects.select_related("category", "assigned_to").all()
+    queryset = Asset.objects.select_related(
+        "category", "assigned_to", "department").all()
     serializer_class = AssetSerializer
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def get_permissions(self):
         if self.action in ("create", "update", "partial_update", "destroy",
-                           "assign", "retire", "bulk_create",
+                           "assign", "retire", "mark_lost", "bulk_create",
                            "bulk_update", "bulk_delete", "bulk_assign"):
             return [IsITStaff()]
         return super().get_permissions()
 
     def get_queryset(self):
         qs = super().get_queryset()
+        image_qs = AssetAttachment.objects.filter(
+            asset=OuterRef("pk"), is_deleted=False).filter(
+            Q(file__iendswith=".png") | Q(file__iendswith=".jpg")
+            | Q(file__iendswith=".jpeg") | Q(file__iendswith=".gif")
+            | Q(file__iendswith=".webp") | Q(file__iendswith=".bmp"))
+        qs = qs.annotate(photo_attachment_id=Subquery(
+            image_qs.order_by("-created_at").values("pk")[:1]))
         params = self.request.query_params
         if params.get("q"):
-            qs = qs.filter(name__icontains=params["q"]) | qs.filter(
-                asset_tag__icontains=params["q"])
+            q = params["q"]
+            qs = qs.filter(name__icontains=q) | qs.filter(
+                asset_tag__icontains=q) | qs.filter(
+                serial_number__icontains=q) | qs.filter(
+                location__icontains=q) | qs.filter(
+                department__name__icontains=q) | qs.filter(
+                department__code__icontains=q)
         if params.get("category"):
             qs = qs.filter(category_id=params["category"])
+        if params.get("department"):
+            qs = qs.filter(department_id=params["department"])
         if params.get("status"):
             qs = qs.filter(status=params["status"])
-        return qs
+        return _apply_asset_ordering(qs, params.get("ordering"))
 
     def perform_create(self, serializer):
-        obj = serializer.save()
+        """Create the asset; optionally attach an uploaded file atomically.
+
+        A multipart POST may carry a ``file`` next to the asset fields.
+        The file is validated BEFORE anything is saved and the asset +
+        attachment are written in one transaction, so a rejected file can
+        never leave a file-less asset behind (no silent drop, no partial
+        state to clean up on retry). The canonical client flow remains
+        two-step (create, then POST /assets/attachments/ with the new id).
+        """
+        upload = self.request.FILES.get("file")
+        if upload is not None:
+            try:
+                validate_attachment_file(upload)  # 400 before any row exists
+            except ValidationError as exc:
+                # Key it to 'file' so clients can render it as a field
+                # error instead of an anonymous message.
+                raise ValidationError({"file": exc.detail}) from exc
+        try:
+            with transaction.atomic():
+                obj = serializer.save()
+                if upload is not None:
+                    att = AssetAttachment.objects.create(
+                        asset=obj, file=upload,
+                        uploaded_by=self.request.user,
+                        original_filename=(upload.name or "")[:255])
+                    log_action(actor=self.request.user, action="create",
+                               instance=att)
+        except IntegrityError:
+            # Concurrent duplicate serial (DB trigger backstop): the
+            # serializer check ran before the competing write committed.
+            serial = (serializer.validated_data.get("serial_number")
+                      or "").strip()
+            if serial and Asset.all_objects.filter(
+                    serial_number=serial).exists():
+                raise ValidationError({"serial_number": (
+                    f"Serial number '{serial}' is already used by another "
+                    "asset. Serial numbers must be unique.")})
+            raise ValidationError({"detail": "Could not save the asset: a "
+                                             "concurrent write conflicted."})
         _history(obj, self.request.user, "created",
                  new={"asset_tag": obj.asset_tag})
         log_action(actor=self.request.user, action="create", instance=obj)
 
     def perform_update(self, serializer):
+        if self.request.FILES.get("file") is not None:
+            # Never silently drop an upload: attachments have their own
+            # endpoint and this payload format cannot store the file.
+            raise ValidationError({"file": "Files cannot be changed here. "
+                                           "Use /api/assets/<id>/attachments/."})
         serializer.validated_data.pop("assigned_to", None)  # never silently
         old = {f: getattr(self.get_object(), f, None) for f in
                ("name", "status", "location")}
+        new_status = serializer.validated_data.get("status")
+        # Dedicated workflows own these transitions: assign/return_asset,
+        # retire, mark_lost. Resubmitting the current value (as edit forms
+        # do) is fine; only an actual change is rejected.
+        if (new_status is not None and new_status != old["status"]
+                and new_status in ("assigned", "retired", "lost")):
+            raise ValidationError(
+                {"status": f"Status '{new_status}' must be set through "
+                           "its dedicated workflow (assign, retire, or "
+                           "mark lost), not generic editing."})
         obj = serializer.save()
         _history(obj, self.request.user, "updated", old=old,
                  new={"name": obj.name, "status": obj.status})
@@ -330,6 +428,9 @@ class AssetViewSet(viewsets.ModelViewSet):
             _history(obj, request.user, "assigned", old=old,
                      new={"assigned_to": target_id, "status": obj.status},
                      note=ser.validated_data.get("note", ""))
+            _notify_assignee(target, request.user,
+                             f"Asset {obj.asset_tag} assigned to you",
+                             f"{obj.name}", obj)
             log_action(actor=request.user, action="assignment", instance=obj,
                        details={"assigned_to": target_id})
         return Response(AssetSerializer(obj).data)
@@ -337,6 +438,7 @@ class AssetViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def return_asset(self, request, pk=None):
         obj = self.get_object()
+        previous_holder = obj.assigned_to
         with transaction.atomic():
             last = obj.assignments.filter(returned_at__isnull=True).last()
             if last:
@@ -349,6 +451,9 @@ class AssetViewSet(viewsets.ModelViewSet):
             obj.save(update_fields=["assigned_to", "status"])
             _history(obj, request.user, "returned", old=old,
                      new={"assigned_to": None})
+            _notify_assignee(previous_holder, request.user,
+                             f"Asset {obj.asset_tag} was returned",
+                             f"{obj.name}", obj)
             log_action(actor=request.user, action="assignment", instance=obj,
                        details={"returned": True})
         return Response(AssetSerializer(obj).data)
@@ -362,6 +467,44 @@ class AssetViewSet(viewsets.ModelViewSet):
         _history(obj, request.user, "retired", old=old,
                  new={"status": "retired"})
         log_action(actor=request.user, action="retire", instance=obj)
+        return Response(AssetSerializer(obj).data)
+
+    @action(detail=True, methods=["post"])
+    def mark_lost(self, request, pk=None):
+        """Dedicated lost-asset workflow: reason required, atomic.
+
+        Closes any open assignment (returned_at) and clears the holder —
+        the Assignment rows keep the full record — then flips status to
+        lost with history + audit. Repeating on an already-lost asset is
+        idempotent: 200 with no new rows.
+        """
+        obj = self.get_object()
+        reason = (request.data.get("reason", "")
+                  if isinstance(request.data.get("reason", ""), str)
+                  else "")
+        if not reason.strip():
+            return Response({"detail": "A reason is required to mark an "
+                                       "asset lost."}, status=400)
+        if obj.status == "lost":
+            return Response(AssetSerializer(obj).data)
+        with transaction.atomic():
+            if obj.assigned_to_id is not None:
+                from django.utils import timezone
+                obj.assignments.filter(
+                    returned_at__isnull=True).update(
+                        returned_at=timezone.now())
+            old = {"assigned_to": obj.assigned_to_id,
+                   "status": obj.status}
+            obj.assigned_to = None
+            obj.status = "lost"
+            obj.save(update_fields=["assigned_to", "status"])
+            _history(obj, request.user, "lost", old=old,
+                     new={"assigned_to": None, "status": "lost"},
+                     note=reason.strip()[:500])
+            log_action(actor=request.user, action="status_change",
+                       instance=obj,
+                       details={"from": old["status"], "to": "lost",
+                                "reason": reason.strip()[:500]})
         return Response(AssetSerializer(obj).data)
 
     @action(detail=False, methods=["post"])
@@ -434,6 +577,9 @@ class AssetViewSet(viewsets.ModelViewSet):
                                   "status": obj.status,
                                   "bulk": True},
                              note=r.get("note", ""))
+                    _notify_assignee(target, request.user,
+                                     f"Asset {obj.asset_tag} assigned to you",
+                                     f"{obj.name}", obj)
                     log_action(actor=request.user, action="assignment",
                                instance=obj,
                                details={"assigned_to": target.pk,
@@ -482,25 +628,76 @@ class AssetViewSet(viewsets.ModelViewSet):
 
     # ---------- bulk ----------
     def _parse(self, request):
+        """Parse an uploaded CSV/XLSX or fall back to JSON rows.
+
+        Every unreadable-file failure (bad encoding, corrupt/not-a-zip
+        workbook, empty file) is converted into a 400 with a clear field
+        error instead of a raw Django 500 page; the full exception goes
+        to the server log only.
+        """
         upload = request.FILES.get("file")
-        if upload:
-            name = (upload.name or "").lower()
+        if not upload:
+            rows = request.data.get("rows", [])
+            if isinstance(rows, list) and rows:
+                allowed = {"asset_tag", "name", "description", "category",
+                           "serial_number", "status", "department", "location",
+                           "purchase_date", "warranty_expiry", "purchase_cost"}
+                unknown = set()
+                for r in rows:
+                    if isinstance(r, dict):
+                        unknown |= set(r) - allowed
+                if unknown:
+                    raise ValidationError(
+                        {"file": "unknown columns: "
+                                 + ", ".join(sorted(unknown))})
+            return rows
+        name = (upload.name or "").lower()
+        allowed = {"asset_tag", "name", "description", "category",
+                   "serial_number", "status", "department", "location",
+                   "purchase_date", "warranty_expiry", "purchase_cost"}
+        try:
             if name.endswith((".xlsx", ".xlsm")):
                 wb = load_workbook(upload, read_only=True, data_only=True)
                 ws = wb.active
+                if ws is None:
+                    raise ValueError("workbook has no worksheets")
                 rows = list(ws.iter_rows(values_only=True))
+                if not rows:
+                    raise ValueError("spreadsheet is empty; header row missing")
                 header = [str(h or "").strip() for h in rows[0]]
+                unknown = [h for h in header if h and h not in allowed]
+                if unknown:
+                    raise ValueError("unknown columns: " + ", ".join(unknown))
+                if not any(h in allowed for h in header):
+                    raise ValueError("header row missing")
                 return [dict(zip(header, r)) for r in rows[1:] if any(r)]
-            return list(csv.DictReader(
-                io.StringIO(upload.read().decode("utf-8-sig"))))
-        return request.data.get("rows", [])
+            text = upload.read().decode("utf-8-sig")
+            reader = csv.DictReader(io.StringIO(text))
+            if not reader.fieldnames:
+                raise ValueError("CSV is empty; header row missing")
+            header = [str(h or "").strip() for h in reader.fieldnames]
+            unknown = [h for h in header if h and h not in allowed]
+            if unknown:
+                raise ValueError("unknown columns: " + ", ".join(unknown))
+            if not any(h in allowed for h in header):
+                raise ValueError("header row missing")
+            return list(reader)
+        except ValidationError:
+            raise
+        except Exception:
+            logger.exception("Could not parse bulk asset upload %r", name)
+            raise ValidationError(
+                {"file": f"Could not read the uploaded file '{name}'. "
+                         "Expected a UTF-8 CSV or a valid XLSX workbook "
+                         "with a header row."})
 
     @action(detail=False, methods=["get", "post"])
     def bulk_create(self, request):
         if request.method == "GET":
-            columns = ["asset_tag", "name", "category",
-                       "serial_number", "status", "location",
-                       "purchase_date"]
+            columns = ["asset_tag", "name", "category", "serial_number",
+                       "status", "department", "location",
+                       "description", "purchase_date", "warranty_expiry",
+                       "purchase_cost"]
             if request.query_params.get("download") == "csv":
                 # Downloadable CSV template: header row only.
                 # NOTE: the param is named "download", not "format": DRF
@@ -518,15 +715,25 @@ class AssetViewSet(viewsets.ModelViewSet):
         if request.data.get("preview", True) in (True, "true", "1", 1):
             ok, errors = [], []
             seen = set()
+            seen_serials = set()
             for i, r in enumerate(rows, start=2):
                 tag = str(r.get("asset_tag", "")).strip()
+                serial = str(r.get("serial_number") or "").strip()
                 if not tag:
                     errors.append({"row": i, "errors": "asset_tag required"})
                 elif tag in seen or Asset.all_objects.filter(
                         asset_tag=tag).exists():
                     errors.append({"row": i, "errors": f"duplicate tag {tag}"})
+                elif (serial and (serial in seen_serials
+                                  or Asset.all_objects.filter(
+                                      serial_number=serial).exists())):
+                    errors.append(
+                        {"row": i,
+                         "errors": f"duplicate serial number {serial}"})
                 else:
                     seen.add(tag)
+                    if serial:
+                        seen_serials.add(serial)
                     ok.append({"row": i, "asset_tag": tag})
             return Response({"preview": ok, "errors": errors})
         if not request.data.get("confirm"):
@@ -547,18 +754,55 @@ class AssetViewSet(viewsets.ModelViewSet):
                         failed.append({"row": i, "asset_tag": tag,
                                        "errors": "unknown category"})
                         continue
+                    serial = str(r.get("serial_number") or "").strip()
+                    if serial and Asset.all_objects.filter(
+                            serial_number=serial).exists():
+                        failed.append(
+                            {"row": i, "asset_tag": tag,
+                             "errors": f"duplicate serial number {serial}"})
+                        continue
+                    from accounts.models import Department as Dept
+                    dept = None
+                    raw_dept = r.get("department")
+                    if raw_dept not in (None, ""):
+                        dept = (Dept.objects.filter(code=raw_dept).first()
+                                or Dept.objects.filter(name=raw_dept).first())
+                        if raw_dept not in ("", None) and dept is None:
+                            try:
+                                dept = Dept.objects.filter(pk=int(raw_dept)).first()
+                            except (TypeError, ValueError):
+                                dept = None
+                    cost = r.get("purchase_cost")
+                    try:
+                        cost = cost if cost in (None, "") else float(cost)
+                    except (TypeError, ValueError):
+                        cost = None
                     obj = Asset(asset_tag=tag, name=r.get("name", tag),
                                 category=cat,
-                                serial_number=r.get("serial_number", ""),
-                                status=r.get("status", "available"),
-                                location=r.get("location", ""))
+                                serial_number=serial,
+                                status=r.get("status", "available") or "available",
+                                department=dept,
+                                location=str(r.get("location") or "").strip(),
+                                description=str(r.get("description") or "").strip(),
+                                purchase_date=r.get("purchase_date") or None,
+                                warranty_expiry=r.get("warranty_expiry") or None,
+                                purchase_cost=cost)
                     obj.save()
                     _history(obj, request.user, "created",
                              new={"asset_tag": tag, "bulk": True})
                     log_action(actor=request.user, action="bulk_create",
                                instance=obj)
                     ok.append(tag)
+            except IntegrityError:
+                # DB backstop (unique tag / serial trigger) hit despite
+                # the pre-checks - i.e. a concurrent write. Row-level,
+                # clean message; no internal error text leaks.
+                failed.append(
+                    {"row": i, "asset_tag": tag,
+                     "errors": "rejected by a uniqueness constraint "
+                               "(duplicate tag or serial number)"})
             except Exception as exc:
+                logger.exception("bulk_create row %s failed", i)
                 failed.append({"row": i, "asset_tag": tag,
                                "errors": str(exc)})
         if request.query_params.get("download") == "csv":
@@ -585,7 +829,8 @@ class AssetViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Confirmation required."}, status=400)
         ok, failed, skipped = [], [], []
         allowed = {"name", "description", "category", "serial_number",
-                   "status", "location", "purchase_date", "warranty_expiry"}
+                   "status", "department", "location", "purchase_date",
+                   "warranty_expiry", "purchase_cost"}
         for r in rows:
             try:
                 with transaction.atomic():
@@ -604,6 +849,34 @@ class AssetViewSet(viewsets.ModelViewSet):
                             name=changes.pop("category")).first()
                         if cat:
                             obj.category = cat
+                    if "department" in changes:
+                        raw = changes.pop("department")
+                        if raw in ("", None):
+                            obj.department = None
+                        else:
+                            from accounts.models import Department as Dept
+                            dept = (Dept.objects.filter(code=raw).first()
+                                    or Dept.objects.filter(name=raw).first())
+                            if dept is None:
+                                try:
+                                    dept = Dept.objects.filter(
+                                        pk=int(raw)).first()
+                                except (TypeError, ValueError):
+                                    dept = None
+                            if dept is not None:
+                                obj.department = dept
+                    if "serial_number" in changes:
+                        new_serial = str(
+                            changes["serial_number"] or "").strip()
+                        if (new_serial and Asset.all_objects
+                                .exclude(pk=obj.pk)
+                                .filter(serial_number=new_serial).exists()):
+                            failed.append({
+                                "asset_tag": r.get("asset_tag"),
+                                "errors": f"duplicate serial number "
+                                          f"{new_serial}"})
+                            continue
+                        changes["serial_number"] = new_serial
                     for k, v in changes.items():
                         setattr(obj, k, v)
                     obj.save()
@@ -612,7 +885,13 @@ class AssetViewSet(viewsets.ModelViewSet):
                     log_action(actor=request.user, action="bulk_update",
                                instance=obj, details={"changes": changes})
                     ok.append(obj.asset_tag)
+            except IntegrityError:
+                failed.append({"asset_tag": r.get("asset_tag"),
+                               "errors": "rejected by a uniqueness "
+                                         "constraint (duplicate serial "
+                                         "number)"})
             except Exception as exc:
+                logger.exception("bulk_update row failed")
                 failed.append({"asset_tag": r.get("asset_tag"),
                                "errors": str(exc)})
         return Response({"successful": ok, "skipped": skipped,
@@ -657,7 +936,23 @@ def _asset_visible_qs(user):
     Attachment reads reuse this so files are exactly as visible as their
     asset — never more.
     """
-    return Asset.objects.select_related("category", "assigned_to").all()
+    return Asset.objects.select_related(
+        "category", "assigned_to", "department").all()
+
+
+#: Sortable list fields (strict allowlist — anything else falls back to
+#: tag order). Every branch ends in a unique key so pages are stable.
+_ASSET_ORDER_FIELDS = {"asset_tag", "name", "status"}
+
+
+def _apply_asset_ordering(qs, raw):
+    field = (raw or "").lstrip("-")
+    if field not in _ASSET_ORDER_FIELDS:
+        return qs.order_by("asset_tag", "id")
+    desc = raw.startswith("-")
+    head = f"-{field}" if desc else field
+    tie = "-id" if desc else "id"
+    return qs.order_by(head, tie)
 
 
 class AssignmentViewSet(viewsets.ReadOnlyModelViewSet):

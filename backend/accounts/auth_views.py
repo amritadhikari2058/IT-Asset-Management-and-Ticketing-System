@@ -54,6 +54,33 @@ def verification_request(request):
                     status=status.HTTP_200_OK)
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def change_password(request):
+    """Logged-in password change. Requires the current password and
+    validates the new one with Django's configured validators. Never
+    logs or audits password values — the audit row carries no details."""
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError as DjangoValidationError
+
+    from common.audit import log_action
+
+    user = request.user
+    current = request.data.get("current_password", "")
+    new = request.data.get("new_password", "")
+    if not current or not user.check_password(current):
+        return Response({"detail": "Current password is incorrect."},
+                        status=400)
+    try:
+        validate_password(new, user)
+    except DjangoValidationError as exc:
+        return Response({"new_password": list(exc.messages)}, status=400)
+    user.set_password(new)
+    user.save(update_fields=["password"])
+    log_action(actor=user, action="update", instance=user)
+    return Response({"detail": "Password updated."})
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def verification_confirm(request):

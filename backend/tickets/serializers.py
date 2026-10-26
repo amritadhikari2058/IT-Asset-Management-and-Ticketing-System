@@ -44,6 +44,18 @@ class TicketSerializer(serializers.ModelSerializer):
             )
         return attrs
 
+    def validate_assignee(self, user):
+        # Eligible assignees are existing, non-deleted, active users.
+        # Applies to creation and single updates (field-level, so it runs
+        # before anything is saved). None (unassign/omitted) stays valid.
+        # Unknown or soft-deleted PKs never reach here: the FK field
+        # itself rejects them against the soft-delete-filtered manager.
+        if user is not None and not user.is_active:
+            raise serializers.ValidationError(
+                "Selected user is inactive and cannot be assigned tickets."
+            )
+        return user
+
 
 class TicketNoteSerializer(serializers.ModelSerializer):
     author_email = serializers.CharField(source="author.email", read_only=True)
