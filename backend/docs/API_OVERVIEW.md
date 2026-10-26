@@ -1,4 +1,4 @@
-# API overview
+# API overview    
 
 Base: `/api/`. Auth: `POST /api/token/` + `POST /api/token/refresh/` (JWT).
 Trailing slashes required (DRF default).
