@@ -15,6 +15,7 @@ action-level guards. Frontend hiding is UX only; backend enforces.
 | Supply assignee at creation | yes | yes | yes | no (403; omitted/null ok) |
 | Assignee eligibility (anyone setting one) | must exist, non-deleted, active | must exist, non-deleted, active | must exist, non-deleted, active | must exist, non-deleted, active |
 | Edit own/visible ticket title, description, department, asset, notes | yes | yes | yes | yes (staff-only fields → 403) |
+| Edit employee details per-row (`PATCH users/<id>/`) | yes | yes | yes | no (403) |
 | Soft-delete tickets, single (`DELETE /api/tickets/<id>/`) and bulk (`bulk_delete/`) | yes | yes | yes | no (403) |
 | Add internal notes | yes | yes | yes | no (requester-visible only) |
 | View ticket history (`tickets.view_ticket_history`) | yes | yes | if granted | no |

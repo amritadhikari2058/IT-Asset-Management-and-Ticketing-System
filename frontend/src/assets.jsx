@@ -243,73 +243,89 @@ export function AssetForm({ id }) {
         </div>
       )}
       <form onSubmit={submit} noValidate>
-        <div className="form-grid">
-          <Field label="Asset tag" required error={fieldMsg(fieldErrors, 'asset_tag')}>
-            <input className="input" value={form.asset_tag} onChange={(e) => set('asset_tag')(e.target.value)} placeholder="e.g. LT-0001" disabled={submitting} maxLength={50} />
-          </Field>
-          <Field label="Name" required error={fieldMsg(fieldErrors, 'name')}>
-            <input className="input" value={form.name} onChange={(e) => set('name')(e.target.value)} placeholder="e.g. ThinkPad T14" disabled={submitting} maxLength={200} />
+        <div className="form-section">
+          <h4>Identification</h4>
+          <div className="form-grid">
+            <Field label="Asset tag" required error={fieldMsg(fieldErrors, 'asset_tag')}>
+              <input className="input" value={form.asset_tag} onChange={(e) => set('asset_tag')(e.target.value)} placeholder="e.g. LT-0001" disabled={submitting} maxLength={50} />
+            </Field>
+            <Field label="Name" required error={fieldMsg(fieldErrors, 'name')}>
+              <input className="input" value={form.name} onChange={(e) => set('name')(e.target.value)} placeholder="e.g. ThinkPad T14" disabled={submitting} maxLength={200} />
+            </Field>
+          </div>
+          <div className="form-grid">
+            <Field label="Category" required error={fieldMsg(fieldErrors, 'category')}>
+              <CategorySelect kind="asset" value={form.category} onChange={set('category')} disabled={submitting} />
+            </Field>
+            <Field
+              label="Status" required error={fieldMsg(fieldErrors, 'status')}
+              hint="Use Assign, Return, Retire, or Mark lost for other statuses."
+            >
+              <select className="input" value={form.status} onChange={(e) => set('status')(e.target.value)} disabled={submitting}>
+                {STATUSES.map((s) => (
+                  <option
+                    key={s} value={s}
+                    disabled={isEdit && !EDITABLE_STATUSES.includes(s) && s !== initialStatus}
+                  >
+                    {s.replace(/_/g, ' ')}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          <div className="form-grid">
+            <Field label="Serial number" error={fieldMsg(fieldErrors, 'serial_number')}>
+              <input className="input" value={form.serial_number} onChange={(e) => set('serial_number')(e.target.value)} disabled={submitting} maxLength={100} />
+            </Field>
+          </div>
+        </div>
+        <div className="form-section">
+          <h4>Ownership</h4>
+          <div className="form-grid">
+            <Field label="Location" error={fieldMsg(fieldErrors, 'location')}>
+              <input className="input" value={form.location} onChange={(e) => set('location')(e.target.value)} placeholder="e.g. HQ Lab" disabled={submitting} maxLength={200} />
+            </Field>
+            <Field label="Department (optional)" error={fieldMsg(fieldErrors, 'department')}>
+              <DepartmentSelect value={form.department} onChange={set('department')} disabled={submitting} />
+            </Field>
+          </div>
+        </div>
+        <div className="form-section">
+          <h4>Description</h4>
+          <Field label="Description" error={fieldMsg(fieldErrors, 'description')}>
+            <textarea className="input" rows={3} value={form.description} onChange={(e) => set('description')(e.target.value)} disabled={submitting} />
           </Field>
         </div>
-        <div className="form-grid">
-          <Field label="Category" required error={fieldMsg(fieldErrors, 'category')}>
-            <CategorySelect kind="asset" value={form.category} onChange={set('category')} disabled={submitting} />
-          </Field>
-          <Field
-            label="Status" required error={fieldMsg(fieldErrors, 'status')}
-            hint="Use Assign, Return, Retire, or Mark lost for other statuses."
-          >
-            <select className="input" value={form.status} onChange={(e) => set('status')(e.target.value)} disabled={submitting}>
-              {STATUSES.map((s) => (
-                <option
-                  key={s} value={s}
-                  disabled={isEdit && !EDITABLE_STATUSES.includes(s) && s !== initialStatus}
-                >
-                  {s.replace(/_/g, ' ')}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
-        <div className="form-grid">
-          <Field label="Serial number" error={fieldMsg(fieldErrors, 'serial_number')}>
-            <input className="input" value={form.serial_number} onChange={(e) => set('serial_number')(e.target.value)} disabled={submitting} maxLength={100} />
-          </Field>
-          <Field label="Location" error={fieldMsg(fieldErrors, 'location')}>
-            <input className="input" value={form.location} onChange={(e) => set('location')(e.target.value)} placeholder="e.g. HQ Lab" disabled={submitting} maxLength={200} />
-          </Field>
-          <Field label="Department (optional)" error={fieldMsg(fieldErrors, 'department')}>
-            <DepartmentSelect value={form.department} onChange={set('department')} disabled={submitting} />
-          </Field>
-        </div>
-        <Field label="Description" error={fieldMsg(fieldErrors, 'description')}>
-          <textarea className="input" rows={3} value={form.description} onChange={(e) => set('description')(e.target.value)} disabled={submitting} />
-        </Field>
-        <div className="form-grid">
-          <Field label="Purchase date" error={fieldMsg(fieldErrors, 'purchase_date')}>
-            <input className="input" type="date" value={form.purchase_date} onChange={(e) => set('purchase_date')(e.target.value)} disabled={submitting} />
-          </Field>
-          <Field label="Warranty expiry" error={fieldMsg(fieldErrors, 'warranty_expiry')}>
-            <input className="input" type="date" value={form.warranty_expiry} onChange={(e) => set('warranty_expiry')(e.target.value)} disabled={submitting} />
-          </Field>
-          <Field label="Purchase cost" error={fieldMsg(fieldErrors, 'purchase_cost')}>
-            <input className="input" type="number" step="0.01" min="0" value={form.purchase_cost} onChange={(e) => set('purchase_cost')(e.target.value)} placeholder="0.00" disabled={submitting} />
-          </Field>
+        <div className="form-section">
+          <h4>Financials</h4>
+          <div className="form-grid">
+            <Field label="Purchase date" error={fieldMsg(fieldErrors, 'purchase_date')}>
+              <input className="input" type="date" value={form.purchase_date} onChange={(e) => set('purchase_date')(e.target.value)} disabled={submitting} />
+            </Field>
+            <Field label="Warranty expiry" error={fieldMsg(fieldErrors, 'warranty_expiry')}>
+              <input className="input" type="date" value={form.warranty_expiry} onChange={(e) => set('warranty_expiry')(e.target.value)} disabled={submitting} />
+            </Field>
+            <Field label="Purchase cost" error={fieldMsg(fieldErrors, 'purchase_cost')}>
+              <input className="input" type="number" step="0.01" min="0" value={form.purchase_cost} onChange={(e) => set('purchase_cost')(e.target.value)} placeholder="0.00" disabled={submitting} />
+            </Field>
+          </div>
         </div>
         {!isEdit && (
-          <Field
-            label="Attachment (optional)"
-            error={fieldMsg(fieldErrors, 'file')}
-            hint="Uploaded right after the asset is created. PDF, PNG, JPG, TXT, CSV, LOG, DOCX or XLSX, up to 10 MB."
-          >
-            <input
-              type="file" className="input"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              disabled={submitting || retrying || !!partial}
-            />
-          </Field>
+          <div className="form-section">
+            <h4>Attachment</h4>
+            <Field
+              label="Attachment (optional)"
+              error={fieldMsg(fieldErrors, 'file')}
+              hint="Uploaded right after the asset is created. PDF, PNG, JPG, TXT, CSV, LOG, DOCX or XLSX, up to 10 MB."
+            >
+              <input
+                type="file" className="input"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                disabled={submitting || retrying || !!partial}
+              />
+            </Field>
+          </div>
         )}
-        {!isEdit && <p className="muted">Assignment happens after creation via the dedicated assign action on the asset page.</p>}
         <div className="row-end">
           <a className="btn-ghost" href={isEdit ? `#/assets/${id}` : '#/assets'}>Cancel</a>
           <button type="submit" className="btn-primary" disabled={submitting || !!partial}>
@@ -709,11 +725,10 @@ export function AssetDetail({ id }) {
         {previewError && <div className="field-error" role="alert">{previewError}</div>}
         {previewUrl && (
           <Modal title={previewName || 'Photo preview'} onClose={closeAttachmentPreview}>
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <div className="preview-media">
               <img
                 src={previewUrl}
                 alt={previewName || 'Attachment preview'}
-                style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain' }}
               />
             </div>
           </Modal>

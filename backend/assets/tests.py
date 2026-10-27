@@ -376,7 +376,7 @@ class BulkAssignTests(TestCase):
 class AssetNotificationTests(TestCase):
     """In-app notifications for asset assignment + return only.
 
-    No emails, no preference checks — pure Notification rows sharing the
+    No emails, no preference checks â€” pure Notification rows sharing the
     mutation's transaction.
     """
 
@@ -1202,3 +1202,52 @@ class AssetCreateWithFileTests(TestCase):
         res = self._post()
         self.assertEqual(res.status_code, 403)
         self.assertEqual(Asset.all_objects.count(), 0)
+
+
+class AssetCategoryEditTests(TestCase):
+    """Asset-category EDIT flow: staff-only PATCH and preserved asset
+    relationships after renaming."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+        self.acat = AssetCategory.objects.create(
+            name="Laptop", description="Portable machines.")
+        self.asset = Asset.objects.create(asset_tag="LT-1", name="n",
+                                          category=self.acat)
+
+    def test_staff_edits_name_and_description(self):
+        res = self.c.patch(
+            f"/api/assets/categories/{self.acat.pk}/",
+            {"name": "Laptops & Tablets",
+             "description": "Portable machines, incl. tablets."},
+            format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.acat.refresh_from_db()
+        self.assertEqual(self.acat.name, "Laptops & Tablets")
+        self.assertEqual(self.acat.description,
+                         "Portable machines, incl. tablets.")
+
+    def test_edit_preserves_asset_relationship(self):
+        res = self.c.patch(f"/api/assets/categories/{self.acat.pk}/",
+                           {"name": "Renamed"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.asset.refresh_from_db()
+        self.assertEqual(self.asset.category_id, self.acat.pk)
+        self.assertEqual(self.asset.category.name, "Renamed")
+
+    def test_duplicate_name_rejected_with_field_error(self):
+        AssetCategory.objects.create(name="Desk")
+        res = self.c.patch(f"/api/assets/categories/{self.acat.pk}/",
+                           {"name": "Desk"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("name", res.data)
+
+    def test_employee_cannot_edit_categories(self):
+        auth(self.c, self.emp)
+        res = self.c.patch(f"/api/assets/categories/{self.acat.pk}/",
+                           {"name": "X"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.acat.refresh_from_db()
+        self.assertEqual(self.acat.name, "Laptop")

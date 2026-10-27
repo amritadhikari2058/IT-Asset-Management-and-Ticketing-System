@@ -24,8 +24,8 @@ vi.mock('./auth', () => ({
 
 import { Categories } from './pages';
 
-const TCATS = [{ id: 1, name: 'Hardware', is_active: true }];
-const ACATS = [{ id: 2, name: 'Laptop', is_active: false }];
+const TCATS = [{ id: 1, name: 'Hardware', description: 'Old text', is_active: true }];
+const ACATS = [{ id: 2, name: 'Laptop', description: '', is_active: false }];
 
 function staff() {
   mockAuth.mockReturnValue({ isStaff: true, user: { role: 'it_manager' } });
@@ -52,21 +52,59 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('Categories page', () => {
-  it('renames a ticket category', async () => {
+  it('edits a ticket category (prefilled name + description)', async () => {
     staff();
     render(<Categories />);
     await screen.findByText('Hardware');
-    const renameBtns = screen.getAllByRole('button', { name: 'Rename…' });
-    fireEvent.click(renameBtns[0]);
-    const input = screen.getByLabelText(/^Name/);
-    fireEvent.change(input, { target: { value: 'Hardware & Network' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    const editBtns = screen.getAllByRole('button', { name: 'Edit…' });
+    fireEvent.click(editBtns[0]);
+    // Form is prefilled with the record's current values.
+    const nameInput = screen.getByLabelText(/^Name/);
+    const descInput = screen.getByLabelText(/^Description/);
+    expect(nameInput.value).toBe('Hardware');
+    expect(descInput.value).toBe('Old text');
+    fireEvent.change(nameInput, { target: { value: 'Hardware & Network' } });
+    fireEvent.change(descInput, { target: { value: 'Fix description.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => {
       expect(mockPatch).toHaveBeenCalledWith('/tickets/categories/1/', {
         name: 'Hardware & Network',
+        description: 'Fix description.',
       });
     });
-    expect(await screen.findByText('Category renamed.')).toBeTruthy();
+    expect(await screen.findByText('Category "Hardware" updated.')).toBeTruthy();
+  });
+
+  it('rejects blank names: disabled save + Enter still hits validation', async () => {
+    staff();
+    render(<Categories />);
+    await screen.findByText('Hardware');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit…' })[0]);
+    const nameInput = screen.getByLabelText(/^Name/);
+    fireEvent.change(nameInput, { target: { value: '' } });
+    // Primary guard: a blank name disables the primary button.
+    expect(screen.getByRole('button', { name: 'Save changes' }).disabled).toBe(true);
+    // Secondary guard: a programmatic submit (Enter) shows the field error.
+    fireEvent.submit(nameInput.closest('form'));
+    expect(screen.getByText('Name is required.')).toBeTruthy();
+    expect(mockPatch).not.toHaveBeenCalled();
+  });
+
+  it('surfaces duplicate-name errors from the API without closing', async () => {
+    staff();
+    mockPatch.mockRejectedValueOnce({
+      response: {
+        status: 400, data: { name: ['The category name must be unique.'] },
+      },
+    });
+    render(<Categories />);
+    await screen.findByText('Hardware');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit…' })[0]);
+    const input = screen.getByLabelText(/^Name/);
+    fireEvent.change(input, { target: { value: 'Duplicate' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText('The category name must be unique.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeTruthy();
   });
 
   it('deactivates an active category', async () => {
@@ -99,7 +137,7 @@ describe('Categories page', () => {
     employee();
     render(<Categories />);
     await screen.findByText('Hardware');
-    expect(screen.queryByRole('button', { name: 'Rename…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit…' })).toBeNull();
     expect(screen.queryByRole('button', { name: /eactivate/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Delete…' })).toBeNull();
   });

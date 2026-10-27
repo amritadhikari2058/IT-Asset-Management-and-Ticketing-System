@@ -300,7 +300,11 @@ class UserViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         # NOTE: hard_delete + change_role carry their own
         # IsSystemAdmin action-level guard; never include them here.
-        if self.action in ("create", "destroy",
+        # Per-row edits (update/partial_update) are IT-staff-only too:
+        # the UI hides the Edit action, and the backend must also reject
+        # direct API calls (employees get 403; self-service stays on
+        # /api/accounts/me/).
+        if self.action in ("create", "update", "partial_update", "destroy",
                            "bulk_import", "bulk_update", "bulk_activate",
                            "bulk_delete"):
             return [IsITStaff()]

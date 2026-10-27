@@ -345,6 +345,86 @@ class UserOrderingTests(TestCase):
         self.assertEqual(self._ids(res), ["A1", "E1", "M1"])
 
 
+class UserEditPermissionTests(TestCase):
+    """Per-row employee edits: IT staff only, identity fields frozen.
+
+    Employees must never modify users â€” not others, not themselves via the
+    users endpoint (self-service is /api/accounts/me/). Role and
+    ticket-creation changes stay on the Admin-only change_role action.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+
+    def test_employee_cannot_edit_users(self):
+        auth(self.c, self.emp)
+        res = self.c.patch(f"/api/accounts/users/{self.mgr.pk}/",
+                           {"phone": "000"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.mgr.refresh_from_db()
+        self.assertEqual(self.mgr.phone, "")
+        res = self.c.patch(f"/api/accounts/users/{self.emp.pk}/",
+                           {"email": "self-move@x"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.email, "e@x")
+
+    def test_anonymous_edit_rejected(self):
+        res = self.c.patch(f"/api/accounts/users/{self.emp.pk}/",
+                           {"phone": "000"}, format="json")
+        self.assertEqual(res.status_code, 401)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.phone, "")
+
+    def test_it_support_edits_employee_fields(self):
+        dep2 = Department.objects.create(name="Ops", code="OPSX")
+        auth(self.c, self.mgr)
+        res = self.c.patch(
+            f"/api/accounts/users/{self.emp.pk}/",
+            {"phone": "111", "job_title": "Coordinator", "first_name": "Ed",
+             "last_name": "Itor", "home_department": dep2.pk,
+             "is_active": True},
+            format="json")
+        self.assertEqual(res.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.phone, "111")
+        self.assertEqual(self.emp.job_title, "Coordinator")
+        self.assertEqual(self.emp.first_name, "Ed")
+        self.assertEqual(self.emp.last_name, "Itor")
+        self.assertEqual(self.emp.home_department, dep2)
+        self.assertTrue(AuditLog.objects.filter(
+            object_id=str(self.emp.pk), action="update").exists())
+
+    def test_protected_fields_rejected_on_edit(self):
+        """Role escalation, identity changes, and right-grants are refused.
+
+        role/can_create_tickets are serializer read-only (updates
+        re-submitting the whole form payload are harmless because the
+        ignore silently instead of 403ing on unchanged values), and
+        employee_id/username are frozen identity keys.
+        """
+        auth(self.c, self.mgr)
+        res = self.c.patch(
+            f"/api/accounts/users/{self.emp.pk}/",
+            {"role": "system_admin", "can_create_tickets": False,
+             "employee_id": "HACK", "username": "hack"},
+            format="json")
+        self.assertEqual(res.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.role, "employee")
+        self.assertTrue(self.emp.can_create_tickets)
+        self.assertEqual(self.emp.employee_id, "E1")
+        self.assertEqual(self.emp.username, "e@x")
+
+    def test_duplicate_email_edit_shows_field_error(self):
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/accounts/users/{self.emp.pk}/",
+                           {"email": "m@x"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("email", res.data)
+
+
 class ChangePasswordTests(TestCase):
     def setUp(self):
         self.dep, self.admin, self.mgr, self.emp = make_users()
@@ -391,3 +471,49 @@ class ChangePasswordTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertIn("email_verified", res.data)
         self.assertFalse(res.data["email_verified"])
+
+
+class DepartmentEditTests(TestCase):
+    """Department EDIT flow (prefilled modal -> PATCH): IT staff only,
+    clear field errors on duplicates, references untouched."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+
+    def test_staff_edits_department(self):
+        res = self.c.patch(
+            f"/api/accounts/departments/{self.dep.pk}/",
+            {"name": "Engineering & Ops", "code": "ENGX",
+             "description": "Updated description"},
+            format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.dep.refresh_from_db()
+        self.assertEqual(self.dep.name, "Engineering & Ops")
+        self.assertEqual(self.dep.description, "Updated description")
+
+    def test_duplicate_code_rejected(self):
+        Department.objects.create(name="Ops", code="OPSX")
+        res = self.c.patch(f"/api/accounts/departments/{self.dep.pk}/",
+                           {"code": "OPSX"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("code", res.data)
+        self.dep.refresh_from_db()
+        self.assertEqual(self.dep.code, "ENGX")
+
+    def test_employee_cannot_edit_departments(self):
+        auth(self.c, self.emp)
+        res = self.c.patch(f"/api/accounts/departments/{self.dep.pk}/",
+                           {"name": "X"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.dep.refresh_from_db()
+        self.assertEqual(self.dep.name, "Eng")
+
+    def test_edit_preserves_members(self):
+        res = self.c.patch(f"/api/accounts/departments/{self.dep.pk}/",
+                           {"name": "Renamed Dept"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.home_department_id, self.dep.pk)
+        self.assertEqual(self.emp.home_department.name, "Renamed Dept")

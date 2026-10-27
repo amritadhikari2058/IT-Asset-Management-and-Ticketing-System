@@ -272,11 +272,10 @@ CSRF_TRUSTED_ORIGINS = [
 
 # Theme palette (single source of truth, mirrored in frontend/src/theme.js)
 THEME = {
-    'PRIMARY_DARK_RED': '#7F1D1D',
-    'SECONDARY_INDIGO': '#4F46E5',
-    'DARK_INDIGO_HOVER': '#3730A3',
+    'PRIMARY': '#1D4ED8',
+    'PRIMARY_HOVER': '#1B42B8',
     'MAIN_BACKGROUND': '#FFFFFF',
     'SUPPORTING_BACKGROUND': '#F8FAFC',
-    'MAIN_TEXT': '#1F2937',
-    'BORDERS': '#E5E7EB',
+    'MAIN_TEXT': '#1E293B',
+    'BORDERS': '#E2E8F0',
 }

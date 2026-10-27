@@ -100,6 +100,46 @@ describe('Departments page', () => {
     ).toBeTruthy();
   });
 
+  it('edits a department with the prefilled modal and refreshes', async () => {
+    staff();
+    render(<Departments />);
+    await screen.findByText('Eng');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit…' }));
+    expect(screen.getByLabelText(/^Name/).value).toBe('Eng');
+    expect(screen.getByLabelText(/Code/).value).toBe('ENG');
+    fireEvent.change(screen.getByLabelText(/^Name/), {
+      target: { value: 'Engineering & Ops' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => {
+      expect(mockPatch).toHaveBeenCalledWith('/accounts/departments/1/', {
+        name: 'Engineering & Ops', code: 'ENG',
+        description: '', is_active: true,
+      });
+    });
+    expect(await screen.findByText('Department updated.')).toBeTruthy();
+  });
+
+  it('surfaces edit validation errors without closing', async () => {
+    staff();
+    mockPatch.mockRejectedValueOnce({
+      response: {
+        status: 400, data: { code: ['Department with this code already exists.'] },
+      },
+    });
+    render(<Departments />);
+    await screen.findByText('Eng');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit…' }));
+    fireEvent.change(screen.getByLabelText(/^Name/), {
+      target: { value: 'Eng' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(
+      await screen.findByText('Department with this code already exists.'),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeTruthy();
+  });
+
   it('explains referenced-record conflicts on delete', async () => {
     staff();
     mockDelete.mockRejectedValueOnce({
@@ -121,6 +161,6 @@ describe('Departments page', () => {
     render(<Departments />);
     await screen.findByText('Eng');
     expect(screen.queryByRole('button', { name: '+ New department' })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Rename/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Edit/ })).toBeNull();
   });
 });

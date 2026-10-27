@@ -86,27 +86,106 @@ export function useSort() {
   return [sort, changeSort, orderingParam];
 }
 
-export function useTableColumns(allKeys, defaultKeys) {
-  const [visible, setVisible] = useState(() => new Set(defaultKeys || allKeys));
-  const [tableVisible, setTableVisible] = useState(true);
-  const toggleColumn = (key) => {
-    setVisible((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        if (next.size > 1) next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  };
-  const resetColumns = () => setVisible(new Set(defaultKeys || allKeys));
-  const toggleTable = () => setTableVisible((v) => !v);
+/* Per-table UI preferences (non-sensitive): visible column keys and the
+ * table show/hide toggle. Stored in localStorage under
+ * `${TABLE_PREFS_PREFIX}<tableKey>` — one entry per table so resetting
+ * one table never touches another. Payload shape (v1):
+ *   { v: 1, columns: [...visible keys], known: [...all keys at save time],
+ *     table: true|false }
+ * `known` lets later app updates add columns with their current default
+ * visibility (a column the saved file never saw is neither "hidden by the
+ * user" nor forced into an old layout). Stored titles are pure UI
+ * metadata — no credentials, personal data, or record content.
+ */
+const TABLE_PREFS_PREFIX = 'itdesk.tableprefs.';
+
+function defaultColumnSet(allKeys, defaultKeys) {
+  return new Set(defaultKeys || allKeys);
+}
+
+function loadTablePrefs(tableKey, allKeys, defaultKeys) {
+  const defaults = defaultColumnSet(allKeys, defaultKeys);
+  const fallback = { visible: defaults, tableVisible: true };
+  if (typeof window === 'undefined' || !window.localStorage) return fallback;
+  let raw;
+  try {
+    raw = window.localStorage.getItem(TABLE_PREFS_PREFIX + tableKey);
+  } catch {
+    return fallback; // storage unavailable (private mode, security policy)
+  }
+  if (!raw) return fallback;
+  let saved;
+  try {
+    saved = JSON.parse(raw);
+  } catch {
+    return fallback; // malformed JSON → defaults, page still renders
+  }
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)
+      || saved.v !== 1
+      || !Array.isArray(saved.columns)
+      || !Array.isArray(saved.known)) {
+    return fallback; // missing/invalid/outdated schema → defaults
+  }
+  const known = new Set(saved.known.filter((k) => typeof k === 'string'));
+  const storedVisible = saved.columns.filter((k) => typeof k === 'string');
+  // Saved selection is authoritative for keys that existed at save time;
+  // unknown stale keys are dropped. New columns (never seen by this
+  // preference file) follow their current default visibility.
+  const visible = new Set(storedVisible.filter((k) => allKeys.includes(k)));
+  for (const k of allKeys) {
+    if (!known.has(k) && defaults.has(k)) visible.add(k);
+  }
+  if (!visible.size) return fallback; // all-false payloads recover safely
   return {
-    visibleColumns: visible,
+    visible,
+    tableVisible: typeof saved.table === 'boolean' ? saved.table : true,
+  };
+}
+
+function saveTablePrefs(tableKey, visible, known, tableVisible) {
+  try {
+    window.localStorage.setItem(
+      TABLE_PREFS_PREFIX + tableKey,
+      JSON.stringify({ v: 1, columns: [...visible], known: [...known], table: tableVisible }),
+    );
+  } catch {
+    // Quota/blocked storage: preferences simply stay in-memory for the
+    // session — never worth crashing a page over a layout preference.
+  }
+}
+
+/** `known` records every column key the preference file has seen, so a
+ * later app update can tell "the user hid this column" apart from
+ * "this column did not exist when the preference was saved" and give
+ * never-seen columns their current default visibility. */
+export function useTableColumns(tableKey, allKeys, defaultKeys) {
+  // Synchronous load on first render: no frame ever shows an
+  // incorrect default column while saved preferences load.
+  const [state, setState] = useState(() => loadTablePrefs(tableKey, allKeys, defaultKeys));
+  const persist = (next) => {
+    setState(next);
+    saveTablePrefs(tableKey, next.visible, allKeys, next.tableVisible);
+  };
+  const toggleColumn = (key) => {
+    const next = new Set(state.visible);
+    if (next.has(key)) {
+      if (next.size > 1) next.delete(key);
+    } else {
+      next.add(key);
+    }
+    persist({ ...state, visible: next });
+  };
+  const resetColumns = () => {
+    persist({ ...state, visible: defaultColumnSet(allKeys, defaultKeys) });
+  };
+  const toggleTable = () => {
+    persist({ ...state, tableVisible: !state.tableVisible });
+  };
+  return {
+    visibleColumns: state.visible,
     toggleColumn,
     resetColumns,
-    tableVisible,
+    tableVisible: state.tableVisible,
     toggleTable,
   };
 }
@@ -114,32 +193,35 @@ export function useTableColumns(allKeys, defaultKeys) {
 export function TableControls({ tableVisible, onToggleTable, columns, visible, onToggleColumn, onReset }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="table-controls row-gap" style={{ marginBottom: 'var(--sp-2)' }}>
-      <button type="button" className="btn-small" onClick={onToggleTable}>
-        {tableVisible ? 'Hide table' : 'Show table'}
-      </button>
-      <button type="button" className="btn-small" onClick={() => setOpen((v) => !v)}>
-        Columns
-      </button>
-      <button type="button" className="btn-small" onClick={onReset}>
-        Reset columns
-      </button>
-      {open && (
-        <div className="column-chooser">
-          {columns.map((c) => (
-            <label key={c.key} className="check-row">
-              <input
-                type="checkbox"
-                checked={visible.has(c.key)}
-                disabled={visible.size <= 1 && visible.has(c.key)}
-                onChange={() => onToggleColumn(c.key)}
-                aria-label={`Show ${c.label} column`}
-              />
-              {c.label}
-            </label>
-          ))}
-        </div>
-      )}
+    <div className="panel-title">
+      <h4>Inventory</h4>
+      <div className="panel-actions">
+        {open && (
+          <div className="column-chooser">
+            {columns.map((c) => (
+              <label key={c.key} className="check-row">
+                <input
+                  type="checkbox"
+                  checked={visible.has(c.key)}
+                  disabled={visible.size <= 1 && visible.has(c.key)}
+                  onChange={() => onToggleColumn(c.key)}
+                  aria-label={`Show ${c.label} column`}
+                />
+                {c.label}
+              </label>
+            ))}
+          </div>
+        )}
+        <button type="button" className="btn-small" onClick={onToggleTable}>
+          {tableVisible ? 'Hide table' : 'Show table'}
+        </button>
+        <button type="button" className="btn-small" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          Columns
+        </button>
+        <button type="button" className="btn-small" onClick={onReset}>
+          Reset columns
+        </button>
+      </div>
     </div>
   );
 }
@@ -184,7 +266,7 @@ export function DataTable({ columns, rows, keyOf, selected, onToggle, emptyTitle
             return (
               <tr key={k} className={isSel ? 'selected' : ''}>
                 {selectable && (
-                  <td>
+                  <td className="select-cell">
                     <input
                       type="checkbox" checked={!!isSel} onChange={() => onToggle(k)}
                       aria-label={`Select row ${k}`}
@@ -203,14 +285,15 @@ export function DataTable({ columns, rows, keyOf, selected, onToggle, emptyTitle
   );
 }
 
-export function Pager({ count, hasNext, hasPrev, onPrev, onNext, busy }) {
-  if (count == null && !hasNext && !hasPrev) return null;
+export function Pager({ count, hasNext, hasPrev, onPrev, onNext, busy, pageLabel }) {
+  if (count == null && !hasNext && !hasPrev && !pageLabel) return null;
   return (
     <div className="pager">
-      <span>{count != null ? `${count} total` : ''}</span>
+      <span>{count != null ? <><span className="page-count">{count}</span> {count === 1 ? 'item' : 'items'}</> : ''}</span>
+      {pageLabel ? <span className="muted">{pageLabel}</span> : null}
       <span className="spacer" />
-      <button type="button" className="btn-small" onClick={onPrev} disabled={!hasPrev || busy}>← Prev</button>
-      <button type="button" className="btn-small" onClick={onNext} disabled={!hasNext || busy}>Next →</button>
+      <button type="button" className="btn-small" onClick={onPrev} disabled={!hasPrev || busy}>&larr; Prev</button>
+      <button type="button" className="btn-small" onClick={onNext} disabled={!hasNext || busy}>Next &rarr;</button>
     </div>
   );
 }
@@ -296,12 +379,17 @@ async function fetchAllPages(url) {
 }
 
 /**
- * Managed category dropdown with an authorized "+ Add" modal.
- * kind: 'ticket' | 'asset'. After creation the new entry is auto-selected.
+ * Managed category dropdown. kind: 'ticket' | 'asset'.
+ * Inline creation is an asset-page affordance only: ticket categories are
+ * managed on the dedicated Categories page, so every ticket-kind selector
+ * (filters, ticket create/edit forms) omits the "+ Add" trigger unless a
+ * call site explicitly opts back in with allowCreate={true}. After
+ * creation the new entry is auto-selected.
  */
-export function CategorySelect({ kind, value, onChange, error, disabled }) {
+export function CategorySelect({ kind, value, onChange, error, disabled, allowCreate = kind !== 'ticket' }) {
   const { isStaff } = useAuth();
   const base = kind === 'ticket' ? '/tickets/categories/' : '/assets/categories/';
+  const canCreate = allowCreate && isStaff;
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -364,7 +452,7 @@ export function CategorySelect({ kind, value, onChange, error, disabled }) {
             <option key={c.id} value={c.id}>{c.name}</option>
           ))}
         </select>
-        {isStaff && (
+        {canCreate && (
           <button type="button" className="btn-secondary" onClick={() => { setSaveError(''); setModalOpen(true); }} disabled={disabled}>
             + Add
           </button>

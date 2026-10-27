@@ -264,7 +264,7 @@ class TicketNotificationTests(TestCase):
     def test_actor_never_notified_of_own_action(self):
         # Staff requester changes their own ticket: allowed, but the
         # actor-requester is still not notified of their own action.
-        # (Employees can no longer change status at all — see
+        # (Employees can no longer change status at all â€” see
         # TicketUpdatePermissionsTests.)
         auth(self.c, self.mgr)
         res = self.c.post("/api/tickets/",
@@ -344,7 +344,7 @@ class TicketNotificationTests(TestCase):
 
 class TicketUpdatePermissionsTests(TestCase):
     """Employees may edit own-ticket content but never change staff-only
-    fields (assignee/status/priority/category/resolution_notes) — single
+    fields (assignee/status/priority/category/resolution_notes) â€” single
     or bulk."""
 
     def setUp(self):
@@ -1375,3 +1375,61 @@ class TicketResolutionTimestampTests(TestCase):
         self.assertIsNotNone(single.resolved_at)
         self.assertIsNotNone(bulk.resolved_at)
         self.assertEqual(single.resolved_at is None, bulk.resolved_at is None)
+
+
+class TicketCategoryEditTests(TestCase):
+    """Category EDIT flow: staff-only PATCH, duplicate handling, and
+    preserved ticket relationships after a rename."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+        self.tcat = TicketCategory.objects.create(
+            name="Hardware", description="Old")
+
+    def test_staff_edits_name_and_description(self):
+        res = self.c.patch(
+            f"/api/tickets/categories/{self.tcat.pk}/",
+            {"name": "Hardware & Peripherals",
+             "description": "Desktops, laptops, printers."},
+            format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.tcat.refresh_from_db()
+        self.assertEqual(self.tcat.name, "Hardware & Peripherals")
+        self.assertEqual(self.tcat.description,
+                         "Desktops, laptops, printers.")
+
+    def test_edit_preserves_ticket_relationship(self):
+        t = Ticket.objects.create(title="t", description="d",
+                                  category=self.tcat, requester=self.emp,
+                                  department=self.dep)
+        res = self.c.patch(f"/api/tickets/categories/{self.tcat.pk}/",
+                           {"name": "Renamed"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        t.refresh_from_db()
+        self.assertEqual(t.category_id, self.tcat.pk)
+        self.assertEqual(t.category.name, "Renamed")
+
+    def test_duplicate_name_rejected_with_field_error(self):
+        TicketCategory.objects.create(name="Software")
+        res = self.c.patch(f"/api/tickets/categories/{self.tcat.pk}/",
+                           {"name": "Software"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("name", res.data)
+        self.tcat.refresh_from_db()
+        self.assertEqual(self.tcat.name, "Hardware")
+
+    def test_employee_cannot_edit_categories(self):
+        auth(self.c, self.emp)
+        res = self.c.patch(f"/api/tickets/categories/{self.tcat.pk}/",
+                           {"name": "X"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.tcat.refresh_from_db()
+        self.assertEqual(self.tcat.name, "Hardware")
+
+    def test_blank_name_rejected(self):
+        res = self.c.patch(f"/api/tickets/categories/{self.tcat.pk}/",
+                           {"name": "   "}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("name", res.data)

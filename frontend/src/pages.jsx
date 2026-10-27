@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
@@ -85,6 +85,7 @@ export function Tickets() {
     { key: 'closed_at', label: 'Closed', render: (t) => t.closed_at ? new Date(t.closed_at).toLocaleString() : '-' },
   ];
   const { visibleColumns: visibleTicketColumns, toggleColumn: toggleTicketColumn, resetColumns: resetTicketColumns, tableVisible: ticketTableVisible, toggleTable: toggleTicketTable } = useTableColumns(
+    'tickets',
     TICKET_COLUMNS.map((c) => c.key),
     ['title', 'status', 'priority', 'category', 'assignee', 'department', 'created'],
   );
@@ -276,51 +277,157 @@ export function Tickets() {
   );
 }
 
+/** Date/time/currency cell helpers keep one formatting convention per type. */
+const fmtDate = (d) => new Date(`${d}T00:00:00`).toLocaleDateString();
+const fmtDateTime = (d) => new Date(d).toLocaleString();
+const fmtMoney = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(v);
+};
+
+/** Parse the ?page= value of a paginated list URL (server default = 1). */
+function pageFromUrl(url) {
+  try {
+    const u = new URL(url, 'http://localhost'); // tolerate relative URLs
+    return Number(u.searchParams.get('page')) || 1;
+  } catch { return 1; }
+}
+
+/** One canonical URL builder for the assets list query. Filters left blank
+ * are simply omitted from the query string. */
+function buildAssetListUrl(f, ordering) {
+  const p = new URLSearchParams();
+  for (const k of ['q', 'status', 'category', 'department']) {
+    if (f[k] !== '' && f[k] != null) p.set(k, f[k]);
+  }
+  if (ordering) p.set('ordering', ordering);
+  const qs = p.toString();
+  return `/assets/${qs ? `?${qs}` : ''}`;
+}
+
+/** Per-row quick actions. Every control is shown only when the asset's
+ * current status actually supports that workflow: assign needs a free
+ * (available) asset, return needs a holder, and retirement is offered in
+ * every state but retired/lost. Full workflows (history, mark lost,
+ * delete) stay on the asset detail page. */
+function AssetRowActions({ a, busy, onAssign, onReturn, onRetire }) {
+  return (
+    <>
+      <a className="btn-small" href={`#/assets/${a.id}/edit`} aria-label={`Edit ${a.asset_tag}`}>Edit</a>
+      {a.status === 'available' && (
+        <button
+          type="button" className="btn-small" disabled={busy}
+          onClick={() => onAssign({ id: a.id, asset_tag: a.asset_tag })}
+          aria-label={`Assign ${a.asset_tag}`}
+        >
+          Assign
+        </button>
+      )}
+      {a.assigned_to != null && (
+        <button
+          type="button" className="btn-small" disabled={busy}
+          onClick={() => onReturn({ id: a.id, asset_tag: a.asset_tag })}
+          aria-label={`Return ${a.asset_tag}`}
+        >
+          Return
+        </button>
+      )}
+      {a.status !== 'retired' && a.status !== 'lost' && (
+        <button
+          type="button" className="btn-small" disabled={busy}
+          onClick={() => onRetire({ id: a.id, asset_tag: a.asset_tag })}
+          aria-label={`Retire ${a.asset_tag}`}
+        >
+          Retire
+        </button>
+      )}
+    </>
+  );
+}
+
 export function Assets() {
   const { isStaff } = useAuth();
   const [items, setItems] = useState([]);
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
   const [previous, setPrevious] = useState(null);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [listError, setListError] = useState('');
   const [sel, setSel] = useState(new Set());
-  const [retireBusy, setRetireBusy] = useState(false);
   const [f, setF] = useState({ q: '', status: '', category: '', department: '' });
   const [showBulkCreate, setShowBulkCreate] = useState(false);
   const [sort, changeSort, orderingParam] = useSort();
+  const [lastUrl, setLastUrl] = useState('/assets/');
+  // Destructive/secondary confirmations and per-row action state.
+  const [retireConfirm, setRetireConfirm] = useState(false);
+  const [retireBusy, setRetireBusy] = useState(false);
+  const [actionError, setActionError] = useState('');
+  const [rowActionBusy, setRowActionBusy] = useState(false);
+  const [assignFor, setAssignFor] = useState(null); // {id, asset_tag}
+  const [assignUser, setAssignUser] = useState('');
+  const [assignNote, setAssignNote] = useState('');
+  const [assignBusy, setAssignBusy] = useState(false);
+  const [assignError, setAssignError] = useState('');
+  const [returnFor, setReturnFor] = useState(null); // {id, asset_tag}
+  const [retireFor, setRetireFor] = useState(null); // {id, asset_tag}
+  // Protected photo preview (blob download; never public URLs).
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState(null);
   const [photoPreviewName, setPhotoPreviewName] = useState('');
   const [photoPreviewBusyId, setPhotoPreviewBusyId] = useState(null);
   const [photoPreviewError, setPhotoPreviewError] = useState('');
 
+  // Column definitions are plain data rebuilt per render: the cell renderers
+  // close over the latest action state, so nothing can go stale.
   const ASSET_COLUMNS = [
     { key: 'asset_tag', label: 'Tag', sortable: 'asset_tag', render: (a) => <a className="row-title" href={`#/assets/${a.id}`}>{a.asset_tag}</a> },
-    { key: 'name', label: 'Name', sortable: 'name' },
+    { key: 'name', label: 'Name', sortable: 'name', render: (a) => (
+      <span className="ellipsis" title={a.name ?? ''}>{a.name || <span className="cell-muted">—</span>}</span>
+    ) },
     { key: 'status', label: 'Status', sortable: 'status', render: (a) => <Badge kind="status" value={a.status} /> },
-    { key: 'category', label: 'Category', render: (a) => a.category_name ?? '-' },
-    { key: 'department', label: 'Department', render: (a) => a.department_name ?? '-' },
-    { key: 'assigned_to', label: 'Assignee', render: (a) => a.assigned_to_email ?? '-' },
-    { key: 'location', label: 'Location', render: (a) => a.location || '-' },
-    { key: 'serial_number', label: 'Serial', render: (a) => a.serial_number || '-' },
-    { key: 'description', label: 'Description', render: (a) => a.description || '-' },
-    { key: 'purchase_date', label: 'Purchased', render: (a) => a.purchase_date || '-' },
-    { key: 'warranty_expiry', label: 'Warranty', render: (a) => a.warranty_expiry || '-' },
-    { key: 'purchase_cost', label: 'Cost', render: (a) => a.purchase_cost ?? '-' },
-    { key: 'created_at', label: 'Created', render: (a) => a.created_at ? new Date(a.created_at).toLocaleString() : '-' },
+    { key: 'category', label: 'Category', render: (a) => a.category_name ?? <span className="cell-muted">—</span> },
+    { key: 'department', label: 'Department', render: (a) => a.department_name ?? <span className="cell-muted">None</span> },
+    { key: 'assigned_to', label: 'Assignee', render: (a) => a.assigned_to_email ?? <span className="cell-muted">Unassigned</span> },
+    { key: 'location', label: 'Location', render: (a) => a.location
+      ? <span className="ellipsis" title={a.location}>{a.location}</span>
+      : <span className="cell-muted">—</span> },
+    { key: 'serial_number', label: 'Serial', render: (a) => a.serial_number || <span className="cell-muted">—</span> },
+    { key: 'description', label: 'Description', render: (a) => a.description
+      ? <span className="ellipsis" title={a.description}>{a.description}</span>
+      : <span className="cell-muted">—</span> },
+    { key: 'purchase_date', label: 'Purchased', render: (a) => a.purchase_date ? fmtDate(a.purchase_date) : <span className="cell-muted">—</span> },
+    { key: 'warranty_expiry', label: 'Warranty', render: (a) => a.warranty_expiry ? fmtDate(a.warranty_expiry) : <span className="cell-muted">—</span> },
+    { key: 'purchase_cost', label: 'Cost', render: (a) => (a.purchase_cost != null
+      ? <span className="cell-wrap">{fmtMoney(a.purchase_cost)}</span>
+      : <span className="cell-muted">—</span>) },
+    { key: 'created_at', label: 'Created', render: (a) => a.created_at ? fmtDateTime(a.created_at) : <span className="cell-muted">—</span> },
     { key: 'photo', label: 'Photo', render: (a) => a.photo_attachment_id ? (
       <button
         type="button" className="btn-small"
         onClick={() => openAssetPhotoPreview(a.photo_attachment_id)}
         disabled={photoPreviewBusyId === a.photo_attachment_id}
+        aria-label={`Preview photo of ${a.asset_tag}`}
       >
         {photoPreviewBusyId === a.photo_attachment_id ? 'Loading…' : 'Preview'}
       </button>
-    ) : '-' },
+    ) : <span className="cell-muted">—</span> },
+    ...(isStaff ? [{
+      key: 'actions', label: 'Actions', thClass: 'table-actions',
+      render: (a) => (
+        <AssetRowActions
+          a={a} busy={rowActionBusy}
+          onAssign={setAssignFor} onReturn={setReturnFor} onRetire={setRetireFor}
+        />
+      ),
+    }] : []),
   ];
+
   const { visibleColumns: visibleAssetColumns, toggleColumn: toggleAssetColumn, resetColumns: resetAssetColumns, tableVisible: assetTableVisible, toggleTable: toggleAssetTable } = useTableColumns(
+    'assets',
     ASSET_COLUMNS.map((c) => c.key),
-    ['asset_tag', 'name', 'status', 'category', 'department', 'assigned_to', 'location'],
+    isStaff
+      ? ['asset_tag', 'name', 'status', 'category', 'department', 'assigned_to', 'location', 'actions']
+      : ['asset_tag', 'name', 'status', 'category', 'department', 'assigned_to', 'location'],
   );
   const assetColumns = ASSET_COLUMNS.filter((c) => visibleAssetColumns.has(c.key));
 
@@ -333,54 +440,97 @@ export function Assets() {
       setCount(pg.count);
       setNext(pg.next);
       setPrevious(pg.previous);
+      setLastUrl(url);
+      setPage(pageFromUrl(url));
     } catch {
       setListError('Could not load assets.');
     } finally {
       setLoading(false);
     }
   };
-  const applyFilters = (patch) => {
-    const merged = { ...f, ...patch };
-    setF(merged);
-    setSel(new Set());
-    const p = new URLSearchParams();
-    for (const k of ['q', 'status', 'category', 'department']) {
-      if (merged[k] !== '' && merged[k] != null) p.set(k, merged[k]);
-    }
-    const ord = orderingParam();
-    if (ord) p.set('ordering', ord);
-    const qs = p.toString();
-    loadUrl(`/assets/${qs ? `?${qs}` : ''}`);
-  };
-  const changeAssetSort = (field) => {
-    const next = changeSort(field);
-    setSel(new Set());
-    const p = new URLSearchParams();
-    for (const k of ['q', 'status', 'category', 'department']) {
-      if (f[k] !== '' && f[k] != null) p.set(k, f[k]);
-    }
-    const ord = orderingParam(next);
-    if (ord) p.set('ordering', ord);
-    const qs = p.toString();
-    loadUrl(`/assets/${qs ? `?${qs}` : ''}`);
-  };
-  useEffect(() => { loadUrl('/assets/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Search text is typed freely; the debounced effect pattern below keeps
+  // combined filters predictable without one request per keystroke.
+  const qsKey = JSON.stringify([f, orderingParam(sort)]);
+  const builtUrl = useMemo(() => buildAssetListUrl(f, orderingParam(sort)), [qsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      if (cancelled) return;
+      setSel(new Set());
+      await loadUrl(builtUrl);
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [builtUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const retire = async () => {
+
+  const retireSelected = async () => {
     const ids = [...sel];
     if (!ids.length || retireBusy) return;
-    if (!confirm(`Retire ${ids.length} selected asset(s)? History is kept.`)) return;
     setRetireBusy(true);
+    setActionError('');
     try {
-      for (const id of ids) await api.post(`/assets/${id}/retire/`);
+      const failed = [];
+      for (const id of ids) {
+        try {
+          await api.post(`/assets/${id}/retire/`);
+        } catch { failed.push(id); }
+      }
+      setRetireConfirm(false);
       setSel(new Set());
-      await loadUrl('/assets/');
+      if (failed.length) setActionError(`Retired ${ids.length - failed.length} of ${ids.length} assets. ${failed.length} could not be retired.`);
+      await loadUrl(lastUrl);
     } catch {
-      alert('Could not retire all selected assets.');
+      setActionError('Could not retire the selected assets.');
+      setRetireConfirm(false);
     } finally {
       setRetireBusy(false);
     }
   };
+
+  /** Run one single-asset workflow action (return/retire), then refresh the
+   * list. `clearDialog` is the caller's dialog closer so the settled state
+   * is unambiguous regardless of success or failure. */
+  const runRowAction = async (a, path, clearDialog = () => {}) => {
+    if (rowActionBusy) return;
+    setRowActionBusy(true);
+    setActionError('');
+    try {
+      await api.post(`/assets/${a.id}/${path}/`);
+      clearDialog();
+      await loadUrl(lastUrl);
+    } catch (e) {
+      const p = parseApiError(e);
+      setActionError(p.global || 'The action could not be completed.');
+      setReturnFor(null);
+      setRetireFor(null);
+    } finally {
+      setRowActionBusy(false);
+    }
+  };
+
+  const doAssign = async (ev) => {
+    ev.preventDefault();
+    if (!assignFor || assignBusy || !assignUser) return;
+    setAssignBusy(true);
+    setAssignError('');
+    try {
+      await api.post(`/assets/${assignFor.id}/assign/`, {
+        assigned_to: Number(assignUser), note: assignNote.trim(),
+      });
+      setAssignFor(null);
+      setAssignUser('');
+      setAssignNote('');
+      await loadUrl(lastUrl);
+    } catch (e) {
+      const p = parseApiError(e);
+      setAssignError(p.global || 'Could not assign asset.');
+    } finally {
+      setAssignBusy(false);
+    }
+  };
+
   const openAssetPhotoPreview = async (attachmentId) => {
     if (photoPreviewBusyId) return;
     setPhotoPreviewBusyId(attachmentId);
@@ -415,37 +565,68 @@ export function Assets() {
     setPhotoPreviewName('');
     setPhotoPreviewError('');
   };
+  const filtersActive = !!(f.q || f.status || f.category || f.department);
+  // The backend page size is fixed at 20 for this list (no page_size param
+  // is ever sent), so the total page count is derived from the count.
+  const totalPages = count != null && count > 0 ? Math.ceil(count / 20) : null;
+  const pageLabel = totalPages > 1 ? `Page ${page} of ${totalPages}` : '';
+
   return (
     <div>
       <PageHeader
         title="Assets"
-        sub={count != null ? `${count} in inventory` : undefined}
+        sub={count != null
+          ? `${count} ${count === 1 ? 'asset' : 'assets'} in inventory`
+          : undefined}
         actions={<>
           {isStaff && <a className="btn-primary" href="#/assets/new">+ New asset</a>}
           {isStaff && <button type="button" className="btn-secondary" onClick={() => setShowBulkCreate(true)}>Bulk create…</button>}
         </>}
       />
-      {showBulkCreate && <AssetBulkCreateModal onClose={() => setShowBulkCreate(false)} onImported={() => loadUrl('/assets/')} />}
+      {showBulkCreate && <AssetBulkCreateModal onClose={() => setShowBulkCreate(false)} onImported={() => loadUrl(lastUrl)} />}
+      {actionError && <div className="error-summary" role="alert">{actionError}</div>}
       <div className="filter-bar" role="search">
-        <input
-          className="input grow" value={f.q} onChange={(e) => applyFilters({ q: e.target.value })}
-          placeholder="Search tag, name, serial, department, or location…" aria-label="Search assets"
-        />
-        <select className="input" value={f.status} onChange={(e) => applyFilters({ status: e.target.value })} aria-label="Filter by status">
-          <option value="">All statuses</option>
-          {ASSET_STATUSES.filter(Boolean).map((s) => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
-        </select>
-        <div className="filter-item">
-          <CategorySelect kind="asset" value={f.category} onChange={(v) => applyFilters({ category: v ?? '' })} />
+        <div className="field-inline grow">
+          <div className="caption">Search</div>
+          <input
+            className="input" value={f.q}
+            onChange={(e) => setF((prev) => ({ ...prev, q: e.target.value }))}
+            placeholder="Tag, name, serial, department, or location…" aria-label="Search assets"
+          />
         </div>
-        <div className="filter-item">
-          <DepartmentSelect value={f.department} onChange={(v) => applyFilters({ department: v ?? '' })} />
+        <div className="field-inline">
+          <div className="caption">Status</div>
+          <select
+            className="input" value={f.status}
+            onChange={(e) => setF((prev) => ({ ...prev, status: e.target.value }))}
+            aria-label="Filter by status"
+          >
+            <option value="">All statuses</option>
+            {ASSET_STATUSES.filter(Boolean).map((s) => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
+          </select>
         </div>
+        <div className="field-inline">
+          <div className="caption">Category</div>
+          <CategorySelect kind="asset" value={f.category} onChange={(v) => setF((prev) => ({ ...prev, category: v ?? '' }))} />
+        </div>
+        <div className="field-inline">
+          <div className="caption">Department</div>
+          <DepartmentSelect value={f.department} onChange={(v) => setF((prev) => ({ ...prev, department: v ?? '' }))} />
+        </div>
+        {filtersActive && (
+          <button
+            type="button" className="btn-ghost"
+            onClick={() => setF({ q: '', status: '', category: '', department: '' })}
+            aria-label="Clear all asset filters"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
       {isStaff && sel.size > 0 && (
         <div className="toolbar" role="toolbar" aria-label="Bulk actions">
           <span className="muted small">{sel.size} selected</span>
-          <button type="button" className="btn-small" onClick={retire} disabled={retireBusy}>
+          <button type="button" className="btn-small" onClick={() => setRetireConfirm(true)} disabled={retireBusy}>
             {retireBusy ? 'Retiring…' : 'Retire selected'}
           </button>
           <button type="button" className="btn-small" onClick={() => setSel(new Set())}>Clear</button>
@@ -453,7 +634,7 @@ export function Assets() {
       )}
       <div className="panel">
         {loading ? <div className="panel-pad"><LoadingRows n={6} /></div>
-          : listError ? <div className="panel-pad"><div className="error-summary" role="alert">{listError} <button type="button" className="btn-small" onClick={() => loadUrl('/assets/')}>Retry</button></div></div>
+          : listError ? <div className="panel-pad"><div className="error-summary" role="alert">{listError} <button type="button" className="btn-small" onClick={() => loadUrl(builtUrl)}>Retry</button></div></div>
           : (<>
             <TableControls tableVisible={assetTableVisible} onToggleTable={toggleAssetTable} columns={ASSET_COLUMNS} visible={visibleAssetColumns} onToggleColumn={toggleAssetColumn} onReset={resetAssetColumns} />
             {assetTableVisible ? (
@@ -464,29 +645,76 @@ export function Assets() {
                 selected={isStaff ? sel : undefined}
                 onToggle={isStaff ? toggle : undefined}
                 sort={sort}
-                onSort={changeAssetSort}
-                emptyTitle="No assets match."
-                emptyHint="Adjust the filters or add a new asset."
+                onSort={changeSort}
+                emptyTitle={filtersActive ? 'No assets match the current filters.' : 'No assets in inventory yet.'}
+                emptyHint={filtersActive
+                  ? 'Adjust the search text or clear the filters to widen the results.'
+                  : (isStaff ? 'Register the first asset, or import several at once with Bulk create.' : 'IT staff register assets; they will appear here.')}
               />
             ) : (
               <p className="muted">Table hidden.</p>
             )}
-            <Pager count={count} hasNext={!!next} hasPrev={!!previous} busy={loading} onPrev={() => previous && loadUrl(previous)} onNext={() => next && loadUrl(next)} />
+            <Pager count={count} pageLabel={pageLabel} hasNext={!!next} hasPrev={!!previous} busy={loading} onPrev={() => previous && loadUrl(previous)} onNext={() => next && loadUrl(next)} />
           </>)}
       </div>
+      <p className="page-footnote">Assignment changes use the explicit assign workflow — bulk update rejects assignment keys.</p>
       {photoPreviewError && <div className="field-error" role="alert">{photoPreviewError}</div>}
       {photoPreviewUrl && (
         <Modal title={photoPreviewName || 'Photo preview'} onClose={closeAssetPhotoPreview}>
-          <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <img
-              src={photoPreviewUrl}
-              alt={photoPreviewName || 'Photo preview'}
-              style={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain' }}
-            />
+          <div className="preview-media">
+            <img src={photoPreviewUrl} alt={photoPreviewName || 'Photo preview'} />
           </div>
         </Modal>
       )}
-      <p className="muted small">Assignment changes use the explicit assign workflow — bulk update rejects assignment keys.</p>
+      {retireConfirm && (
+        <ConfirmDialog
+          title="Retire selected assets?"
+          message={`Retire ${sel.size} selected asset(s)? The status becomes retired and history is kept. Return any asset that still has a holder first.`}
+          confirmLabel="Retire assets" danger busy={retireBusy}
+          onConfirm={retireSelected}
+          onCancel={() => { if (!retireBusy) setRetireConfirm(false); }}
+        />
+      )}
+      {returnFor && (
+        <ConfirmDialog
+          title={`Return ${returnFor.asset_tag}?`}
+          message="This clears the assignee, sets the status to available, closes the open assignment, and records history."
+          confirmLabel="Return asset" busy={rowActionBusy}
+          onConfirm={() => runRowAction(returnFor, 'return_asset', () => setReturnFor(null))}
+          onCancel={() => { if (!rowActionBusy) setReturnFor(null); }}
+        />
+      )}
+      {retireFor && (
+        <ConfirmDialog
+          title={`Retire ${retireFor.asset_tag}?`}
+          message="This sets the status to retired and records history. Retirement is preferred over deletion for assets with usage history."
+          confirmLabel="Retire asset" danger busy={rowActionBusy}
+          onConfirm={() => runRowAction(retireFor, 'retire', () => setRetireFor(null))}
+          onCancel={() => { if (!rowActionBusy) setRetireFor(null); }}
+        />
+      )}
+      {assignFor && (
+        <Modal title={`Assign ${assignFor.asset_tag}`} onClose={() => { if (!assignBusy) { setAssignFor(null); setAssignError(''); } }}>
+          <form onSubmit={doAssign} noValidate>
+            <Field label="Employee" required hint="Search by employee ID or email.">
+              <UserSelect value={assignUser} onChange={setAssignUser} disabled={assignBusy} label="Assignee" />
+            </Field>
+            <Field label="Note (optional)">
+              <input
+                className="input" value={assignNote}
+                onChange={(e) => setAssignNote(e.target.value)} placeholder="Reason…" disabled={assignBusy}
+              />
+            </Field>
+            {assignError && <div className="field-error" role="alert">{assignError}</div>}
+            <div className="row-end">
+              <button type="button" className="btn-ghost" onClick={() => { setAssignFor(null); setAssignError(''); }} disabled={assignBusy}>Cancel</button>
+              <button type="submit" className="btn-primary" disabled={assignBusy || !assignUser}>
+                {assignBusy ? 'Assigning…' : 'Assign'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -504,10 +732,7 @@ export function Categories() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
-  const [renaming, setRenaming] = useState(null); // {kind, cat}
-  const [renameValue, setRenameValue] = useState('');
-  const [renameBusy, setRenameBusy] = useState(false);
-  const [renameError, setRenameError] = useState('');
+  const [editing, setEditing] = useState(null); // {kind, cat}
   const [deleting, setDeleting] = useState(null); // {kind, cat}
   const [deleteBusy, setDeleteBusy] = useState(false);
   const load = async () => {
@@ -543,23 +768,6 @@ export function Categories() {
   };
   const catUrl = (kind, id = '') =>
     `${kind === 'ticket' ? '/tickets/categories/' : '/assets/categories/'}${id ? `${id}/` : ''}`;
-  const doRename = async (ev) => {
-    ev.preventDefault();
-    if (!renaming || renameBusy || !renameValue.trim()) return;
-    setRenameBusy(true);
-    setRenameError('');
-    try {
-      await api.patch(catUrl(renaming.kind, renaming.cat.id), { name: renameValue.trim() });
-      setRenaming(null);
-      setMsg('Category renamed.');
-      await load();
-    } catch (e) {
-      setRenameError(
-        e.response?.data?.name?.join(' ') || parseApiError(e).global || 'Could not rename category.');
-    } finally {
-      setRenameBusy(false);
-    }
-  };
   const toggleActive = async (kind, cat) => {
     if (busy) return;
     if (!confirm(`${cat.is_active ? 'Deactivate' : 'Reactivate'} category "${cat.name}"?`)) return;
@@ -599,12 +807,18 @@ export function Categories() {
   const catColumns = [
     { key: 'id', label: 'ID' },
     { key: 'name', label: 'Name' },
+    {
+      key: 'description', label: 'Description',
+      render: (c) => c.description
+        ? <span className="ellipsis" title={c.description}>{c.description}</span>
+        : '-',
+    },
     { key: 'is_active', label: 'State', render: (c) => <Badge kind="status" value={c.is_active ? 'active' : 'inactive'} /> },
   ];
   const actionColumn = (kind) => ({
     key: 'actions', label: 'Actions', thClass: 'cell-actions', render: (c) => isStaff ? (
       <div className="cell-actions">
-        <button type="button" className="btn-small" onClick={() => { setRenameValue(c.name); setRenameError(''); setRenaming({ kind, cat: c }); }} disabled={busy}>Rename…</button>
+        <button type="button" className="btn-small" onClick={() => setEditing({ kind, cat: c })} disabled={busy}>Edit…</button>
         <button type="button" className="btn-small" onClick={() => toggleActive(kind, c)} disabled={busy}>
           {c.is_active ? 'Deactivate…' : 'Reactivate…'}
         </button>
@@ -656,21 +870,12 @@ export function Categories() {
           />
         )}
       </div>
-      {renaming && (
-        <Modal title={`Rename ${renaming.kind} category`} onClose={() => { if (!renameBusy) setRenaming(null); }}>
-          <form onSubmit={doRename}>
-            <Field label="Name" required error={renameError && !renameValue.trim() ? 'Name is required.' : ''}>
-              <input className="input" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} disabled={renameBusy} autoFocus maxLength={100} />
-            </Field>
-            {renameError && renameValue.trim() ? <div className="field-error" role="alert">{renameError}</div> : null}
-            <div className="row-end">
-              <button type="button" className="btn-ghost" onClick={() => setRenaming(null)} disabled={renameBusy}>Cancel</button>
-              <button type="submit" className="btn-primary" disabled={renameBusy || !renameValue.trim()}>
-                {renameBusy ? 'Saving…' : 'Rename'}
-              </button>
-            </div>
-          </form>
-        </Modal>
+      {editing && (
+        <CategoryEditModal
+          kind={editing.kind} cat={editing.cat}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setMsg(`Category "${editing.cat.name}" updated.`); load(); }}
+        />
       )}
       {deleting && (
         <ConfirmDialog
@@ -1008,6 +1213,10 @@ function EmployeeEditModal({ user, onClose, onSaved }) {
     <Modal title={`Edit employee ${user.employee_id}`} onClose={() => { if (!saving) onClose(); }}>
       <form onSubmit={submit} noValidate>
         {globalError && <div className="error-summary" role="alert">{globalError}</div>}
+        <p className="muted small" style={{ marginTop: 0 }}>
+          The employee ID ({user.employee_id}) is a fixed identity and cannot be changed here.
+          Role changes are an Admin-only action (Role…).
+        </p>
         <div className="form-grid">
           <Field label="Email" required error={fieldMsg(fieldErrors, 'email')}>
             <input className="input" type="email" value={form.email} onChange={(e) => set('email')(e.target.value)} disabled={saving} />
@@ -1114,6 +1323,7 @@ export function Users() {
     },
   ];
   const { visibleColumns: visibleUserColumns, toggleColumn: toggleUserColumn, resetColumns: resetUserColumns, tableVisible: userTableVisible, toggleTable: toggleUserTable } = useTableColumns(
+    'employees',
     USER_COLUMNS.map((c) => c.key),
     ['employee_id', 'email', 'role', 'home_department', 'is_active', 'actions'],
   );
@@ -1329,6 +1539,74 @@ export function Users() {
   );
 }
 
+function CategoryEditModal({ kind, cat, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    name: cat?.name ?? '', description: cat?.description ?? '',
+  });
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [globalError, setGlobalError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const submit = async (ev) => {
+    ev.preventDefault();
+    if (saving) return;
+    const trimmed = form.name.trim();
+    if (!trimmed) {
+      setFieldErrors({ name: 'Name is required.' });
+      return;
+    }
+    setFieldErrors({});
+    setGlobalError('');
+    setSaving(true);
+    const base = kind === 'ticket' ? '/tickets/categories/' : '/assets/categories/';
+    try {
+      await api.patch(`${base}${cat.id}/`, {
+        name: trimmed, description: form.description.trim(),
+      });
+      onSaved();
+      onClose();
+    } catch (e) {
+      const p = parseApiError(e);
+      setFieldErrors(p.fields);
+      setGlobalError(p.global);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal
+      title={`Edit ${kind} category — ${cat?.name ?? ''}`}
+      onClose={() => { if (!saving) onClose(); }}
+    >
+      <form onSubmit={submit} noValidate>
+        {globalError && <div className="error-summary" role="alert">{globalError}</div>}
+        <Field label="Name" required error={fieldMsg(fieldErrors, 'name')}>
+          <input
+            className="input" value={form.name}
+            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+            disabled={saving} autoFocus maxLength={100}
+          />
+        </Field>
+        <Field
+          label="Description" error={fieldMsg(fieldErrors, 'description')}
+          hint="Shown to staff on the Categories page only."
+        >
+          <textarea
+            className="input" rows={3} value={form.description}
+            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+            disabled={saving}
+          />
+        </Field>
+        <div className="row-end">
+          <button type="button" className="btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="submit" className="btn-primary" disabled={saving || !form.name.trim()}>
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function DepartmentModal({ initial, onClose, onSaved }) {
   const [form, setForm] = useState({
     name: initial?.name ?? '', code: initial?.code ?? '',
@@ -1364,7 +1642,7 @@ function DepartmentModal({ initial, onClose, onSaved }) {
     }
   };
   return (
-    <Modal title={initial ? `Rename ${initial.name}` : 'New department'} onClose={() => { if (!saving) onClose(); }}>
+    <Modal title={initial ? `Edit department — ${initial.name}` : 'New department'} onClose={() => { if (!saving) onClose(); }}>
       <form onSubmit={submit} noValidate>
         {globalError && <div className="error-summary" role="alert">{globalError}</div>}
         <div className="form-grid">
@@ -1420,6 +1698,7 @@ export function Departments() {
     { key: 'is_active', label: 'State', render: (d) => <Badge kind="status" value={d.is_active ? 'active' : 'inactive'} /> },
   ];
   const { visibleColumns: visibleDepartmentColumns, toggleColumn: toggleDepartmentColumn, resetColumns: resetDepartmentColumns, tableVisible: departmentTableVisible, toggleTable: toggleDepartmentTable } = useTableColumns(
+    'departments',
     DEPARTMENT_COLUMNS.map((c) => c.key),
     ['name', 'code', 'head', 'members', 'is_active'],
   );
@@ -1499,7 +1778,7 @@ export function Departments() {
                 columns={[...departmentColumns, {
                   key: 'actions', label: 'Actions', thClass: 'cell-actions', render: (d) => isStaff ? (
                     <div className="cell-actions">
-                      <button type="button" className="btn-small" onClick={() => setEditing(d)} disabled={busy}>Rename…</button>
+                      <button type="button" className="btn-small" onClick={() => setEditing(d)} disabled={busy}>Edit…</button>
                       <button type="button" className="btn-small" onClick={() => toggleActive(d)} disabled={busy}>
                         {d.is_active ? 'Deactivate…' : 'Reactivate…'}
                       </button>

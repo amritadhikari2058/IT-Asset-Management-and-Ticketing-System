@@ -18,7 +18,9 @@ class UserSerializer(serializers.ModelSerializer):
     """Ordinary representation. Role/permission changes go via admin endpoint.
 
     Bulk/ordinary updates MUST NOT touch role or can_create_tickets
-    (enforced in views by popping those keys).
+    (enforced in views by popping those keys). The employee ID and
+    username are stable identity keys (imports, ticket routing) and are
+    deliberately NOT writable here — they exist only through creation.
     """
     home_department_name = serializers.CharField(
         source="home_department.name", read_only=True
@@ -32,7 +34,8 @@ class UserSerializer(serializers.ModelSerializer):
                   "home_department_name", "phone", "job_title",
                   "can_create_tickets", "is_active", "is_deleted",
                   "date_joined"]
-        read_only_fields = ["id", "role", "can_create_tickets",
+        read_only_fields = ["id", "employee_id", "username", "role",
+                            "can_create_tickets",
                             "is_deleted", "date_joined", "email_verified"]
 
 
