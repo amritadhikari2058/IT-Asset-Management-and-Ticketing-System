@@ -6,11 +6,13 @@ from accounts.models import Department, User
 class DepartmentSerializer(serializers.ModelSerializer):
     head_email = serializers.CharField(source="head.email", read_only=True)
     member_count = serializers.IntegerField(read_only=True)
+    asset_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Department
         fields = ["id", "name", "code", "description", "head", "head_email",
-                  "is_active", "member_count", "created_at", "updated_at"]
+                  "is_active", "member_count", "asset_count",
+                  "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 

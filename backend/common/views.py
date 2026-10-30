@@ -8,7 +8,8 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import status, viewsets
-from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.decorators import (action, api_view, permission_classes,
+                                        renderer_classes)
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -18,6 +19,7 @@ from common.permissions import IsSystemAdmin, is_system_admin
 from common.serializers import (
     AuditLogSerializer, NotificationSerializer, RecycleBinEntrySerializer,
 )
+from common.exports import EXPORT_RENDERER_CLASSES
 
 
 def _deleted_entries(entity_filter=None, date_from=None, date_to=None,
@@ -160,7 +162,158 @@ def recycle_bin_detail(request, entity_type, pk):
     })
 
 
-def _resolve(entity_type, pk):
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def data_integrity(request):
+    """READ-ONLY data-integrity report (System Admin only).
+
+    Identifies pre-existing inconsistent records so that any repair is a
+    deliberate, reviewable human decision instead of a silent backfill.
+
+    The report NEVER mutates anything. Repairs, when needed, must be made
+    through explicit, confirmable workflows (dedicated workflows such as
+    ``assign`` / ``return_asset`` / ``retire`` / ``mark_lost`` or the recycle
+    bin) rather than blanket updates.
+    """
+    if not is_system_admin(request.user):
+        return Response({"detail": "System Admin only."}, status=403)
+    from django.db.models import Count
+    from assets.models import Asset, Assignment
+    from accounts.models import User
+
+    issues = []
+    assets = Asset.objects.order_by("id")[:500]
+    assets_checked = 0
+    for a in assets:
+        assets_checked += 1
+        open_assignments = list(a.assignments.filter(returned_at__isnull=True))
+        if a.status == "assigned" and not a.assigned_to_id:
+            issues.append({
+                "area": "asset",
+                "code": "asset_assigned_without_holder",
+                "object": str(a),
+                "object_id": a.pk,
+                "detail": "Asset status is 'assigned' but no holder is set.",
+                "suggested_fix": "Clear the stale status (set it back to "
+                                 "'available') or assign a valid holder.",
+            })
+        if a.status in ("retired", "lost") and a.assigned_to_id:
+            issues.append({
+                "area": "asset",
+                "code": "asset_ineligible_with_holder",
+                "object": str(a),
+                "object_id": a.pk,
+                "detail": "Asset status is '" + a.status + "' but a holder is set.",
+                "suggested_fix": "Clear the holder before retiring/losing.",
+            })
+        if a.assigned_to_id and not open_assignments:
+            issues.append({
+                "area": "asset",
+                "code": "holder_without_open_assignment",
+                "object": str(a),
+                "object_id": a.pk,
+                "detail": "Asset has a holder but no open assignment row.",
+                "suggested_fix": "Return the asset (closes the open "
+                                 "assignment) or create an open assignment.",
+            })
+        for assn in open_assignments:
+            holder = assn.assigned_to
+            if holder is not None and (
+                    getattr(holder, "is_deleted", False)
+                    or not getattr(holder, "is_active", True)):
+                issues.append({
+                    "area": "assignment",
+                    "code": "assignment_to_inactive_user",
+                    "object": "asset " + str(a.asset_tag),
+                    "object_id": assn.pk,
+                    "detail": "Open assignment points at an inactive or "
+                              "soft-deleted user.",
+                    "suggested_fix": "Return the asset or reactivate the user.",
+                })
+    dup_open = (Asset.objects.filter(assignments__returned_at__isnull=True)
+                .values("id").annotate(n=Count("id")).filter(n__gt=1))
+    for row in dup_open[:50]:
+        issues.append({
+            "area": "assignment",
+            "code": "assignment_duplicate_open",
+            "object": "asset #" + str(row["id"]),
+            "detail": "Asset has " + str(row["n"]) + " open assignments.",
+            "suggested_fix": "Return the asset(s) before assigning again.",
+        })
+    return Response({
+        "issues": issues,
+        "counts": {
+            "issues": len(issues),
+            "assets_checked": assets_checked,
+        },
+        "note": "Read-only data-integrity report; repairs are explicit and "
+                "human-driven.",
+    })
+
+
+def _can_access_export(user, permission):
+    if permission == "it_staff":
+        return bool(
+            user
+            and user.is_authenticated
+            and getattr(user, "role", "") in
+            ("system_admin", "it_manager", "it_support"))
+    return bool(user and user.is_authenticated)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@renderer_classes(EXPORT_RENDERER_CLASSES)
+def export_dataset(request, dataset):
+    """Render a read-only dataset export (CSV / XLSX / PDF / DOCX).
+
+    Query params:
+      - format: csv (default) | xlsx | pdf | docx
+      - scope: all (default) | selected (requires ?ids=a,b,c)
+      - ids: comma separated row ids used with scope=selected
+
+    The response is an attachment; every export writes a protected AuditLog
+    entry (dataset + format + scope + row count) without embedding secrets.
+    """
+    from common.exports import (DATASETS, EXPORT_FORMATS, build_rows,
+                                 render_response)
+
+    spec = DATASETS.get(dataset)
+    if spec is None:
+        return Response({"detail": "Unknown export dataset."}, status=404)
+    if not _can_access_export(request.user, spec.get("permission", "authenticated")):
+        return Response({"detail": "Forbidden."}, status=403)
+    fmt = (request.query_params.get("format") or "csv").lower()
+    if fmt not in EXPORT_FORMATS:
+        return Response({"detail": "Unsupported format."}, status=400)
+    scope = (request.query_params.get("scope") or "all").lower()
+    ids_raw = request.query_params.get("ids") or ""
+    ids = [i for i in str(ids_raw).split(",") if i.strip()]
+    rows = build_rows(dataset, request.user)
+    if scope == "selected":
+        id_set = set(ids)
+        rows = [r for r in rows if str(r.get("id")) in id_set]
+    response = render_response(dataset, rows, fmt, request.user, request)
+    AuditLog.objects.create(
+        actor=request.user,
+        action="export",
+        entity_type="exports." + dataset,
+        object_id="",
+        object_repr=dataset,
+        reason="",
+        details={
+            "dataset": dataset,
+            "format": fmt,
+            "scope": scope,
+            "rows": len(rows),
+        },
+    )
+    return response
+
+
+def _resolve(
+entity_type, pk):
     from accounts.models import Department, User
     from assets.models import Asset, AssetAttachment, AssetCategory
     from tickets.models import Ticket, TicketAttachment, TicketCategory

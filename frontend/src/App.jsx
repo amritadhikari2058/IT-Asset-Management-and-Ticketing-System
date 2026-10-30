@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth, AuthProvider } from './auth';
-import { Assets, Categories, Departments, Login, Profile, RecycleBin, ResetPassword, Tickets, Users, VerifyEmail } from './pages';
+import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, Tickets, Users, VerifyEmail } from './pages';
 import { AssetForm, AssetDetail } from './assets';
 import { AuditLogPage } from './audit';
 import { TicketForm, TicketDetail } from './tickets';
@@ -42,6 +42,7 @@ function crumbs(hash) {
   if (h === '#/tickets/new') return ['Tickets', 'New'];
   if (h === '#/assets/new') return ['Assets', 'New'];
   if (h === '#/recycle' || h === '#/audit') return ['Administration', TITLES[h]];
+  if ((m = h.match(/^#\/users\/(\d+)$/))) return ['Employees', `Employee #${m[1]}`];
   return [TITLES[h] ?? 'Tickets'];
 }
 
@@ -53,6 +54,7 @@ function matchRoute(hash) {
   if ((m = hash.match(/^#\/assets\/(\d+)\/edit$/))) return <AssetForm id={m[1]} />;
   if (hash === '#/assets/new') return <AssetForm />;
   if ((m = hash.match(/^#\/assets\/(\d+)$/))) return <AssetDetail id={m[1]} />;
+  if ((m = hash.match(/^#\/users\/(\d+)\/?$/))) return <EmployeeDetail id={m[1]} />;
   const routes = {
     '#/tickets': <Tickets />,
     '#/assets': <Assets />,

@@ -9,7 +9,7 @@ import csv
 import io
 
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from openpyxl import load_workbook
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -69,9 +69,16 @@ def current_user(request):
 
 
 class DepartmentViewSet(viewsets.ModelViewSet):
-    queryset = Department.objects.annotate(
-        member_count=Count("members")).all()
     serializer_class = DepartmentSerializer
+
+    def get_queryset(self):
+        qs = Department.objects.annotate(
+            member_count=Count("members"),
+            asset_count=Count("assets")).all()
+        q = self.request.query_params.get("q")
+        if q:
+            qs = qs.filter(Q(name__icontains=q) | Q(code__icontains=q))
+        return qs.order_by("name")
 
     def get_permissions(self):
         if self.action in ("create", "update", "partial_update", "destroy"):
@@ -316,8 +323,22 @@ class UserViewSet(viewsets.ModelViewSet):
             qs = qs.filter(is_deleted=False)
         q = self.request.query_params.get("q")
         if q:
-            qs = qs.filter(employee_id__icontains=q) | qs.filter(
-                email__icontains=q)
+            qs = qs.filter(
+                Q(employee_id__icontains=q) | Q(email__icontains=q)
+                | Q(first_name__icontains=q) | Q(last_name__icontains=q))
+        department = self.request.query_params.get("department")
+        if department:
+            try:
+                qs = qs.filter(home_department__id=int(department))
+            except (TypeError, ValueError):
+                qs = qs.filter(home_department__code__iexact=department)
+        role = self.request.query_params.get("role")
+        if role:
+            qs = qs.filter(role=role)
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            wanted = str(is_active).strip().lower() in ("true", "1", "yes")
+            qs = qs.filter(is_active=wanted)
         return _apply_user_ordering(qs, self.request.query_params.get(
             "ordering"))
 
@@ -342,6 +363,16 @@ class UserViewSet(viewsets.ModelViewSet):
         # Ordinary updates NEVER modify role / ticket-creation rights.
         serializer.validated_data.pop("role", None)
         serializer.validated_data.pop("can_create_tickets", None)
+        obj = self.get_object()
+        wants_inactive = (
+            "is_active" in serializer.validated_data
+            and serializer.validated_data.get("is_active") is False)
+        if wants_inactive and obj.assignments_received.filter(
+                returned_at__isnull=True).exists():
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError(
+                {"is_active": ["Cannot deactivate: still holds open asset "
+                               "assignment(s). Return the asset(s) first."]})
         obj = serializer.save()
         log_action(actor=self.request.user, action="update", instance=obj)
 
@@ -380,11 +411,110 @@ class UserViewSet(viewsets.ModelViewSet):
                                     "can_create_tickets": obj.can_create_tickets}})
         return Response(UserSerializer(obj).data)
 
+    @action(detail=True, methods=["post"], permission_classes=[IsSystemAdmin])
+    def reset_password(self, request, pk=None):
+        """Admin-only forced password reset for an employee account.
+
+        The System Admin supplies the new password, which is validated with
+        the configured Django password policy and stored through set_password
+        (hashed only; never cleartext, never echoed back). The previous
+        password stops working immediately; outstanding password-reset tokens
+        for the target are invalidated (Django reset tokens embed the password
+        hash) and outstanding JWT refresh tokens are blacklisted so existing
+        sessions must re-authenticate.
+        """
+        obj = self.get_object()
+        new_password = (request.data.get("new_password") or "").strip()
+        confirm = request.data.get("confirm")
+        if confirm is not None and str(confirm) != new_password:
+            return Response(
+                {"confirm": ["Passwords do not match."]},
+                status=status.HTTP_400_BAD_REQUEST)
+        try:
+            from django.contrib.auth.password_validation import (
+                validate_password,
+            )
+            from django.core.exceptions import ValidationError as DjangoValidationError
+            validate_password(new_password, obj)
+        except DjangoValidationError as exc:
+            return Response(
+                {"new_password": list(exc.messages)},
+                status=status.HTTP_400_BAD_REQUEST)
+        obj.set_password(new_password)
+        obj.save(update_fields=["password"])
+        from rest_framework_simplejwt.token_blacklist.models import (
+            BlacklistedToken, OutstandingToken,
+        )
+        for outstanding in OutstandingToken.objects.filter(user=obj):
+            BlacklistedToken.objects.get_or_create(token=outstanding)
+        log_action(actor=request.user, action="password_reset", instance=obj,
+                   details={"employee_id": obj.employee_id})
+        return Response(
+            {"detail": f"Password reset for {obj.employee_id} completed."},
+            status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"],
+            permission_classes=[IsITStaff])
+    def employee_detail(self, request, pk=None):
+        """Administrative overview for a single employee.
+
+        Returns the user record plus assigned assets, tickets requested /
+        assigned, and recent audit activity touching the account. IT staff
+        only; never exposes passwords or hashes.
+        """
+        obj = self.get_object()
+        from assets.models import Asset
+        from tickets.models import Ticket
+        from common.models import AuditLog
+        assigned_assets = Asset.objects.filter(
+            assigned_to=obj).select_related("category", "department").order_by(
+                "asset_tag")[:50]
+        tickets_requested = Ticket.objects.filter(
+            requester=obj).select_related(
+                "category", "department", "assignee").order_by(
+                    "-created_at")[:50]
+        tickets_assigned = Ticket.objects.filter(
+            assignee=obj).select_related(
+                "category", "department", "requester").order_by(
+                    "-created_at")[:50]
+        entity_type = f"{obj._meta.app_label}.{obj._meta.model_name}"
+        recent_audit = AuditLog.objects.filter(
+            Q(entity_type=entity_type, object_id=str(obj.pk))
+            | Q(actor=obj)).order_by("-timestamp")[:20]
+        from accounts.serializers import UserSerializer
+        from assets.serializers import AssetSerializer
+        from tickets.serializers import TicketSerializer
+        from common.serializers import AuditLogSerializer
+        return Response({
+            "user": UserSerializer(obj).data,
+            "assigned_assets": AssetSerializer(assigned_assets, many=True).data,
+            "tickets_requested": TicketSerializer(
+                tickets_requested, many=True).data,
+            "tickets_assigned": TicketSerializer(
+                tickets_assigned, many=True).data,
+            "recent_audit": AuditLogSerializer(recent_audit, many=True).data,
+        })
+
     @action(detail=True, methods=["post"])
     def deactivate(self, request, pk=None):
         if not _is_privileged(request.user):
             return Response({"detail": "Forbidden."}, status=403)
         obj = self.get_object()
+        # An employee holding open asset assignments cannot be deactivated
+        # without leaving invalid assignments behind.
+        open_assignments = obj.assignments_received.filter(
+            returned_at__isnull=True)
+        if open_assignments.exists():
+            held = ", ".join(
+                a.asset.asset_tag for a in open_assignments.select_related(
+                    "asset")[:5])
+            return Response(
+                {"detail": "Cannot deactivate: still holds open assignment(s).",
+                 "assignments": [{"asset": a.asset.asset_tag,
+                                  "asset_id": a.asset_id}
+                                 for a in open_assignments],
+                 "hint": "Return the asset(s) first: " + held},
+                status=409)
         obj.is_active = False
         obj.save(update_fields=["is_active"])
         log_action(actor=request.user, action="deactivate", instance=obj)
@@ -584,15 +714,29 @@ class UserViewSet(viewsets.ModelViewSet):
             "activate", True)
         if request.data.get("preview", True) in (True, "true", "1", 1):
             qs = User.objects.filter(id__in=ids)
-            return Response({"preview": [u.employee_id for u in qs],
-                             "affected": qs.count()})
+            blocked = [
+                u.employee_id for u in qs
+                if not activate and u.assignments_received.filter(
+                    returned_at__isnull=True).exists()
+            ]
+            return Response({
+                "preview": [u.employee_id for u in qs],
+                "affected": qs.count(),
+                "blocked": blocked})
         if not request.data.get("confirm"):
             return Response({"detail": "Confirmation required."}, status=400)
-        ok, failed = [], []
+        ok, failed, skipped = [], [], []
         for pk in ids:
             try:
                 with transaction.atomic():
                     obj = User.objects.get(pk=pk)
+                    if not activate and obj.assignments_received.filter(
+                            returned_at__isnull=True).exists():
+                        skipped.append({
+                            "id": pk,
+                            "reason": "still holds open asset assignment(s); "
+                                      "return the asset first"})
+                        continue
                     obj.is_active = bool(activate)
                     obj.save(update_fields=["is_active"])
                     log_action(
@@ -602,7 +746,8 @@ class UserViewSet(viewsets.ModelViewSet):
                     ok.append(pk)
             except Exception as exc:
                 failed.append({"id": pk, "errors": str(exc)})
-        return Response({"successful": ok, "failed": failed})
+        return Response({"successful": ok, "skipped": skipped,
+                         "failed": failed})
 
     @action(detail=False, methods=["post"])
     def bulk_delete(self, request):

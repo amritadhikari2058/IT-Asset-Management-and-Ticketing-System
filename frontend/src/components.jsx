@@ -4,19 +4,35 @@ import { parseApiError } from './api-utils';
 import { useAuth } from './auth';
 
 const STATUS_TONE = {
-  open: 'blue', in_progress: 'purple', resolved: 'green', closed: 'gray',
-  reopened: 'amber', archived: 'gray',
+  open: 'blue', in_progress: 'amber', resolved: 'green', closed: 'gray',
+  reopened: 'purple', archived: 'gray',
   available: 'green', assigned: 'blue', in_repair: 'amber', retired: 'gray',
   lost: 'red', active: 'green', inactive: 'gray',
 };
 const PRIORITY_TONE = { low: 'gray', medium: 'blue', high: 'amber', critical: 'red' };
+
+const STATUS_LABELS = {
+  open: 'Open', in_progress: 'In progress', resolved: 'Resolved', closed: 'Closed',
+  reopened: 'Reopened', archived: 'Archived', available: 'Available', assigned: 'Assigned',
+  in_repair: 'In repair', retired: 'Retired', lost: 'Lost', active: 'Active', inactive: 'Inactive',
+};
+const PRIORITY_LABELS = { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' };
+
+/** Human-readable label for status/priority values (kind: 'status' | 'priority'). */
+function prettyValue(kind, value) {
+  const key = String(value ?? '');
+  const map = kind === 'priority' ? PRIORITY_LABELS : STATUS_LABELS;
+  const hit = map[key];
+  if (hit) return hit;
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 /** Small status/priority indicator. kind: 'status' | 'priority'. */
 export function Badge({ kind, value, label }) {
   const tone = kind === 'priority'
     ? (PRIORITY_TONE[value] ?? 'gray')
     : (STATUS_TONE[value] ?? 'gray');
-  const text = label ?? String(value ?? '—').replace(/_/g, ' ');
+  const text = label ?? prettyValue(kind, value);
   return <span className={`badge badge-${tone}`}>{text}</span>;
 }
 

@@ -1256,6 +1256,229 @@ function EmployeeEditModal({ user, onClose, onSaved }) {
   );
 }
 
+function ResetPasswordModal({ user, onClose, onReset }) {
+  const [pw, setPw] = useState('');
+  const [pwConfirm, setPwConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const submit = async (ev) => {
+    ev.preventDefault();
+    if (busy) return;
+    setErr('');
+    setMsg('');
+    if (pw.length < 8) {
+      setErr('New password must be at least 8 characters.');
+      return;
+    }
+    if (pw !== pwConfirm) {
+      setErr('New passwords do not match.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.post(`/accounts/users/${user.id}/reset_password/`, {
+        new_password: pw, confirm: pwConfirm,
+      });
+      setMsg(r.data?.detail || `Password reset for "${user.employee_id}" completed.`);
+      onReset?.();
+      onClose();
+    } catch (e) {
+      const p = parseApiError(e);
+      setErr(p.global || p.fields.new_password || p.fields.confirm || 'Could not reset password.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title={`Reset password for ${user.employee_id}`} onClose={() => { if (!busy) onClose(); }}>
+      <form onSubmit={submit} noValidate>
+        <p className="muted small" style={{ marginTop: 0 }}>
+          The current password for {user.email} will be replaced. The employee must
+          use the new password to sign in; existing sessions will be signed out.
+        </p>
+        {err && <div className="error-summary" role="alert">{err}</div>}
+        {msg && <div className="success-summary" role="status">{msg}</div>}
+        <Field label="New password" required hint="Validated against the configured password policy.">
+          <input
+            className="input"
+            type="password"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+            disabled={busy}
+            autoComplete="new-password"
+            aria-label={`New password for ${user.employee_id}`}
+          />
+        </Field>
+        <Field label="Confirm new password" required>
+          <input
+            className="input"
+            type="password"
+            value={pwConfirm}
+            onChange={(e) => setPwConfirm(e.target.value)}
+            disabled={busy}
+            autoComplete="new-password"
+            aria-label={`Confirm new password for ${user.employee_id}`}
+          />
+        </Field>
+        <div className="row-end">
+          <button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="submit" className="btn-primary" disabled={busy || !pw || !pwConfirm || pw !== pwConfirm}>
+            {busy ? 'Resetting…' : 'Reset password'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+export function EmployeeDetail({ id }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState('');
+  const load = async () => {
+    setLoading(true);
+    setListError('');
+    try {
+      const r = await api.get(`/accounts/users/${id}/employee_detail/`);
+      setData(r.data);
+    } catch (e) {
+      setListError(parseApiError(e).global || 'Could not load employee details.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!data) {
+    return (
+      <div className="form-wrap">
+        <PageHeader title="Employee" sub="Loading…" />
+        <div className="panel-pad">
+          {loading ? <LoadingRows n={3} /> : null}
+          {listError && <div className="error-summary" role="alert">{listError}</div>}
+        </div>
+      </div>
+    );
+  }
+  const u = data.user;
+  const statusBadge = u.is_active ? 'active' : 'inactive';
+  const assetRows = (data.assigned_assets || []).map((a) => ({
+    ...a,
+    link: `#/assets/${a.id}`,
+  }));
+  const reqRows = (data.tickets_requested || []).map((t) => ({
+    ...t,
+    link: `#/tickets/${t.id}`,
+  }));
+  const assRows = (data.tickets_assigned || []).map((t) => ({
+    ...t,
+    link: `#/tickets/${t.id}`,
+  }));
+  return (
+    <div>
+      <PageHeader
+        title={`Employee ${u.employee_id}`}
+        sub={`${u.role.replace(/_/g, ' ')} · ${u.email}`}
+        actions={<a className="btn-ghost" href="#/users">Back to employees</a>}
+      />
+      {listError && <div className="error-summary" role="alert">{listError}</div>}
+      <div className="panel">
+        <div className="panel-title"><h4>Profile</h4></div>
+        <div className="panel-pad">
+        <dl className="detail-grid">
+          <dt>Employee ID</dt><dd>{u.employee_id}</dd>
+          <dt>Email</dt><dd>{u.email}</dd>
+          <dt>Role</dt><dd>{u.role.replace(/_/g, ' ')}</dd>
+          <dt>Department</dt><dd>{u.home_department_name ?? '-'}</dd>
+          <dt>Phone</dt><dd>{u.phone || '-'}</dd>
+          <dt>Job title</dt><dd>{u.job_title || '-'}</dd>
+          <dt>Account status</dt><dd><Badge kind="status" value={statusBadge} /></dd>
+          <dt>Created</dt><dd>{u.date_joined ? fmtDateTime(u.date_joined) : '-'}</dd>
+        </dl>
+        </div>
+      </div>
+      {assetRows.length && (
+        <div className="panel">
+          <div className="panel-title"><h4>Assigned assets</h4></div>
+          <div className="panel-pad">
+          <DataTable
+            columns={[
+              { key: 'asset_tag', label: 'Tag', render: (a) => <a className="row-title" href={a.link}>{a.asset_tag}</a> },
+              { key: 'name', label: 'Name', render: (a) => a.name || '-' },
+              { key: 'status', label: 'Status', render: (a) => <Badge kind="status" value={a.status} /> },
+              { key: 'category', label: 'Category', render: (a) => a.category_name ?? '-' },
+              { key: 'department', label: 'Department', render: (a) => a.department_name ?? '-' },
+            ]}
+            rows={assetRows}
+            keyOf={(a) => a.id}
+            emptyTitle="No assigned assets."
+          />
+          </div>
+        </div>
+      )}
+      {reqRows.length && (
+        <div className="panel">
+          <div className="panel-title"><h4>Tickets requested</h4></div>
+          <div className="panel-pad">
+          <DataTable
+            columns={[
+              { key: 'id', label: 'ID', render: (t) => <a className="row-title" href={t.link}>#{t.id}</a> },
+              { key: 'title', label: 'Subject', render: (t) => t.title || '-' },
+              { key: 'status', label: 'Status', render: (t) => <Badge kind="status" value={t.status} /> },
+              { key: 'category', label: 'Category', render: (t) => t.category_name ?? '-' },
+              { key: 'department', label: 'Department', render: (t) => t.department_name ?? '-' },
+            ]}
+            rows={reqRows}
+            keyOf={(t) => t.id}
+            emptyTitle="No requested tickets."
+          />
+          </div>
+        </div>
+      )}
+      {assRows.length && (
+        <div className="panel">
+          <div className="panel-title"><h4>Tickets assigned</h4></div>
+          <div className="panel-pad">
+          <DataTable
+            columns={[
+              { key: 'id', label: 'ID', render: (t) => <a className="row-title" href={t.link}>#{t.id}</a> },
+              { key: 'title', label: 'Subject', render: (t) => t.title || '-' },
+              { key: 'status', label: 'Status', render: (t) => <Badge kind="status" value={t.status} /> },
+              { key: 'category', label: 'Category', render: (t) => t.category_name ?? '-' },
+              { key: 'department', label: 'Department', render: (t) => t.department_name ?? '-' },
+            ]}
+            rows={assRows}
+            keyOf={(t) => t.id}
+            emptyTitle="No assigned tickets."
+          />
+          </div>
+        </div>
+      )}
+      {(data.recent_audit || []).length && (
+        <div className="panel">
+          <div className="panel-title"><h4>Recent activity</h4></div>
+          <div className="panel-pad">
+          <DataTable
+            columns={[
+              { key: 'timestamp', label: 'When', render: (a) => a.timestamp ? fmtDateTime(a.timestamp) : '-' },
+              { key: 'action', label: 'Action', render: (a) => a.action.replace(/_/g, ' ') },
+              { key: 'actor', label: 'Actor', render: (a) => a.actor_email ?? '-' },
+              { key: 'entity', label: 'Record', render: (a) => `${a.entity_type} ${a.object_id}` },
+            ]}
+            rows={data.recent_audit}
+            keyOf={(a) => `${a.action}-${a.timestamp}`}
+            emptyTitle="No recent activity."
+          />
+          </div>
+        </div>
+      )}
+      {!assetRows.length && !reqRows.length && !assRows.length && !(data.recent_audit || []).length && (
+        <p className="muted small">No assets, tickets, or recent audit activity recorded for this employee.</p>
+      )}
+    </div>
+  );
+}
+
 export function Users() {
   const { isStaff, isAdmin, user: me } = useAuth();
   const [items, setItems] = useState([]);
@@ -1264,7 +1487,7 @@ export function Users() {
   const [previous, setPrevious] = useState(null);
   const [loading, setLoading] = useState(false);
   const [listError, setListError] = useState('');
-  const [q, setQ] = useState('');
+  const [f, setF] = useState({ q: '', department: '', role: '', status: '' });
   const [sort, changeSort, orderingParam] = useSort();
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1278,9 +1501,10 @@ export function Users() {
   const [roleBusy, setRoleBusy] = useState(false);
   const [roleError, setRoleError] = useState('');
   const [editingUser, setEditingUser] = useState(null);
+  const [resetTarget, setResetTarget] = useState(null); // {user}
 
   const USER_COLUMNS = [
-    { key: 'employee_id', label: 'Employee ID', sortable: 'employee_id' },
+    { key: 'employee_id', label: 'Employee ID', sortable: 'employee_id', render: (u) => <a className="row-title" href={`#/users/${u.id}`}>{u.employee_id}</a> },
     { key: 'email', label: 'Email', sortable: 'email', render: (u) => <span className="ellipsis" title={u.email}>{u.email}</span> },
     { key: 'role', label: 'Role', render: (u) => u.role.replace(/_/g, ' ') },
     { key: 'home_department', label: 'Department', render: (u) => u.home_department_name ?? '-' },
@@ -1306,6 +1530,15 @@ export function Users() {
                 title={isSelf ? 'This is your own account' : undefined}
               >
                 {rowBusy === u.id ? 'Working…' : u.is_active ? 'Deactivate…' : 'Reactivate…'}
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                type="button"
+                className="btn-small"
+                onClick={() => openResetModal(u)}
+              >
+                Reset password…
               </button>
             )}
             {isAdmin && (
@@ -1344,33 +1577,32 @@ export function Users() {
       setLoading(false);
     }
   };
-  useEffect(() => { loadUrl('/accounts/users/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const search = (v) => {
-    setQ(v);
+  const buildUrl = (over = {}, sortOverride) => {
     const p = new URLSearchParams();
-    if (v) p.set('q', v);
-    const ord = orderingParam();
+    const merged = { ...f, ...over };
+    for (const k of ['q', 'department', 'role', 'status']) {
+      if (merged[k] !== '' && merged[k] != null) p.set(k, merged[k]);
+    }
+    const ord = orderingParam(sortOverride);
     if (ord) p.set('ordering', ord);
     const qs = p.toString();
-    loadUrl(`/accounts/users/${qs ? `?${qs}` : ''}`);
+    return `/accounts/users/${qs ? `?${qs}` : ''}`;
   };
-  const refresh = () => {
-    const p = new URLSearchParams();
-    if (q) p.set('q', q);
-    const ord = orderingParam();
-    if (ord) p.set('ordering', ord);
-    const qs = p.toString();
-    loadUrl(`/accounts/users/${qs ? `?${qs}` : ''}`);
-  };
-  const changeUserSort = (field) => {
-    const next = changeSort(field);
-    const p = new URLSearchParams();
-    if (q) p.set('q', q);
-    const ord = orderingParam(next);
-    if (ord) p.set('ordering', ord);
-    const qs = p.toString();
-    loadUrl(`/accounts/users/${qs ? `?${qs}` : ''}`);
-  };
+  const qsKey = JSON.stringify([f, orderingParam(sort)]);
+  const builtUrl = useMemo(() => buildUrl(f, orderingParam(sort)), [qsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Search text is typed freely; the debounced effect below keeps combined
+  // filters predictable without one request per keystroke. Filtering is
+  // handled server-side across the full dataset, not just the current page.
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      if (cancelled) return;
+      await loadUrl(builtUrl);
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [builtUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  const refresh = () => loadUrl(builtUrl);
+  const changeUserSort = (field) => changeSort(field);
   const doActivate = async () => {
     if (!confirmUser || rowBusy) return;
     setRowBusy(confirmUser.user.id);
@@ -1411,6 +1643,9 @@ export function Users() {
       setRoleBusy(false);
     }
   };
+  const openResetModal = (u) => {
+    setResetTarget(u);
+  };
   const run = async (kind) => {
     const ids = prompt('Comma-separated user IDs:');
     if (!ids) return;
@@ -1437,6 +1672,7 @@ export function Users() {
       setBusy(false);
     }
   };
+  const filtersActive = !!(f.q || f.department || f.role || f.status);
   return (
     <div>
       <PageHeader
@@ -1452,10 +1688,56 @@ export function Users() {
       {err && <div className="error-summary" role="alert">{err}</div>}
       {msg && <div className="success-summary" role="status">{msg}</div>}
       <div className="filter-bar" role="search">
-        <input
-          className="input grow" value={q} onChange={(e) => search(e.target.value)}
-          placeholder="Search employee ID or email…" aria-label="Search employees"
-        />
+        <div className="field-inline grow">
+          <div className="caption">Search</div>
+          <input
+            className="input" value={f.q}
+            onChange={(e) => setF((prev) => ({ ...prev, q: e.target.value }))}
+            placeholder="Employee ID, name, or email…" aria-label="Search employees"
+          />
+        </div>
+        <div className="field-inline">
+          <div className="caption">Department</div>
+          <DepartmentSelect
+            value={f.department ?? ''}
+            onChange={(v) => setF((prev) => ({ ...prev, department: v ?? '' }))}
+          />
+        </div>
+        <div className="field-inline">
+          <div className="caption">Role</div>
+          <select
+            className="input" value={f.role}
+            onChange={(e) => setF((prev) => ({ ...prev, role: e.target.value }))}
+            aria-label="Filter by role"
+          >
+            <option value="">All roles</option>
+            <option value="employee">Employee</option>
+            <option value="it_support">IT Support</option>
+            <option value="it_manager">IT Manager</option>
+            <option value="system_admin">System Admin</option>
+          </select>
+        </div>
+        <div className="field-inline">
+          <div className="caption">Status</div>
+          <select
+            className="input" value={f.status}
+            onChange={(e) => setF((prev) => ({ ...prev, status: e.target.value }))}
+            aria-label="Filter by account status"
+          >
+            <option value="">All</option>
+            <option value="true">Active</option>
+            <option value="false">Inactive</option>
+          </select>
+        </div>
+        {filtersActive && (
+          <button
+            type="button" className="btn-ghost"
+            onClick={() => setF({ q: '', department: '', role: '', status: '' })}
+            aria-label="Clear all employee filters"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
       <div className="panel">
         {loading ? <div className="panel-pad"><LoadingRows n={6} /></div>
@@ -1486,6 +1768,13 @@ export function Users() {
           user={editingUser}
           onClose={() => setEditingUser(null)}
           onSaved={() => { setMsg('Employee updated.'); setEditingUser(null); refresh(); }}
+        />
+      )}
+      {resetTarget && (
+        <ResetPasswordModal
+          user={resetTarget}
+          onClose={() => { if (!resetBusy) setResetTarget(null); }}
+          onReset={() => refresh()}
         />
       )}
       {confirmUser && (
@@ -1691,10 +1980,11 @@ export function Departments() {
   const [deleteBusy, setDeleteBusy] = useState(false);
 
   const DEPARTMENT_COLUMNS = [
-    { key: 'name', label: 'Name' },
+    { key: 'name', label: 'Name', sortable: 'name' },
     { key: 'code', label: 'Code' },
     { key: 'head', label: 'Head', render: (d) => d.head_email ?? '-' },
     { key: 'members', label: 'Members', render: (d) => d.member_count ?? '-' },
+    { key: 'assets', label: 'Assets', render: (d) => d.asset_count ?? '-' },
     { key: 'is_active', label: 'State', render: (d) => <Badge kind="status" value={d.is_active ? 'active' : 'inactive'} /> },
   ];
   const { visibleColumns: visibleDepartmentColumns, toggleColumn: toggleDepartmentColumn, resetColumns: resetDepartmentColumns, tableVisible: departmentTableVisible, toggleTable: toggleDepartmentTable } = useTableColumns(
@@ -1703,6 +1993,8 @@ export function Departments() {
     ['name', 'code', 'head', 'members', 'is_active'],
   );
   const departmentColumns = DEPARTMENT_COLUMNS.filter((c) => visibleDepartmentColumns.has(c.key));
+  const [q, setQ] = useState('');
+  const [sort, changeSort, orderingParam] = useSort();
 
   const loadUrl = async (url) => {
     setLoading(true);
@@ -1719,8 +2011,27 @@ export function Departments() {
       setLoading(false);
     }
   };
-  useEffect(() => { loadUrl('/accounts/departments/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const refresh = () => loadUrl('/accounts/departments/');
+  const buildUrl = (over = {}, sortOverride) => {
+    const p = new URLSearchParams();
+    if (over.q) p.set('q', over.q);
+    const ord = orderingParam(sortOverride);
+    if (ord) p.set('ordering', ord);
+    const qs = p.toString();
+    return `/accounts/departments/${qs ? `?${qs}` : ''}`;
+  };
+  const qsKey = JSON.stringify([q, orderingParam(sort)]);
+  const builtUrl = useMemo(() => buildUrl({ q }, orderingParam(sort)), [qsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Debounced, server-side search across the full department dataset.
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      if (cancelled) return;
+      await loadUrl(builtUrl);
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [builtUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  const refresh = () => loadUrl(builtUrl);
+  const changeDepartmentSort = (field) => changeSort(field);
 
   const toggleActive = async (d) => {
     if (busy) return;
@@ -1768,6 +2079,25 @@ export function Departments() {
       />
       {err && <div className="error-summary" role="alert">{err}</div>}
       {msg && <div className="success-summary" role="status">{msg}</div>}
+      <div className="filter-bar" role="search">
+        <div className="field-inline grow">
+          <div className="caption">Search</div>
+          <input
+            className="input" value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Department name or code…" aria-label="Search departments"
+          />
+        </div>
+        {q && (
+          <button
+            type="button" className="btn-ghost"
+            onClick={() => setQ('')}
+            aria-label="Clear department search"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
       <div className="panel">
         {loading ? <div className="panel-pad"><LoadingRows n={5} /></div>
           : listError ? <div className="panel-pad"><div className="error-summary" role="alert">{listError} <button type="button" className="btn-small" onClick={refresh}>Retry</button></div></div>
@@ -1775,6 +2105,8 @@ export function Departments() {
             <TableControls tableVisible={departmentTableVisible} onToggleTable={toggleDepartmentTable} columns={DEPARTMENT_COLUMNS} visible={visibleDepartmentColumns} onToggleColumn={toggleDepartmentColumn} onReset={resetDepartmentColumns} />
             {departmentTableVisible ? (
               <DataTable
+                sort={sort}
+                onSort={changeDepartmentSort}
                 columns={[...departmentColumns, {
                   key: 'actions', label: 'Actions', thClass: 'cell-actions', render: (d) => isStaff ? (
                     <div className="cell-actions">

@@ -45,6 +45,14 @@ def _history(asset, actor, action, old=None, new=None, note=""):
                                 note=note)
 
 
+def _validation_error_payload(exc):
+    """Flatten a Django ValidationError into a DRF-friendly payload."""
+    if hasattr(exc, "error_dict") and exc.error_dict:
+        return exc.error_dict
+    errors = getattr(exc, "error_list", None) or [str(exc)]
+    return {"non_field_errors": [str(e) for e in errors]}
+
+
 def _notify_assignee(recipient, actor, title, body, asset):
     """Create an in-app notification for an asset assignment event.
 
@@ -414,25 +422,58 @@ class AssetViewSet(viewsets.ModelViewSet):
         obj = self.get_object()
         ser = AssetAssignSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from django.db import IntegrityError as DjangoIntegrityError
+        from django.utils import timezone
         from accounts.models import User
         target_id = ser.validated_data.get("assigned_to")
         target = User.objects.filter(pk=target_id).first() if target_id else None
         old = {"assigned_to": obj.assigned_to_id, "status": obj.status}
-        with transaction.atomic():
-            obj.assigned_to = target
-            obj.status = "assigned" if target else "available"
-            obj.save(update_fields=["assigned_to", "status"])
-            Assignment.objects.create(asset=obj, assigned_to=target,
-                                      assigned_by=request.user,
-                                      note=ser.validated_data.get("note", ""))
-            _history(obj, request.user, "assigned", old=old,
-                     new={"assigned_to": target_id, "status": obj.status},
-                     note=ser.validated_data.get("note", ""))
-            _notify_assignee(target, request.user,
-                             f"Asset {obj.asset_tag} assigned to you",
-                             f"{obj.name}", obj)
-            log_action(actor=request.user, action="assignment", instance=obj,
-                       details={"assigned_to": target_id})
+        assignment = None
+        try:
+            with transaction.atomic():
+                if target:
+                    # Record the open assignment first so the asset clean()
+                    # (status == assigned requires a holder + open assignment)
+                    # passes when we flip the asset below.
+                    assignment = Assignment.objects.create(
+                        asset=obj, assigned_to=target,
+                        assigned_by=request.user,
+                        note=ser.validated_data.get("note", ""))
+                    obj.assigned_to = target
+                    obj.status = "assigned"
+                else:
+                    # Unassign: close any open assignment, clear the holder.
+                    for open_a in obj.assignments.filter(
+                            returned_at__isnull=True):
+                        open_a.returned_at = timezone.now()
+                        open_a.save(update_fields=["returned_at"])
+                    obj.assigned_to = None
+                    obj.status = "available"
+                obj.save(update_fields=["assigned_to", "status"])
+                _history(obj, request.user, "assigned", old=old,
+                         new={"assigned_to": obj.assigned_to_id,
+                              "status": obj.status,
+                              **({"assignment_id": assignment.pk}
+                                 if assignment else {})},
+                         note=ser.validated_data.get("note", ""))
+                _notify_assignee(target, request.user,
+                                 f"Asset {obj.asset_tag} assigned to you",
+                                 f"{obj.name}", obj)
+                log_action(actor=request.user, action="assignment",
+                           instance=obj, details={"assigned_to": obj.assigned_to_id})
+        except DjangoValidationError as exc:
+            # Integrity rules (ineligible holder, already assigned, retired/
+            # lost asset, ...) are business errors -> clean 400, never a 500.
+            return Response(
+                {"detail": "Assignment rejected by the data-integrity rules.",
+                 "errors": _validation_error_payload(exc)},
+                status=status.HTTP_400_BAD_REQUEST)
+        except DjangoIntegrityError:
+            return Response(
+                {"detail": "Assignment could not be recorded: the asset may "
+                           "already be assigned to another employee."},
+                status=status.HTTP_409_CONFLICT)
         return Response(AssetSerializer(obj).data)
 
     @action(detail=True, methods=["post"])
@@ -461,12 +502,22 @@ class AssetViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def retire(self, request, pk=None):
         obj = self.get_object()
-        old = {"status": obj.status}
-        obj.status = "retired"
-        obj.save(update_fields=["status"])
-        _history(obj, request.user, "retired", old=old,
-                 new={"status": "retired"})
-        log_action(actor=request.user, action="retire", instance=obj)
+        old = {"assigned_to": obj.assigned_to_id, "status": obj.status}
+        with transaction.atomic():
+            # A retired asset cannot keep a holder: close the open
+            # assignment and clear the holder so the asset's clean()
+            # (retired != assigned with a holder) passes.
+            if obj.assigned_to_id is not None:
+                from django.utils import timezone
+                obj.assignments.filter(
+                    returned_at__isnull=True).update(
+                        returned_at=timezone.now())
+            obj.assigned_to = None
+            obj.status = "retired"
+            obj.save(update_fields=["assigned_to", "status"])
+            _history(obj, request.user, "retired", old=old,
+                     new={"assigned_to": None, "status": "retired"})
+            log_action(actor=request.user, action="retire", instance=obj)
         return Response(AssetSerializer(obj).data)
 
     @action(detail=True, methods=["post"])
@@ -734,7 +785,13 @@ class AssetViewSet(viewsets.ModelViewSet):
                     seen.add(tag)
                     if serial:
                         seen_serials.add(serial)
-                    ok.append({"row": i, "asset_tag": tag})
+                    if str(r.get("status") or "available") == "assigned":
+                        errors.append(
+                            {"row": i,
+                             "errors": "status 'assigned' cannot be imported; "
+                                      "use the assign workflow"})
+                    else:
+                        ok.append({"row": i, "asset_tag": tag})
             return Response({"preview": ok, "errors": errors})
         if not request.data.get("confirm"):
             return Response({"detail": "Confirmation required."}, status=400)
@@ -777,6 +834,12 @@ class AssetViewSet(viewsets.ModelViewSet):
                         cost = cost if cost in (None, "") else float(cost)
                     except (TypeError, ValueError):
                         cost = None
+                    if str(r.get("status") or "available") == "assigned":
+                        failed.append(
+                            {"row": i, "asset_tag": tag,
+                             "errors": "status 'assigned' cannot be imported; "
+                                       "use the assign workflow"})
+                        continue
                     obj = Asset(asset_tag=tag, name=r.get("name", tag),
                                 category=cat,
                                 serial_number=serial,
@@ -877,6 +940,16 @@ class AssetViewSet(viewsets.ModelViewSet):
                                           f"{new_serial}"})
                             continue
                         changes["serial_number"] = new_serial
+                    new_status = changes.get("status")
+                    if (new_status is not None and new_status != obj.status
+                            and new_status in ("assigned", "retired", "lost")):
+                        failed.append(
+                            {"asset_tag": r.get("asset_tag"),
+                             "errors": f"Status '{new_status}' must be set "
+                                       f"through its dedicated workflow "
+                                       f"(assign, retire, or mark lost), not "
+                                       f"generic editing."})
+                        continue
                     for k, v in changes.items():
                         setattr(obj, k, v)
                     obj.save()

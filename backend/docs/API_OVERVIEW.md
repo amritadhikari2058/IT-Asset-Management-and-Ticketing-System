@@ -13,9 +13,25 @@ Trailing slashes required (DRF default).
 - `POST /api/accounts/change-password/` (authenticated self only):
   `{current_password, new_password}` → 200; wrong current password → 400;
   new password validated with Django's password validators. Never logged.
-- `departments/` CRUD (soft delete; 409 + references if still used).
+- `POST /api/accounts/users/<id>/reset_password/` (System Admin only):
+  `{new_password, confirm?}`. Sets a new password for the target employee via
+  `set_password` (Django password validators applied; never cleartext/logged).
+  Old password stops working immediately; outstanding password-reset tokens are
+  invalidated and outstanding JWT refresh tokens are blacklisted (existing
+  sessions must re-authenticate). Audited (`password_reset`) without secrets;
+  response never exposes hashes or the new password.
+- `departments/` CRUD (soft delete; 409 + references if still used). The list
+  supports server-side search with `q` (name or code); each row shows member
+  and asset counts.
 - `users/` CRUD + `deactivate/`, `reactivate/`, `change_role/`
   (Admin-only), `hard_delete/` (Admin-only, confirm+reason).
+  The list supports server-side filtering with `q` (employee ID, email, first
+  or last name), `department` (ID or code), `role`, and `is_active`, plus
+  `ordering` by `employee_id` or `email`.
+- `users/<id>/employee_detail/` (IT staff only): GET an administrative
+  overview for a single employee — the user record plus assigned assets,
+  tickets requested / assigned, and recent audit activity. No passwords or
+  hashes are exposed.
 - `users/bulk_import/` GET template info (JSON by default; append
   `?download=csv` for a header-only CSV template file); POST `file`/`rows` with
   `preview:true` then `confirm:true` → `{successful, skipped, failed}`.

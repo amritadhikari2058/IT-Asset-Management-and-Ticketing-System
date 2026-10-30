@@ -140,6 +140,8 @@ class AuditLog(models.Model):
         ("reactivate", "Reactivate"),
         ("retire", "Retire"),
         ("note", "Note / comment"),
+        ("password_reset", "Password reset"),
+        ("export", "Export"),
     ]
 
     actor = models.ForeignKey(

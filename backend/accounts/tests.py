@@ -5,6 +5,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import Department, User
 from assets.models import Asset, AssetCategory
+from common.audit import log_action
 from common.models import AuditLog
 from tickets.models import Ticket, TicketCategory
 
@@ -473,6 +474,98 @@ class ChangePasswordTests(TestCase):
         self.assertFalse(res.data["email_verified"])
 
 
+class AdminPasswordResetTests(TestCase):
+    """System Admin forced password reset (admin-only employee flow)."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.admin)
+
+    def _reset(self, user=None, new_password="brand-new-pass-99",
+               confirm="brand-new-pass-99"):
+        return self.c.post(
+            f"/api/accounts/users/{(user or self.emp).pk}/reset_password/",
+            {"new_password": new_password, "confirm": confirm},
+            format="json")
+
+    def test_admin_reset_sets_new_password(self):
+        res = self._reset()
+        self.assertEqual(res.status_code, 200, res.data)
+        self.emp.refresh_from_db()
+        self.assertTrue(self.emp.check_password("brand-new-pass-99"))
+        self.assertFalse(self.emp.check_password("pw12345678"))
+
+    def test_reset_requires_matching_confirmation(self):
+        res = self._reset(confirm="different-pass-123")
+        self.assertEqual(res.status_code, 400)
+        self.emp.refresh_from_db()
+        self.assertTrue(self.emp.check_password("pw12345678"))
+
+    def test_reset_rejects_weak_password(self):
+        res = self._reset(new_password="123", confirm="123")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("new_password", res.data)
+        self.emp.refresh_from_db()
+        self.assertTrue(self.emp.check_password("pw12345678"))
+
+    def test_employee_can_authenticate_with_new_password(self):
+        self.assertEqual(self._reset().status_code, 200)
+        res = self.c.post("/api/token/",
+                          {"email": "e@x", "password": "brand-new-pass-99"},
+                          format="json")
+        self.assertEqual(res.status_code, 200)
+        res = self.c.post("/api/token/",
+                          {"email": "e@x", "password": "pw12345678"},
+                          format="json")
+        self.assertEqual(res.status_code, 401)
+
+    def test_it_manager_cannot_reset_password(self):
+        auth(self.c, self.mgr)
+        res = self._reset()
+        self.assertEqual(res.status_code, 403)
+        self.emp.refresh_from_db()
+        self.assertTrue(self.emp.check_password("pw12345678"))
+
+    def test_employee_cannot_reset_password(self):
+        auth(self.c, self.emp)
+        res = self._reset()
+        self.assertEqual(res.status_code, 403)
+        self.emp.refresh_from_db()
+        self.assertTrue(self.emp.check_password("pw12345678"))
+
+    def test_anonymous_cannot_reset_password(self):
+        self.c.credentials()
+        res = self._reset()
+        self.assertEqual(res.status_code, 401)
+
+    def test_reset_response_exposes_no_password(self):
+        res = self._reset()
+        self.assertEqual(res.status_code, 200)
+        self.assertNotIn("password", res.data)
+        self.assertNotIn("hash", str(res.data))
+
+    def test_reset_writes_audit_without_password(self):
+        self.assertEqual(self._reset().status_code, 200)
+        logs = AuditLog.objects.filter(action="password_reset")
+        self.assertTrue(logs.exists())
+        for log in logs:
+            blob = f"{log.reason}{log.details}{log.object_repr}"
+            self.assertNotIn("brand-new-pass-99", blob)
+            self.assertNotIn("pw12345678", blob)
+
+    def test_reset_blacklists_outstanding_refresh_tokens(self):
+        from rest_framework_simplejwt.token_blacklist.models import (
+            BlacklistedToken, OutstandingToken,
+        )
+        from rest_framework_simplejwt.tokens import RefreshToken
+        RefreshToken.for_user(self.emp)
+        self.assertTrue(OutstandingToken.objects.filter(user=self.emp).exists())
+        self.assertEqual(self._reset().status_code, 200)
+        self.assertTrue(
+            BlacklistedToken.objects.filter(token__user=self.emp).exists())
+
+
 class DepartmentEditTests(TestCase):
     """Department EDIT flow (prefilled modal -> PATCH): IT staff only,
     clear field errors on duplicates, references untouched."""
@@ -517,3 +610,131 @@ class DepartmentEditTests(TestCase):
         self.emp.refresh_from_db()
         self.assertEqual(self.emp.home_department_id, self.dep.pk)
         self.assertEqual(self.emp.home_department.name, "Renamed Dept")
+
+
+class UserListFilterTests(TestCase):
+    """Employee list filtering: department, role, status, and expanded q."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.ops = Department.objects.create(name="Ops", code="OPSX")
+        self.emp2 = User.objects.create_user(
+            username="e2@x", email="e2@x", employee_id="E2",
+            password="pw12345678", role="it_support",
+            home_department=self.ops, is_active=False)
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+
+    def _ids(self, res):
+        self.assertEqual(res.status_code, 200, res.data)
+        return [r["employee_id"] for r in res.data["results"]]
+
+    def test_q_matches_name_and_email(self):
+        User.objects.create_user(
+            username="jan@x", email="jan@x", employee_id="J1",
+            password="pw12345678", first_name="Janice", last_name="Doe")
+        res = self.c.get("/api/accounts/users/", {"q": "janice"})
+        self.assertEqual(self._ids(res), ["J1"])
+        res = self.c.get("/api/accounts/users/", {"q": "e2@x"})
+        self.assertEqual(self._ids(res), ["E2"])
+
+    def test_department_filter_by_id_and_code(self):
+        res = self.c.get("/api/accounts/users/",
+                         {"department": self.ops.pk})
+        self.assertEqual(self._ids(res), ["E2"])
+        res = self.c.get("/api/accounts/users/",
+                         {"department": "opsx"})
+        self.assertEqual(self._ids(res), ["E2"])
+        res = self.c.get("/api/accounts/users/",
+                         {"department": self.dep.pk})
+        self.assertEqual(sorted(self._ids(res)), ["A1", "E1", "M1"])
+
+    def test_role_filter(self):
+        res = self.c.get("/api/accounts/users/", {"role": "it_support"})
+        self.assertEqual(self._ids(res), ["E2"])
+        res = self.c.get("/api/accounts/users/", {"role": "employee"})
+        self.assertEqual(self._ids(res), ["E1"])
+
+    def test_is_active_filter(self):
+        res = self.c.get("/api/accounts/users/", {"is_active": "false"})
+        self.assertEqual(self._ids(res), ["E2"])
+        res = self.c.get("/api/accounts/users/", {"is_active": "true"})
+        self.assertEqual(sorted(self._ids(res)), ["A1", "E1", "M1"])
+
+
+class UserDetailTests(TestCase):
+    """Employee detail: assigned assets, tickets, recent audit."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+        self.cat = AssetCategory.objects.create(name="Laptops")
+        self.tcat = TicketCategory.objects.create(name="SW")
+        self.asset = Asset.objects.create(
+            asset_tag="L1", name="Laptop", category=self.cat,
+            status="assigned", assigned_to=self.emp, department=self.dep)
+        self.ticket_req = Ticket.objects.create(
+            title="req", description="d", category=self.tcat,
+            requester=self.emp, department=self.dep)
+        self.ticket_ass = Ticket.objects.create(
+            title="ass", description="d", category=self.tcat,
+            requester=self.emp, assignee=self.emp, department=self.dep)
+        log_action(actor=self.admin, action="update", instance=self.emp,
+                   details={"employee_id": self.emp.employee_id})
+        self.emp.refresh_from_db()
+
+    def _ids(self, key, res):
+        self.assertEqual(res.status_code, 200, res.data)
+        return [r.get("id") for r in res.data[key]]
+
+    def test_detail_includes_assigned_assets_and_tickets(self):
+        res = self.c.get(f"/api/accounts/users/{self.emp.pk}/employee_detail/")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["user"]["employee_id"], "E1")
+        assigned = self._ids("assigned_assets", res)
+        requested = self._ids("tickets_requested", res)
+        assigned_tickets = self._ids("tickets_assigned", res)
+        self.assertEqual(set(assigned), {self.asset.pk})
+        # ticket_ass was also requested by the emp, so both appear here.
+        self.assertEqual(set(requested), {self.ticket_req.pk, self.ticket_ass.pk})
+        self.assertEqual(set(assigned_tickets), {self.ticket_ass.pk})
+        self.assertTrue(len(res.data["recent_audit"]) >= 1)
+
+    def test_detail_forbidden_for_employee(self):
+        auth(self.c, self.emp)
+        res = self.c.get(f"/api/accounts/users/{self.mgr.pk}/employee_detail/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_detail_no_password_exposed(self):
+        res = self.c.get(f"/api/accounts/users/{self.emp.pk}/employee_detail/")
+        self.assertEqual(res.status_code, 200)
+        blob = str(res.data)
+        self.assertNotIn("password", blob.lower())
+
+
+class DepartmentSearchTests(TestCase):
+    """Department list search by name or code."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        Department.objects.create(name="Operations", code="OPSX")
+        Department.objects.create(name="Sales", code="SAL")
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+
+    def test_q_matches_name_or_code(self):
+        res = self.c.get("/api/accounts/departments/", {"q": "operations"})
+        self.assertEqual(res.status_code, 200, res.data)
+        names = [r["name"] for r in res.data["results"]]
+        self.assertIn("Operations", names)
+        self.assertNotIn("Eng", names)
+        res = self.c.get("/api/accounts/departments/", {"q": "SAL"})
+        names = [r["name"] for r in res.data["results"]]
+        self.assertEqual(names, ["Sales"])
+
+    def test_department_member_count_present(self):
+        res = self.c.get("/api/accounts/departments/")
+        self.assertEqual(res.status_code, 200, res.data)
+        eng = [r for r in res.data["results"] if r["code"] == "ENGX"][0]
+        self.assertEqual(eng["member_count"], 3)

@@ -200,4 +200,129 @@ describe('Users row actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Deactivate' }));
     expect(await screen.findByText('Blocked.')).toBeTruthy();
   });
+
+  it('shows the reset password action only to admins', async () => {
+    admin();
+    render(<Users />);
+    await screen.findByText('E5');
+    expect(screen.getAllByRole('button', { name: 'Reset password' + String.fromCharCode(8230) }).length).toBeGreaterThan(0);
+
+    staff();
+    cleanup();
+    render(<Users />);
+    await screen.findByText('E5');
+    expect(screen.queryByRole('button', { name: /Reset password/ })).toBeNull();
+  });
+
+  it('opens the reset password modal and submits a new password', async () => {
+    admin();
+    mockPost.mockResolvedValue({ data: { detail: 'Password reset for "E5" completed.' } });
+    render(<Users />);
+    await screen.findByText('E5');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reset password' + String.fromCharCode(8230) })[0]);
+    expect(screen.getByText('Reset password for E5')).toBeTruthy();
+    const pwInput = screen.getByLabelText('New password for E5');
+    const confirmInput = screen.getByLabelText('Confirm new password for E5');
+    const submit = screen.getByRole('button', { name: 'Reset password' });
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(pwInput, { target: { value: 'brand-new-pass-99' } });
+    fireEvent.change(confirmInput, { target: { value: 'brand-new-pass-99' } });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/accounts/users/5/reset_password/', {
+        new_password: 'brand-new-pass-99', confirm: 'brand-new-pass-99',
+      });
+    });
+    expect(await screen.findByText('Password reset for \"E5\" completed.')).toBeTruthy();
+  });
+
+  it('surfaces reset password errors', async () => {
+    admin();
+    mockPost.mockRejectedValueOnce({
+      response: { status: 400, data: { new_password: ['This password is too short. It must contain at least 8 characters.'] } },
+    });
+    render(<Users />);
+    await screen.findByText('E5');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reset password' + String.fromCharCode(8230) })[0]);
+    fireEvent.change(screen.getByLabelText('New password for E5'), { target: { value: 'brand-new-pass-99' } });
+    fireEvent.change(screen.getByLabelText('Confirm new password for E5'), { target: { value: 'brand-new-pass-99' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset password' }));
+    expect(await screen.findByText(/too short/i)).toBeTruthy();
+  });
+
+  it('applies role and status filters to the list request', async () => {
+    admin();
+    render(<Users />);
+    await screen.findByText('E5');
+    fireEvent.change(screen.getByLabelText('Filter by role'), {
+      target: { value: 'it_support' },
+    });
+    fireEvent.change(screen.getByLabelText('Filter by account status'), {
+      target: { value: 'false' },
+    });
+    await waitFor(() => {
+      const calls = mockGet.mock.calls.filter(([url]) =>
+        String(url).startsWith('/accounts/users/'));
+      const last = String(calls[calls.length - 1][0]);
+      expect(last).toContain('role=it_support');
+      expect(last).toContain('status=false');
+    });
+  });
+
+  it('applies the department filter to the list request', async () => {
+    admin();
+    mockGet.mockImplementation(async (url) => {
+      if (String(url).startsWith('/accounts/users/')) {
+        return {
+          data: { results: [ACTIVE], count: 1, next: null, previous: null },
+        };
+      }
+      if (String(url).startsWith('/accounts/departments/')) {
+        return {
+          data: {
+            results: [{ id: 7, name: 'Eng', code: 'ENGX', member_count: 1 }],
+            count: 1,
+          },
+        };
+      }
+      throw new Error(`unexpected GET ${url}`);
+    });
+    render(<Users />);
+    await screen.findByText('E5');
+    await waitFor(() =>
+      expect(screen.getAllByRole('option', { name: 'Eng' })).toHaveLength(1),
+    );
+    fireEvent.change(screen.getByLabelText('Department'), {
+      target: { value: '7' },
+    });
+    await waitFor(() => {
+      const calls = mockGet.mock.calls.filter(([url]) =>
+        String(url).startsWith('/accounts/users/'));
+      expect(String(calls[calls.length - 1][0])).toContain('department=7');
+    });
+  });
+
+  it('clears filters and re-requests the full list', async () => {
+    admin();
+    render(<Users />);
+    await screen.findByText('E5');
+    fireEvent.change(screen.getByLabelText('Filter by role'), {
+      target: { value: 'it_support' },
+    });
+    await waitFor(() => {
+      const calls = mockGet.mock.calls.filter(([url]) =>
+        String(url).startsWith('/accounts/users/'));
+      expect(String(calls[calls.length - 1][0])).toContain('role=it_support');
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Clear all employee filters/ }));
+    await waitFor(() => {
+      const calls = mockGet.mock.calls.filter(([url]) =>
+        String(url).startsWith('/accounts/users/'));
+      const last = String(calls[calls.length - 1][0]);
+      expect(last).not.toContain('role=');
+      expect(last).not.toContain('status=');
+      expect(last).not.toContain('department=');
+    });
+  });
 });

@@ -8,6 +8,7 @@ action-level guards. Frontend hiding is UX only; backend enforces.
 | Login (JWT), view own profile | yes | yes | yes | yes |
 | Change own `receive_ticket_emails` (`PATCH me/`) | yes | yes | yes | yes |
 | Change own password (current password required) | yes | yes | yes | yes |
+| Reset another employee's password (admin-only) | yes | no | no | no |
 | Create ticket (for themselves; dept select, reason if cross-dept) | yes | yes | yes | if `can_create_tickets` |
 | Bulk create tickets (same per-row rules; requester always self) | yes | yes | yes | if `can_create_tickets` (no assignee) |
 | View own + home-department tickets | yes (all) | all | all | own + home dept only |
@@ -16,6 +17,7 @@ action-level guards. Frontend hiding is UX only; backend enforces.
 | Assignee eligibility (anyone setting one) | must exist, non-deleted, active | must exist, non-deleted, active | must exist, non-deleted, active | must exist, non-deleted, active |
 | Edit own/visible ticket title, description, department, asset, notes | yes | yes | yes | yes (staff-only fields → 403) |
 | Edit employee details per-row (`PATCH users/<id>/`) | yes | yes | yes | no (403) |
+| View employee detail overview (assets, tickets, audit) | yes | yes | yes | no |
 | Soft-delete tickets, single (`DELETE /api/tickets/<id>/`) and bulk (`bulk_delete/`) | yes | yes | yes | no (403) |
 | Add internal notes | yes | yes | yes | no (requester-visible only) |
 | View ticket history (`tickets.view_ticket_history`) | yes | yes | if granted | no |
