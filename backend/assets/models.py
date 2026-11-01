@@ -215,6 +215,12 @@ class Maintenance(SoftDeleteModel):
         ("overdue", "Overdue"),
     ]
 
+    RENEWAL_CHOICES = [
+        ("none", "One‑off"),
+        ("weekly", "Weekly"),
+        ("monthly", "Monthly"),
+    ]
+
     asset = models.ForeignKey(
         Asset, on_delete=models.PROTECT, related_name="maintenance")
     title = models.CharField(max_length=200)
@@ -248,6 +254,9 @@ class Maintenance(SoftDeleteModel):
         related_name="maintenance_created")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    recurrence = models.CharField(
+        max_length=10, choices=RENEWAL_CHOICES, default="none",
+        help_text="Repeats the maintenance schedule when set.")
 
     class Meta:
         ordering = ["-scheduled_date", "-id"]
@@ -266,6 +275,107 @@ class Maintenance(SoftDeleteModel):
             return False
         from django.utils import timezone
         return timezone.now() > self.scheduled_date
+
+
+class MaintenanceReminder(models.Model):
+    """Track maintenance reminders to avoid duplicate notifications.
+
+    One record per (maintenance, level) ensures we only fire a given notification
+    type once per maintenance item until the state changes.
+    """
+    LEVEL_CHOICES = (
+        ("before", "Before scheduled date"),
+        ("overdue", "Overdue notification"),
+    )
+
+    maintenance = models.ForeignKey(
+        Maintenance, on_delete=models.CASCADE, related_name="reminders")
+    level = models.CharField(max_length=20, choices=LEVEL_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("maintenance", "level")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Maint #{self.maintenance_id} {self.level}"
+
+
+class KnowledgeBaseCategory(models.Model):
+    """Category for knowledge‑base articles."""
+    name = models.CharField(max_length=100, unique=True)
+    code = models.SlugField(max_length=50, unique=True, help_text="Short identifier, used in URLs.")
+    description = models.TextField(blank=True, default="")
+    is_published = models.BooleanField(default=True, help_text="Visible to employees in the portal.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="kb_categories_created")
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class KnowledgeBaseTag(models.Model):
+    """Tag for knowledge‑base articles."""
+    name = models.CharField(max_length=50, unique=True)
+    slug = models.SlugField(max_length=50, unique=True)
+    description = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class KnowledgeBaseArticle(models.Model):
+    """A knowledge‑base article that employees can browse and search."""
+    STATUS_CHOICES = (
+        ("draft", "Draft"),
+        ("published", "Published"),
+        ("archived", "Archived"),
+    )
+
+    title = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255, unique=True)
+    category = models.ForeignKey(
+        KnowledgeBaseCategory,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="articles")
+    tags = models.ManyToManyField(
+        KnowledgeBaseTag, blank=True, related_name="articles")
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="kb_articles_authored")
+    content = models.TextField(
+        help_text="Rich but controlled article content (markdown‑style, no HTML).")
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default="published")
+    view_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.title
+
+    def increment_view(self):
+        """Atomically increment the view counter."""
+        KnowledgeBaseArticle.objects.filter(pk=self.pk).update(view_count=F("view_count") + 1)
 
 
 class Disposal(SoftDeleteModel):
@@ -351,34 +461,6 @@ class Disposal(SoftDeleteModel):
                                   "disposal is approved."})
 
 
-class AssetAttachment(SoftDeleteModel):
-    """Private asset files. Same lifecycle as ticket attachments.
-
-    - UUID storage names under asset_attachments/ (no traversal).
-    - Soft delete keeps the bytes; restore re-exposes them.
-    - Permanent deletion unlinks the file only when no retained record
-      still references the same stored file (see recycle-bin flow).
-    """
-
-    asset = models.ForeignKey(
-        Asset, on_delete=models.PROTECT, related_name="attachments")
-    file = models.FileField(upload_to=asset_attachment_upload_to)
-    original_filename = models.CharField(max_length=255, blank=True, default="")
-    uploaded_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="asset_attachments")
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-
-    def __str__(self):
-        return f"Attachment {self.original_filename or self.pk} on {self.asset_id}"
-
-
 class Assignment(models.Model):
     """Assignment history. Survives employee deactivation + asset retirement."""
 
@@ -460,6 +542,26 @@ class Assignment(models.Model):
     def __str__(self):
         who = self.assigned_to or "—"
         return f"{self.asset_id} -> {who} @ {self.assigned_at:%Y-%m-%d}"
+
+
+class AssetAssignment(models.Model):
+    """Asset assignment change record."""
+
+    asset = models.ForeignKey(
+        Asset, on_delete=models.PROTECT, related_name="asset_assignments")
+    employee = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="asset_assignments_employee")
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="asset_assignments_given")
+    note = models.TextField(blank=True, default="")
+    effective_from = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-effective_from"]
+
+    def __str__(self):
+        return f"{self.asset.asset_tag} assigned to {self.employee_id}"
 
 
 class AssetHistory(models.Model):

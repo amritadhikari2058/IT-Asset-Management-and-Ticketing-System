@@ -160,6 +160,13 @@ class TicketSLA(SoftDeleteModel):
     target_resolution_hours is the clock within which a ticket of this
     priority should be resolved. Used to compute sla_due_at on creation and
     to flag overdue tickets.
+
+    escalation_hours: if set, send a notification this many hours before the
+    SLA deadline (breach threshold).  When null, the default is 80 % of
+    target_resolution_hours.
+
+    breach_hours: if set, send a breach notification this many hours after the
+    SLA deadline.  When null, the default is target_resolution_hours + 4.
     """
 
     priority = models.CharField(
@@ -167,6 +174,14 @@ class TicketSLA(SoftDeleteModel):
     target_resolution_hours = models.PositiveIntegerField(
         default=24,
         help_text="Target resolution window in hours for this priority.")
+    escalation_hours = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Hours before the SLA deadline to send an escalation notification.")
+    breach_hours = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Hours after the SLA deadline to send a breach notification.")
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -179,6 +194,48 @@ class TicketSLA(SoftDeleteModel):
 
     def __str__(self):
         return f"SLA {self.get_priority_display()}: {self.target_resolution_hours}h"
+
+    def escalation_deadline(self):
+        """Return the datetime at which an escalation notification should fire."""
+        from django.utils import timezone
+        if self.escalation_hours:
+            return timezone.now() + timedelta(hours=self.escalation_hours)
+        # default: 80 % of target
+        return timezone.now() + timedelta(
+            hours=self.target_resolution_hours * 4 // 5)
+
+    def breach_deadline(self):
+        """Return the datetime at which a breach notification should fire."""
+        from django.utils import timezone
+        if self.breach_hours:
+            return timezone.now() + timedelta(hours=self.breach_hours)
+        # default: 4 hours after the target window
+        return timezone.now() + timedelta(hours=self.target_resolution_hours + 4)
+
+
+class SLAEscalation(models.Model):
+    """Track SLA escalation events to prevent duplicate notifications.
+
+    One record per (ticket, level) ensures we only fire a given notification
+    type once per ticket until the state changes.
+    """
+
+    LEVEL_CHOICES = (
+        ("approach", "Approaching deadline"),
+        ("breach", "SLA breached"),
+    )
+
+    ticket = models.ForeignKey(
+        Ticket, on_delete=models.CASCADE, related_name="sla_escalations")
+    level = models.CharField(max_length=20, choices=LEVEL_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("ticket", "level")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"SLA #{self.ticket_id} {self.level}"
 
 
 class TicketNote(models.Model):

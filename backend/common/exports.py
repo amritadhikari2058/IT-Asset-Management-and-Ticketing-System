@@ -125,6 +125,40 @@ DATASETS = {
         ],
         "permission": "it_staff",
     },
+    "maintenance": {
+        "title": "Asset Maintenance",
+        "fields": [
+            "id", "asset_tag", "asset_name", "title", "maintenance_type",
+            "status", "scheduled_date", "start_date", "completion_date",
+            "assigned_to", "vendor", "cost", "is_overdue", "created_at",
+        ],
+        "permission": "it_staff",
+    },
+    "disposals": {
+        "title": "Asset Disposals",
+        "fields": [
+            "id", "asset_tag", "asset_name", "approval_status",
+            "disposal_date", "disposal_reason", "disposal_method",
+            "disposal_value", "responsible_person", "approver", "approved_at",
+            "is_completed", "created_at",
+        ],
+        "permission": "it_staff",
+    },
+    "department_report": {
+        "title": "Department Report",
+        "fields": [
+            "id", "name", "code", "employees_total", "employees_active",
+            "assets_total", "assets_available", "assets_assigned",
+            "assets_in_repair", "assets_retired", "assets_lost",
+            "assets_disposed", "tickets_total", "tickets_open",
+            "tickets_in_progress", "tickets_resolved", "tickets_closed",
+            "tickets_reopened", "tickets_archived", "priority_low",
+            "priority_medium", "priority_high", "priority_critical",
+            "sla_overdue", "sla_breached", "sla_compliance_pct",
+            "avg_resolution_hours",
+        ],
+        "permission": "it_staff",
+    },
 }
 
 
@@ -189,9 +223,9 @@ def department_rows(user=None, filters=None):
             "code": d.code,
             "description": d.description or "",
             "head": d.head_id or "",
-            "head_email": d.head.email if d.head else "",
+            "head_email": (d.head.email if d.head_id and not d.head.is_deleted else ""),
             "is_active": "true" if d.is_active else "false",
-            "member_count": d.members.count(),
+            "member_count": d.members.filter(is_active=True).count(),
             "asset_count": d.assets.count(),
             "created_at": d.created_at.isoformat() if d.created_at else "",
             "updated_at": d.updated_at.isoformat() if d.updated_at else "",
@@ -371,6 +405,15 @@ BUILDERS = {
     "asset_categories": lambda filters=None: category_rows(
         __import__("assets.models", fromlist=["AssetCategory"]).AssetCategory, filters),
     "ticket_history": ticket_history_rows,
+    "maintenance": lambda user=None, filters=None: __import__(
+        "common.reports", fromlist=["maintenance_rows"]).maintenance_rows(
+            user, filters),
+    "disposals": lambda user=None, filters=None: __import__(
+        "common.reports", fromlist=["disposal_rows"]).disposal_rows(
+            user, filters),
+    "department_report": lambda user=None, filters=None: __import__(
+        "common.reports", fromlist=["department_report_rows"]
+    ).department_report_rows(user, filters),
 }
 
 

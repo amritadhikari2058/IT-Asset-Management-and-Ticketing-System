@@ -4,7 +4,7 @@ from accounts.models import Department, User
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
-    head_email = serializers.CharField(source="head.email", read_only=True)
+    head_email = serializers.SerializerMethodField(read_only=True)
     member_count = serializers.IntegerField(read_only=True)
     asset_count = serializers.IntegerField(read_only=True)
 
@@ -14,6 +14,12 @@ class DepartmentSerializer(serializers.ModelSerializer):
                   "is_active", "member_count", "asset_count",
                   "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_head_email(self, obj):
+        head = obj.head
+        if head is None or head.is_deleted:
+            return None
+        return head.email
 
 
 class UserSerializer(serializers.ModelSerializer):

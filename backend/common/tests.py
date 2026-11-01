@@ -290,6 +290,77 @@ class NotificationReadTests(TestCase):
         self.assertEqual(self._unread(self.emp), 1)
 
 
+class NotificationFilterTests(TestCase):
+    """Notification list filters and the unread-count badge endpoint."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        Notification.objects.create(
+            recipient=self.emp, title="Ticket assigned", body="You own #12",
+            entity_type="tickets.Ticket", object_id="12")
+        Notification.objects.create(
+            recipient=self.emp, title="Asset returned", body="Laptop PR-1",
+            entity_type="assets.Asset", object_id="1", is_read=True)
+        Notification.objects.create(
+            recipient=self.emp, title="Maintenance scheduled",
+            body="Server fan replacement",
+            entity_type="assets.Maintenance", object_id="7")
+        Notification.objects.create(recipient=self.mgr, title="Other user")
+        gone = Notification.objects.create(
+            recipient=self.emp, title="Dismissed unread")
+        gone.soft_delete(by_user=self.emp, reason="dismissed")
+
+    def _list(self, query=""):
+        res = self.c.get(f"/api/common/notifications/{query}")
+        self.assertEqual(res.status_code, 200)
+        return res.data["results"]
+
+    def test_is_read_filter(self):
+        auth(self.c, self.emp)
+        unread = self._list("?is_read=false")
+        self.assertEqual(len(unread), 2)
+        self.assertTrue(all(not n["is_read"] for n in unread))
+        read = self._list("?is_read=true")
+        self.assertEqual([n["title"] for n in read], ["Asset returned"])
+
+    def test_entity_type_filter(self):
+        auth(self.c, self.emp)
+        assets = self._list("?entity_type=assets.Asset")
+        self.assertEqual([n["title"] for n in assets], ["Asset returned"])
+        tickets = self._list("?entity_type=tickets.Ticket")
+        self.assertEqual([n["title"] for n in tickets], ["Ticket assigned"])
+
+    def test_search_filter_matches_title_or_body(self):
+        auth(self.c, self.emp)
+        self.assertEqual(
+            [n["title"] for n in self._list("?q=maintenance")],
+            ["Maintenance scheduled"])
+        self.assertEqual(
+            [n["title"] for n in self._list("?q=You%20own")],
+            ["Ticket assigned"])
+
+    def test_unread_count_is_recipient_scoped(self):
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/notifications/unread_count/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data, {"count": 2})
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/notifications/unread_count/")
+        self.assertEqual(res.data, {"count": 1})
+
+    def test_unread_count_drops_after_mark_all_read(self):
+        auth(self.c, self.emp)
+        self.c.post("/api/common/notifications/mark_all_read/", {},
+                    format="json")
+        res = self.c.get("/api/common/notifications/unread_count/")
+        self.assertEqual(res.data, {"count": 0})
+
+    def test_unread_count_requires_auth(self):
+        res = self.c.get("/api/common/notifications/unread_count/")
+        self.assertEqual(res.status_code, 401)
+
+
 @override_settings(**LOC)
 class TicketEmailPreferenceTests(TestCase):
     """Opt out of ticket-event emails only; nothing else changes."""

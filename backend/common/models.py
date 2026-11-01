@@ -229,3 +229,47 @@ class PrivacyErasureRequest(models.Model):
     def __str__(self):
         return (f"Erasure {self.entity_type}:{self.object_id} "
                 f"[{self.status}]")
+
+
+class EmailProcessing(models.Model):
+    """Track inbound email processing to prevent duplicates and support retries.
+
+    One record per Message-ID ensures we only process each unique email once.
+    """
+    STATUS_CHOICES = (
+        ("pending", "Pending"),
+        ("processed", "Processed"),
+        ("failed", "Failed"),
+    )
+
+    message_id = models.CharField(
+        max_length=255, unique=True,
+        help_text="The Message-ID header from the email.")
+    mailbox = models.CharField(
+        max_length=100, blank=True,
+        help_text="Name/identifier of the mailbox the email was received on.")
+    recipient = models.EmailField(
+        help_text="The email address the message was delivered to.")
+    sender = models.EmailField(
+        help_text="The sender's email address.")
+    subject = models.CharField(max_length=255, blank=True)
+    body_preview = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default="pending")
+    ticket = models.ForeignKey(
+        "tickets.Ticket", null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="email_processings",
+        help_text="Ticket created from this email, if any.")
+    error_details = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "processed_at"]),
+        ]
+
+    def __str__(self):
+        return f"Email {self.message_id[:20]}… → {self.status}"

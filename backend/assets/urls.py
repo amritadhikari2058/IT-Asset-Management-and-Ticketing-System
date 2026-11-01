@@ -2,7 +2,8 @@ from rest_framework import routers
 
 from assets.views import (
     AssetAttachmentViewSet, AssetCategoryViewSet, AssetHistoryViewSet,
-    AssetViewSet, AssignmentViewSet, DisposalViewSet, MaintenanceViewSet,
+    AssetViewSet, AssignmentViewSet, DisposalViewSet, KnowledgeBaseViewSet,
+    MaintenanceViewSet,
 )
 
 router = routers.DefaultRouter()
@@ -16,6 +17,8 @@ router.register("maintenance", MaintenanceViewSet,
                 basename="assetmaintenance")
 router.register("disposals", DisposalViewSet,
                 basename="assetdisposal")
+router.register("knowledge-base", KnowledgeBaseViewSet,
+                basename="knowledgebase")
 # "" MUST stay last: its detail route would otherwise shadow /histories/.
 router.register("", AssetViewSet, basename="asset")
 

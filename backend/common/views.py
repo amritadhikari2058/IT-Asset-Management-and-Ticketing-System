@@ -5,8 +5,13 @@
   permanent deletion. Permanent deletion is System-Admin-only, requires
   explicit {"confirm": "<id>"} and writes a protected AuditLog.
 """
+from datetime import datetime, time
+
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import Q
+from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
 from rest_framework.decorators import (action, api_view, permission_classes,
                                         renderer_classes)
@@ -15,7 +20,7 @@ from rest_framework.response import Response
 
 from common.audit import log_action
 from common.models import AuditLog, Notification
-from common.permissions import IsSystemAdmin, is_system_admin
+from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from common.serializers import (
     AuditLogSerializer, NotificationSerializer, RecycleBinEntrySerializer,
 )
@@ -103,10 +108,28 @@ class NotificationViewSet(viewsets.ModelViewSet):
     serializer_class = NotificationSerializer
 
     def get_queryset(self):
-        return Notification.objects.filter(recipient=self.request.user)
+        qs = Notification.objects.filter(recipient=self.request.user)
+        p = self.request.query_params
+        is_read = p.get("is_read")
+        if is_read in ("true", "false"):
+            qs = qs.filter(is_read=is_read == "true")
+        entity_type = p.get("entity_type")
+        if entity_type:
+            qs = qs.filter(entity_type=entity_type)
+        q = p.get("q")
+        if q:
+            qs = qs.filter(Q(title__icontains=q) | Q(body__icontains=q))
+        return qs
 
     def perform_create(self, serializer):
         serializer.save(recipient=self.request.user)
+
+    @action(detail=False, methods=["get"])
+    def unread_count(self, request):
+        """Unread count for the caller's badge (soft-deleted rows excluded)."""
+        count = Notification.objects.filter(
+            recipient=request.user, is_read=False).count()
+        return Response({"count": count})
 
     def destroy(self, request, *args, **kwargs):
         # Normal delete = soft delete, never hard.
@@ -316,6 +339,62 @@ def export_dataset(request, dataset):
         },
     )
     return response
+
+
+def _report_date_range(request):
+    """Parse ISO `date_from`/`date_to` into an inclusive aware datetime range.
+
+    `date_to` covers the whole day. Raises ValueError on malformed or
+    reversed input so callers can return a 400 instead of a 500.
+    """
+    raw_from = request.query_params.get("date_from") or None
+    raw_to = request.query_params.get("date_to") or None
+    date_from = date_to = None
+    if raw_from:
+        parsed = parse_date(raw_from)
+        if parsed is None:
+            raise ValueError("date_from")
+        date_from = timezone.make_aware(datetime.combine(parsed, time.min))
+    if raw_to:
+        parsed = parse_date(raw_to)
+        if parsed is None:
+            raise ValueError("date_to")
+        date_to = timezone.make_aware(datetime.combine(parsed, time.max))
+    if date_from and date_to and date_from > date_to:
+        raise ValueError("date_from after date_to")
+    return date_from, date_to
+
+
+@api_view(["GET"])
+@permission_classes([IsITStaff])
+def dashboard(request):
+    """Management dashboard aggregates (IT staff only)."""
+    from common.reports import dashboard_data
+
+    try:
+        date_from, date_to = _report_date_range(request)
+    except ValueError:
+        return Response(
+            {"detail": "Invalid date range; use ISO dates (YYYY-MM-DD) "
+                       "with date_from on or before date_to."},
+            status=status.HTTP_400_BAD_REQUEST)
+    return Response(dashboard_data(date_from, date_to))
+
+
+@api_view(["GET"])
+@permission_classes([IsITStaff])
+def department_report(request):
+    """Department-level employee/asset/ticket/SLA report (IT staff only)."""
+    from common.reports import department_report_data
+
+    try:
+        date_from, date_to = _report_date_range(request)
+    except ValueError:
+        return Response(
+            {"detail": "Invalid date range; use ISO dates (YYYY-MM-DD) "
+                       "with date_from on or before date_to."},
+            status=status.HTTP_400_BAD_REQUEST)
+    return Response(department_report_data(date_from, date_to))
 
 
 def _resolve(

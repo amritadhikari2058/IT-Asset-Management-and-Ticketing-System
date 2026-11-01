@@ -355,6 +355,8 @@ class TicketViewSet(viewsets.ModelViewSet):
         # callbacks never run under TestCase, breaking email tests.
         from accounts.email_utils import (
             send_ticket_notification, ticket_links,
+            _notify_sla_approaching, _notify_sla_breached,
+            _notify_maintenance_reminder
         )
         try:
             fe, _ = ticket_links(obj.pk)
@@ -363,12 +365,28 @@ class TicketViewSet(viewsets.ModelViewSet):
                     user.email, f"Ticket #{obj.pk} created: {obj.title}",
                     f"Your ticket was created.\nStatus: {obj.status}\n"
                     f"View: {fe}")
+                # SLA notifications
+                _notify_sla_approaching(obj)
+                _notify_sla_breached(obj)
+                # Maintenance reminder
+                from assets.models import Maintenance
+                maint = Maintenance.objects.filter(asset=obj.asset_id).first()
+                if maint:
+                    _notify_maintenance_reminder(maint)
             if (obj.assignee and obj.assignee.email
                     and _wants_ticket_email(obj.assignee)):
                 send_ticket_notification(
                     obj.assignee.email,
                     f"Ticket #{obj.pk} assigned to you",
                     f"{obj.title}\nPriority: {obj.priority}\nView: {fe}")
+                # SLA notifications
+                _notify_sla_approaching(obj)
+                _notify_sla_breached(obj)
+                # Maintenance reminder
+                from assets.models import Maintenance
+                maint = Maintenance.objects.filter(asset=obj.asset_id).first()
+                if maint:
+                    _notify_maintenance_reminder(maint)
         except Exception:
             pass
 
@@ -436,6 +454,8 @@ class TicketViewSet(viewsets.ModelViewSet):
         if new_status and new_status != old["status"]:
             from accounts.email_utils import (
                 send_ticket_notification, ticket_links,
+                _notify_sla_approaching, _notify_sla_breached,
+                _notify_maintenance_reminder
             )
             try:
                 fe, _ = ticket_links(updated.pk)
@@ -446,6 +466,14 @@ class TicketViewSet(viewsets.ModelViewSet):
                         f"Ticket #{updated.pk} status: {new_status}",
                         f"{updated.title}\nChanged {old['status']} -> "
                         f"{new_status}\nView: {fe}")
+                    # SLA notifications
+                    _notify_sla_approaching(updated)
+                    _notify_sla_breached(updated)
+                    # Maintenance reminder
+                    from assets.models import Maintenance
+                    maint = Maintenance.objects.filter(asset=updated.asset_id).first()
+                    if maint:
+                        _notify_maintenance_reminder(maint)
             except Exception:
                 pass
 

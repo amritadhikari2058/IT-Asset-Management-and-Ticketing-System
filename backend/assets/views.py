@@ -16,6 +16,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from assets.models import (
@@ -26,7 +27,13 @@ from assets.serializers import (
     AssetAssignSerializer, AssetAttachmentSerializer,
     AssetCategorySerializer, AssetHistorySerializer, AssetSerializer,
     AssignmentSerializer, DisposalSerializer, MaintenanceSerializer,
+    KnowledgeBaseArticleSerializer,
+    KnowledgeBaseArticleCreateUpdateSerializer,
+    KnowledgeBaseCategorySerializer,
+    KnowledgeBaseCategoryCreateUpdateSerializer,
+    KnowledgeBaseTagSerializer,
 )
+from assets.models import KnowledgeBaseArticle, KnowledgeBaseCategory, KnowledgeBaseTag
 from common.audit import log_action
 from common.models import Notification
 from common.permissions import IsITStaff, IsSystemAdmin
@@ -1205,15 +1212,26 @@ class MaintenanceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        asset_id = self.request.query_params.get("asset")
+        params = self.request.query_params
+        asset_id = params.get("asset")
         if asset_id:
             qs = qs.filter(asset_id=asset_id)
-        status = self.request.query_params.get("status")
+        status = params.get("status")
         if status:
             qs = qs.filter(status=status)
-        assigned_to = self.request.query_params.get("assigned_to")
+        maintenance_type = params.get("maintenance_type")
+        if maintenance_type:
+            qs = qs.filter(maintenance_type=maintenance_type)
+        assigned_to = params.get("assigned_to")
         if assigned_to:
             qs = qs.filter(assigned_to_id=assigned_to)
+        q = (params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(
+                Q(title__icontains=q) | Q(asset__asset_tag__icontains=q)
+                | Q(asset__name__icontains=q) | Q(vendor__icontains=q))
+        if params.get("open") in ("true", "1"):
+            qs = qs.filter(status__in=["scheduled", "in_progress", "overdue"])
         return qs.order_by("-scheduled_date", "-id")
 
     def perform_create(self, serializer):
@@ -1339,8 +1357,8 @@ def _complete_disposal(disposal, actor):
                        instance=asset,
                        details={"disposal_id": disposal.pk,
                                 "method": disposal.disposal_method,
-                                "value": str(disposal.disposal_cost)
-                                if disposal.disposal_cost is not None
+                                "value": str(disposal.disposal_value)
+                                if disposal.disposal_value is not None
                                 else None})
             disposal.disposal_date = timezone.now()
             disposal.save(update_fields=["disposal_date", "updated_at"])
@@ -1348,6 +1366,28 @@ def _complete_disposal(disposal, actor):
                               new={"disposal_date": str(disposal.disposal_date)})
             _notify_disposal(disposal, actor)
         return disposal
+
+
+class KnowledgeBaseViewSet(viewsets.ModelViewSet):
+    """CRUD and search for knowledge-base articles.
+
+    Permissions:
+    - Employees can list and retrieve published articles.
+    - IT staff (IsITStaff) can create, update, archive, and manage categories/tags.
+    """
+    queryset = KnowledgeBaseArticle.objects.filter(status="published")
+    serializer_class = KnowledgeBaseArticleSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        # Employees see only published articles.
+        if user.is_employee_or_similar():
+            return KnowledgeBaseArticle.objects.filter(status="published")
+        # IT staff see everything.
+        if user.is_staff or user.has_perm("assets.manage_knowledge_base"):
+            return KnowledgeBaseArticle.objects.all()
+        return KnowledgeBaseArticle.objects.none()
 
 
 class DisposalViewSet(viewsets.ModelViewSet):
@@ -1369,12 +1409,26 @@ class DisposalViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        asset_id = self.request.query_params.get("asset")
+        params = self.request.query_params
+        asset_id = params.get("asset")
         if asset_id:
             qs = qs.filter(asset_id=asset_id)
-        approval_status = self.request.query_params.get("approval_status")
+        approval_status = params.get("approval_status")
         if approval_status:
             qs = qs.filter(approval_status=approval_status)
+        disposal_method = params.get("disposal_method")
+        if disposal_method:
+            qs = qs.filter(disposal_method=disposal_method)
+        if params.get("completed") in ("true", "1"):
+            qs = qs.filter(disposal_date__isnull=False)
+        elif params.get("completed") in ("false", "0"):
+            qs = qs.filter(disposal_date__isnull=True)
+        q = (params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(
+                Q(asset__asset_tag__icontains=q)
+                | Q(asset__name__icontains=q)
+                | Q(disposal_reason__icontains=q))
         return qs.order_by("-created_at", "-id")
 
     def perform_create(self, serializer):

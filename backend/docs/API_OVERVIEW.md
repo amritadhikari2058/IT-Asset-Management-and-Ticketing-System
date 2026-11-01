@@ -75,6 +75,16 @@ Trailing slashes required (DRF default).
     instead of being silently dropped.
 - `assignments/history/?asset=<id>`, `histories/?asset=<id>`
   (permission-gated).
+- `maintenance/` CRUD (IT staff write; reads authenticated). Filters:
+  `asset`, `status`, `maintenance_type`, `assigned_to`, `open=true`, and
+  `q` (title, asset tag/name, vendor). Each row exposes `is_overdue` and
+  writes asset history + audit + in-app notifications. Assigning an asset
+  with open maintenance (scheduled/in_progress/overdue) is blocked (409).
+- `disposals/` CRUD + `approve/`, `reject/`, `complete/` (IT staff only).
+  Filters: `asset`, `approval_status`, `disposal_method`,
+  `completed=true|false`, and `q` (asset tag/name, reason). A disposal can
+  only be completed after approval; completion closes open assignments,
+  clears the holder, sets the asset `disposed`, and writes history/audit.
 - `attachments/` asset files: same storage abstraction, UUID names, and
   validation as ticket attachments. Upload/edit/delete need IT staff;
   list/download follow asset visibility (permission-checked, no public
@@ -159,6 +169,16 @@ Trailing slashes required (DRF default).
   descending (e.g. `?ordering=-priority`).
 
 ## Common `/api/common/` + recycle bin
+- `dashboard/` (IT staff): management aggregates — employees, asset status
+  distribution, ticket status/priority, open/overdue/SLA compliance,
+  upcoming/open maintenance, assets under maintenance, pending disposals.
+  Optional `date_from`/`date_to` filter ticket metrics.
+- `reports/departments/` (IT staff): per-department employees, assets,
+  ticket workload, status/priority breakdown, SLA overdue/breach/compliance,
+  and average resolution hours. Optional `date_from`/`date_to` filter ticket
+  metrics.
+- `exports/<dataset>/` supports the existing datasets plus `maintenance`,
+  `disposals`, and `department_report` (all IT staff).
 - `audit-logs/` (Admin read-only; filterable by `action` from the
   logged action set, exact `entity_type`, and ISO `date_from`/`date_to`;
   unknown actions and malformed dates → 400), `notifications/` (own only).

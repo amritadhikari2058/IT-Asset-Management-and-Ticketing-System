@@ -738,3 +738,70 @@ class DepartmentSearchTests(TestCase):
         self.assertEqual(res.status_code, 200, res.data)
         eng = [r for r in res.data["results"] if r["code"] == "ENGX"][0]
         self.assertEqual(eng["member_count"], 3)
+
+
+class DepartmentMemberCountTests(TestCase):
+    """Department member counts: only live, active members count."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+
+    def test_member_count_excludes_soft_deleted_and_inactive(self):
+        self.emp.soft_delete(by_user=self.mgr)
+        self.mgr.is_active = False
+        self.mgr.save(update_fields=["is_active"])
+        auth(self.c, self.admin)
+        res = self.c.get("/api/accounts/departments/")
+        self.assertEqual(res.status_code, 200, res.data)
+        eng = [r for r in res.data["results"] if r["code"] == "ENGX"][0]
+        self.assertEqual(eng["member_count"], 1)
+
+
+class DepartmentHeadTests(TestCase):
+    """A soft-deleted department head must not leak a stale head email."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+
+    def test_deleted_head_yields_null_email(self):
+        self.dep.head = self.admin
+        self.dep.save(update_fields=["head"])
+        res = self.c.get("/api/accounts/departments/")
+        self.assertEqual(res.status_code, 200, res.data)
+        eng = [r for r in res.data["results"] if r["code"] == "ENGX"][0]
+        self.assertEqual(eng["head_email"], self.admin.email)
+
+        self.admin.soft_delete(by_user=self.mgr)
+        res = self.c.get("/api/accounts/departments/")
+        self.assertEqual(res.status_code, 200, res.data)
+        eng = [r for r in res.data["results"] if r["code"] == "ENGX"][0]
+        self.assertIsNone(eng["head_email"])
+
+
+class DepartmentVisibilityTests(TestCase):
+    """Non-staff users only see departments they are a member of."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.ops = Department.objects.create(name="Ops", code="OPSX")
+        self.other_emp = User.objects.create_user(
+            username="oe@x", email="oe@x", employee_id="OE1",
+            password="pw12345678", role="employee",
+            home_department=self.ops)
+        self.c = APIClient()
+        auth(self.c, self.other_emp)
+
+    def test_non_staff_only_sees_own_department(self):
+        res = self.c.get("/api/accounts/departments/")
+        self.assertEqual(res.status_code, 200, res.data)
+        names = [r["name"] for r in res.data["results"]]
+        self.assertEqual(names, ["Ops"])
+
+    def test_non_staff_search_scopes_to_own_department(self):
+        res = self.c.get("/api/accounts/departments/", {"q": "sal"})
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["results"], [])

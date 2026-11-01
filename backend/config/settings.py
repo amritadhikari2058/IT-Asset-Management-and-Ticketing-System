@@ -96,6 +96,23 @@ INSTALLED_APPS = [
     'tickets',
 ]
 
+# Celery configuration
+import os
+from django.utils import timezone
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+CELERY_TIMEZONE = timezone.get_default_timezone_name() if hasattr(timezone, 'get_default_timezone_name') else 'UTC'
+CELERY_BEAT_SCHEDULE = {
+    'check-sla-escalations': {
+        'task': 'tickets.tasks.check_sla_escalations',
+        'schedule': 300.0,  # every 5 minutes
+    },
+    'process-inbound-emails': {
+        'task': 'common.tasks.process_inbound_email',
+        'schedule': 60.0,  # every minute
+    },
+}
+
 AUTH_USER_MODEL = 'accounts.User'
 
 AUTHENTICATION_BACKENDS = [

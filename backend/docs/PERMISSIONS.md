@@ -23,6 +23,12 @@ action-level guards. Frontend hiding is UX only; backend enforces.
 | View ticket history (`tickets.view_ticket_history`) | yes | yes | if granted | no |
 | Register / edit assets, categories, assign / retire / mark lost (incl. bulk) | yes | yes | yes | no |
 | View asset history (`assets.view_asset_history`) | yes | yes | if granted | no |
+| Schedule / update asset maintenance, view maintenance records | yes | yes | yes | read-only (authenticated) |
+| Initiate / approve / reject / complete asset disposal | yes | yes | yes | no |
+| View management dashboard (`common/dashboard/`) | yes | yes | yes | no |
+| View department report + export operational datasets | yes | yes | yes | no |
+| View SLA report (`tickets/sla-report/`) | yes | yes | yes | no |
+| Configure SLA targets (`tickets/sla/`) | yes | no | no | no |
 | Manage departments, import / bulk-update / activate employees | yes | yes | create-only employees* | no |
 | Change roles / `can_create_tickets` | yes | no | no | no |
 | View audit logs (`view_audit_logs`) | yes | no | no | no |

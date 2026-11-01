@@ -75,8 +75,15 @@ class DepartmentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = Department.objects.annotate(
-            member_count=Count("members"),
+            member_count=Count(
+                "members",
+                filter=Q(members__is_deleted=False, members__is_active=True)),
             asset_count=Count("assets")).all()
+        qs = qs.filter(is_deleted=False)
+        if not _is_privileged(self.request.user):
+            # Non-staff callers only see departments they belong to (their
+            # own home department); IT staff keep full directory visibility.
+            qs = qs.filter(members=self.request.user)
         q = self.request.query_params.get("q")
         if q:
             qs = qs.filter(Q(name__icontains=q) | Q(code__icontains=q))
