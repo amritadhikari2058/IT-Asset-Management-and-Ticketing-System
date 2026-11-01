@@ -79,6 +79,12 @@ export function Tickets() {
       </span>
     ) },
     { key: 'priority', label: 'Priority', sortable: 'priority', render: (t) => <Badge kind="priority" value={t.priority} /> },
+    { key: 'sla_due', label: 'SLA due', render: (t) => (t.sla_due_at ? (
+      <span className="row-gap" style={{ gap: 'var(--sp-1)', alignItems: 'center' }}>
+        {new Date(t.sla_due_at).toLocaleString()}
+        {t.is_overdue && <Badge kind="status" value="overdue" label="Overdue" />}
+      </span>
+    ) : <span className="cell-muted">—</span>) },
     { key: 'category', label: 'Category', render: (t) => t.category_name ?? '-' },
     { key: 'assignee', label: 'Assignee', render: (t) => t.assignee_email ? <span className="ellipsis" title={t.assignee_email}>{t.assignee_email}</span> : '-' },
     { key: 'requester', label: 'Requester', render: (t) => t.requester_email ? <span className="ellipsis" title={t.requester_email}>{t.requester_email}</span> : '-' },
@@ -95,7 +101,7 @@ export function Tickets() {
   const { visibleColumns: visibleTicketColumns, toggleColumn: toggleTicketColumn, resetColumns: resetTicketColumns, tableVisible: ticketTableVisible, toggleTable: toggleTicketTable } = useTableColumns(
     'tickets',
     TICKET_COLUMNS.map((c) => c.key),
-    ['title', 'status', 'priority', 'category', 'assignee', 'department', 'created'],
+    ['title', 'status', 'priority', 'sla_due', 'category', 'assignee', 'department', 'created'],
   );
   const ticketColumns = TICKET_COLUMNS.filter((c) => visibleTicketColumns.has(c.key));
 
@@ -346,8 +352,9 @@ function AssetRowActions({ a, busy, onAssign, onReturn, onRetire }) {
       <a className="btn-small" href={`#/assets/${a.id}/edit`} aria-label={`Edit ${a.asset_tag}`}>Edit</a>
       {a.status === 'available' && (
         <button
-          type="button" className="btn-small" disabled={busy}
-          onClick={() => onAssign({ id: a.id, asset_tag: a.asset_tag })}
+          type="button" className="btn-small" disabled={busy || !!a.has_open_maintenance}
+          title={a.has_open_maintenance ? 'Complete or cancel open maintenance before assigning.' : undefined}
+          onClick={() => onAssign({ id: a.id, asset_tag: a.asset_tag, has_open_maintenance: !!a.has_open_maintenance })}
           aria-label={`Assign ${a.asset_tag}`}
         >
           Assign
@@ -421,6 +428,9 @@ export function Assets() {
         {warrantyBadge(a.warranty_expiry)}
       </span>
     ) },
+    { key: 'maintenance', label: 'Maintenance', render: (a) => (a.has_open_maintenance
+      ? <span title={a.upcoming_maintenance_title || 'Open maintenance'}><Badge kind="status" value="scheduled" label="Open" /></span>
+      : <span className="cell-muted">—</span>) },
     { key: 'category', label: 'Category', render: (a) => a.category_name ?? <span className="cell-muted">—</span> },
     { key: 'department', label: 'Department', render: (a) => a.department_name ?? <span className="cell-muted">None</span> },
     { key: 'assigned_to', label: 'Assignee', render: (a) => a.assigned_to_email ?? <span className="cell-muted">Unassigned</span> },
@@ -460,8 +470,8 @@ export function Assets() {
     'assets',
     ASSET_COLUMNS.map((c) => c.key),
     isStaff
-      ? ['asset_tag', 'name', 'status', 'category', 'department', 'assigned_to', 'location', 'actions']
-      : ['asset_tag', 'name', 'status', 'category', 'department', 'assigned_to', 'location'],
+      ? ['asset_tag', 'name', 'status', 'maintenance', 'category', 'department', 'assigned_to', 'location', 'actions']
+      : ['asset_tag', 'name', 'status', 'maintenance', 'category', 'department', 'assigned_to', 'location'],
   );
   const assetColumns = ASSET_COLUMNS.filter((c) => visibleAssetColumns.has(c.key));
 
@@ -740,6 +750,11 @@ export function Assets() {
       {assignFor && (
         <Modal title={`Assign ${assignFor.asset_tag}`} onClose={() => { if (!assignBusy) { setAssignFor(null); setAssignError(''); } }}>
           <form onSubmit={doAssign} noValidate>
+            {assignFor.has_open_maintenance && (
+              <div className="error-summary" role="alert">
+                This asset has open maintenance. Complete or cancel it before assigning the asset.
+              </div>
+            )}
             <Field label="Employee" required hint="Search by employee ID or email.">
               <UserSelect value={assignUser} onChange={setAssignUser} disabled={assignBusy} label="Assignee" />
             </Field>
@@ -752,7 +767,7 @@ export function Assets() {
             {assignError && <div className="field-error" role="alert">{assignError}</div>}
             <div className="row-end">
               <button type="button" className="btn-ghost" onClick={() => { setAssignFor(null); setAssignError(''); }} disabled={assignBusy}>Cancel</button>
-              <button type="submit" className="btn-primary" disabled={assignBusy || !assignUser}>
+              <button type="submit" className="btn-primary" disabled={assignBusy || !assignUser || !!assignFor.has_open_maintenance}>
                 {assignBusy ? 'Assigning…' : 'Assign'}
               </button>
             </div>
@@ -2187,7 +2202,7 @@ function CategoryEditModal({ kind, cat, onClose, onSaved }) {
         {globalError && <div className="error-summary" role="alert">{globalError}</div>}
         <Field label="Name" required error={fieldMsg(fieldErrors, 'name')}>
           <input
-            className="input" value={form.name}
+            className="input input-auto" value={form.name}
             onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
             disabled={saving} autoFocus maxLength={100}
           />
@@ -2300,7 +2315,7 @@ export function Departments() {
   const DEPARTMENT_COLUMNS = [
     { key: 'name', label: 'Name', sortable: 'name' },
     { key: 'code', label: 'Code' },
-    { key: 'head', label: 'Head', render: (d) => d.head_email ?? '-' },
+    { key: 'head', label: 'Head', render: (d) => d.head_email || 'Not Assigned' },
     { key: 'members', label: 'Members', render: (d) => d.member_count ?? '-' },
     { key: 'assets', label: 'Assets', render: (d) => d.asset_count ?? '-' },
     { key: 'is_active', label: 'State', render: (d) => <Badge kind="status" value={d.is_active ? 'active' : 'inactive'} /> },
@@ -2404,7 +2419,8 @@ export function Departments() {
           <input
             className="input" value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Department name or code…" aria-label="Search departments"
+            placeholder="Department name or code" aria-label="Search departments"
+            style={{ maxWidth: '320px' }}
           />
         </div>
         {q && (
@@ -2620,7 +2636,6 @@ export function SLAReport() {
   const [dateTo, setDateTo] = useState('');
   const [report, setReport] = useState(null);
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
   const [loading, setLoading] = useState(false);
 
   const load = async () => {
@@ -2664,7 +2679,6 @@ export function SLAReport() {
         </>}
       />
       {error && <div className="error-summary" role="alert">{error}</div>}
-      {msg && <div className="success-summary" role="status">{msg}</div>}
       <div className="panel">
         <div className="panel-title"><h4>SLA health</h4></div>
         <div className="panel-pad">

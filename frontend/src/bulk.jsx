@@ -147,11 +147,26 @@ export function EmployeeCreateModal({ onClose, onCreated }) {
     if (saving) return;
     setFieldErrors({});
     setGlobalError('');
+    const employeeId = form.employee_id.trim();
+    const email = form.email.trim();
+    const password = form.password;
+    if (!employeeId) {
+      setFieldErrors((prev) => ({ ...prev, employee_id: ['Employee ID is required.'] }));
+      return;
+    }
+    if (!email) {
+      setFieldErrors((prev) => ({ ...prev, email: ['Email is required.'] }));
+      return;
+    }
+    if (String(password ?? '').length < 8) {
+      setFieldErrors((prev) => ({ ...prev, password: ['Password must be at least 8 characters.'] }));
+      return;
+    }
     const payload = {
-      employee_id: form.employee_id.trim(),
-      username: form.username.trim() || form.email.trim(),
-      email: form.email.trim(),
-      password: form.password,
+      employee_id: employeeId,
+      username: form.username.trim() || email,
+      email,
+      password,
       first_name: form.first_name.trim(),
       last_name: form.last_name.trim(),
       role: form.role,

@@ -6,6 +6,8 @@ import {
   Modal, PageHeader, UserSelect,
 } from './components';
 import { fieldMsg, parseApiError } from './api-utils';
+import { MaintenanceFormModal } from './maintenance';
+import { DisposalFormModal } from './disposals';
 
 const STATUSES = ['available', 'assigned', 'in_repair', 'retired', 'lost'];
 // Generic edits may only move between these two; assigned/retired/lost
@@ -380,6 +382,10 @@ export function AssetDetail({ id }) {
   const [lostReason, setLostReason] = useState('');
   const [lostBusy, setLostBusy] = useState(false);
   const [lostError, setLostError] = useState('');
+  const [maintenance, setMaintenance] = useState([]);
+  const [disposals, setDisposals] = useState([]);
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
+  const [disposalOpen, setDisposalOpen] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -398,6 +404,14 @@ export function AssetDetail({ id }) {
         const h = await api.get('/assets/histories/', { params: { asset: id } });
         setHistory(h.data.results ?? h.data ?? []);
       } catch { setHistory(null); }
+      try {
+        const m = await api.get('/assets/maintenance/', { params: { asset: id, page_size: 100 } });
+        setMaintenance(m.data.results ?? m.data ?? []);
+      } catch { setMaintenance([]); }
+      try {
+        const d = await api.get('/assets/disposals/', { params: { asset: id, page_size: 100 } });
+        setDisposals(d.data.results ?? d.data ?? []);
+      } catch { setDisposals([]); }
     } catch (e) {
       setError(parseApiError(e).global || 'Could not load asset.');
     } finally {
@@ -612,16 +626,28 @@ export function AssetDetail({ id }) {
           <h1>{a.asset_tag} — {a.name}</h1>
           <div className="row-gap detail-badges">
             <Badge kind="status" value={a.status} />
+            {a.has_open_maintenance && <Badge kind="status" value="scheduled" label="Open maintenance" />}
             <span className="muted small">{a.category_name ?? ''}</span>
           </div>
         </div>
         {isStaff && (
           <div className="row-gap">
             <a className="btn-secondary" href={`#/assets/${a.id}/edit`}>Edit</a>
-            <button type="button" className="btn-secondary" onClick={() => { setAssignError(''); setAssignOpen(true); }}>Assign…</button>
+            <button
+              type="button" className="btn-secondary"
+              disabled={a.has_open_maintenance}
+              title={a.has_open_maintenance ? 'Complete or cancel open maintenance before assigning.' : undefined}
+              onClick={() => { setAssignError(''); setAssignOpen(true); }}
+            >Assign…</button>
             {a.assigned_to && <button type="button" className="btn-ghost" onClick={() => setConfirm('return')}>Return…</button>}
             <button type="button" className="btn-ghost" onClick={() => setConfirm('retire')}>Retire…</button>
             <button type="button" className="btn-ghost" onClick={() => { setLostError(''); setLostOpen(true); }}>Mark lost…</button>
+            {a.status !== 'disposed' && (
+              <>
+                <button type="button" className="btn-ghost" onClick={() => setMaintenanceOpen(true)}>Maintenance…</button>
+                <button type="button" className="btn-ghost" onClick={() => setDisposalOpen(true)}>Dispose…</button>
+              </>
+            )}
             <button type="button" className="btn-danger" onClick={() => setConfirm('delete')}>Delete…</button>
           </div>
         )}
@@ -680,6 +706,67 @@ export function AssetDetail({ id }) {
           )}
         </section>
       )}
+
+      <section className="section">
+        <div className="panel-head">
+          <h4>Maintenance</h4>
+          {isStaff && a.status !== 'disposed' && (
+            <button type="button" className="btn-small" onClick={() => setMaintenanceOpen(true)}>
+              Schedule maintenance…
+            </button>
+          )}
+        </div>
+        {maintenance.length === 0 ? <p className="muted">No maintenance records.</p> : (
+          <ul className="mini-list">
+            {maintenance.map((m) => (
+              <li key={m.id} className="mini-item">
+                <span className="mini-title">{m.title}</span>
+                <span className="muted small">{m.maintenance_type?.replace(/_/g, ' ')}</span>
+                <Badge kind="status" value={m.status} />
+                {m.is_overdue && m.status !== 'overdue' && <Badge kind="status" value="overdue" label="Overdue" />}
+                <span className="spacer" />
+                <span className="muted small">
+                  {m.scheduled_date ? new Date(m.scheduled_date).toLocaleString() : '—'}
+                  {m.assigned_to_email ? ` · ${m.assigned_to_email}` : ''}
+                  {m.cost != null ? ` · ${Number(m.cost).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="section">
+        <div className="panel-head">
+          <h4>Disposals</h4>
+          {isStaff && a.status !== 'disposed' && (
+            <button
+              type="button" className="btn-small"
+              disabled={disposals.some((d) => !d.is_completed && ['pending', 'approved'].includes(d.approval_status))}
+              onClick={() => setDisposalOpen(true)}
+            >
+              Request disposal…
+            </button>
+          )}
+        </div>
+        {disposals.length === 0 ? <p className="muted">No disposal requests.</p> : (
+          <ul className="mini-list">
+            {disposals.map((d) => (
+              <li key={d.id} className="mini-item">
+                <span className="mini-title">{d.disposal_reason}</span>
+                <span className="muted small">{d.disposal_method?.replace(/_/g, ' ')}</span>
+                <Badge kind="status" value={d.approval_status} />
+                <span className="spacer" />
+                <span className="muted small">
+                  {d.is_completed && d.disposal_date
+                    ? `Disposed ${new Date(d.disposal_date).toLocaleString()}`
+                    : `Requested ${new Date(d.created_at).toLocaleString()}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       <section className="section">
         <h4>Attachments</h4>
@@ -765,6 +852,11 @@ export function AssetDetail({ id }) {
       {assignOpen && (
         <Modal title={`Assign ${a.asset_tag}`} onClose={() => { if (!assignBusy) setAssignOpen(false); }}>
           <form onSubmit={doAssign}>
+            {a.has_open_maintenance && (
+              <div className="error-summary" role="alert">
+                This asset has open maintenance. Complete or cancel it before assigning the asset.
+              </div>
+            )}
             <Field label="Employee" required hint="Search by employee ID or email.">
               <UserSelect value={assignUser} onChange={setAssignUser} disabled={assignBusy} label="Assignee" />
             </Field>
@@ -774,12 +866,27 @@ export function AssetDetail({ id }) {
             {assignError && <div className="field-error" role="alert">{assignError}</div>}
             <div className="row-end">
               <button type="button" className="btn-ghost" onClick={() => setAssignOpen(false)} disabled={assignBusy}>Cancel</button>
-              <button type="submit" className="btn-primary" disabled={assignBusy || !assignUser}>
+              <button type="submit" className="btn-primary" disabled={assignBusy || !assignUser || a.has_open_maintenance}>
                 {assignBusy ? 'Assigning…' : 'Assign'}
               </button>
             </div>
           </form>
         </Modal>
+      )}
+
+      {maintenanceOpen && (
+        <MaintenanceFormModal
+          asset={a}
+          onClose={() => setMaintenanceOpen(false)}
+          onSaved={() => load()}
+        />
+      )}
+      {disposalOpen && (
+        <DisposalFormModal
+          asset={a}
+          onClose={() => setDisposalOpen(false)}
+          onSaved={() => load()}
+        />
       )}
 
       {confirm === 'return' && (

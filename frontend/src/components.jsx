@@ -8,6 +8,8 @@ const STATUS_TONE = {
   reopened: 'purple', archived: 'gray',
   available: 'green', assigned: 'blue', in_repair: 'amber', retired: 'gray',
   lost: 'red', overdue: 'red', active: 'green', inactive: 'gray',
+  disposed: 'purple', scheduled: 'blue', completed: 'green', cancelled: 'gray',
+  pending: 'amber', approved: 'green', rejected: 'red',
 };
 const PRIORITY_TONE = { low: 'gray', medium: 'blue', high: 'amber', critical: 'red' };
 
@@ -15,6 +17,8 @@ const STATUS_LABELS = {
   open: 'Open', in_progress: 'In progress', resolved: 'Resolved', closed: 'Closed',
   reopened: 'Reopened', archived: 'Archived', available: 'Available', assigned: 'Assigned',
   in_repair: 'In repair', retired: 'Retired', lost: 'Lost', active: 'Active', inactive: 'Inactive',
+  disposed: 'Disposed', scheduled: 'Scheduled', completed: 'Completed', cancelled: 'Cancelled',
+  pending: 'Pending approval', approved: 'Approved', rejected: 'Rejected',
 };
 const PRIORITY_LABELS = { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' };
 
@@ -623,7 +627,7 @@ export function CategorySelect({ kind, value, onChange, error, disabled, allowCr
     <div>
       <div className="row-gap">
         <select
-          className="input"
+          className="input input-auto"
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value ? Number(e.target.value) : '')}
           disabled={disabled || loading}
@@ -646,10 +650,10 @@ export function CategorySelect({ kind, value, onChange, error, disabled, allowCr
         <Modal title={kind === 'ticket' ? 'Add ticket category' : 'Add asset category'} onClose={() => { if (!saving) setModalOpen(false); }}>
           <form onSubmit={submit}>
             <Field label="Name" required>
-              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Hardware" disabled={saving} autoFocus />
+              <input className="input input-auto" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Hardware" disabled={saving} autoFocus />
             </Field>
             <Field label="Description">
-              <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional" disabled={saving} />
+              <input className="input input-auto" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional" disabled={saving} />
             </Field>
             {saveError && <div className="field-error" role="alert">{saveError}</div>}
             <div className="row-end">

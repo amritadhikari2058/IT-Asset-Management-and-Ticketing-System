@@ -432,6 +432,7 @@ export function TicketDetail({ id }) {
             <Badge kind="status" value={t.status} />
             <Badge kind="priority" value={t.priority} />
             {t.is_overdue && <Badge kind="status" value="overdue" label="Overdue" />}
+            {t.sla_breached && !t.is_overdue && <Badge kind="status" value="overdue" label="SLA breached" />}
             <span className="muted small">{t.category_name ?? ''}</span>
           </div>
         </div>
@@ -449,6 +450,17 @@ export function TicketDetail({ id }) {
           {t.asset ? <a href={`#/assets/${t.asset}`}>Asset #{t.asset}</a> : '—'}
         </dd>
         <dt>Created</dt><dd>{t.created_at ? new Date(t.created_at).toLocaleString() : '—'}</dd>
+        <dt>SLA due</dt><dd>{t.sla_due_at ? new Date(t.sla_due_at).toLocaleString() : 'No SLA target'}</dd>
+        <dt>SLA status</dt>
+        <dd>
+          {!t.sla_due_at ? <span className="muted">—</span>
+            : t.sla_breached ? <Badge kind="status" value="overdue" label="Breached" />
+              : ['resolved', 'closed', 'archived'].includes(t.status)
+                ? <Badge kind="status" value="resolved" label="Met" />
+                : <Badge kind="status" value="open" label="On track" />}
+        </dd>
+        {t.resolved_at && <><dt>Resolved</dt><dd>{new Date(t.resolved_at).toLocaleString()}</dd></>}
+        {t.closed_at && <><dt>Closed</dt><dd>{new Date(t.closed_at).toLocaleString()}</dd></>}
       </dl>
       {t.on_behalf_reason && (
         <section className="section">

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from './api';
 import { ConfirmDialog, EmptyState, PageHeader } from './components';
+import { Pager } from './components';
 
 export function Notifications() {
   const [items, setItems] = useState([]);
@@ -11,11 +12,17 @@ export function Notifications() {
   const [dismissTarget, setDismissTarget] = useState(null);
   const [dismissBusy, setDismissBusy] = useState(false);
 
+  const [filter, setFilter] = useState('all'); // 'all'|'unread'
+  const [entity, setEntity] = useState(''); // ''|'tickets.Ticket'|'assets.Asset'|'assets.Maintenance'|'assets.Disposal'
+
   const load = async () => {
     setLoading(true);
     setError('');
     try {
-      const r = await api.get('/common/notifications/');
+      const p = new URLSearchParams();
+      if (filter !== 'all') p.set('is_read', filter === 'unread' ? 'false' : 'true');
+      if (entity) p.set('entity_type', entity);
+      const r = await api.get(`/api/common/notifications/?${p.toString()}`);
       const list = r.data.results ?? r.data ?? [];
       setItems(Array.isArray(list) ? list : []);
       window.dispatchEvent(new Event('notif-change'));
@@ -25,7 +32,7 @@ export function Notifications() {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [filter, entity]);
 
   const unread = items.filter((n) => !n.is_read).length;
 
@@ -45,7 +52,7 @@ export function Notifications() {
     setAllMsg('');
     setError('');
     try {
-      const r = await api.post('/common/notifications/mark_all_read/', {});
+      const r = await api.post('/api/common/notifications/mark_all_read/', {});
       setAllMsg(`Marked ${r.data.updated ?? 0} notification(s) as read.`);
       await load();
     } catch {
@@ -59,7 +66,7 @@ export function Notifications() {
     if (!dismissTarget || dismissBusy) return;
     setDismissBusy(true);
     try {
-      await api.delete(`/common/notifications/${dismissTarget.id}/`);
+      await api.delete(`/api/common/notifications/${dismissTarget.id}/`);
       setItems((xs) => xs.filter((x) => x.id !== dismissTarget.id));
       setDismissTarget(null);
       window.dispatchEvent(new Event('notif-change'));
@@ -70,13 +77,13 @@ export function Notifications() {
     }
   };
 
-  if (loading) {
-    return (
-      <p className="page-loading" role="status">
-        <span className="spinner" aria-hidden="true" />Loading notifications…
-      </p>
-    );
-  }
+  const entityLinks = {
+    'tickets.Ticket': (id) => ({ href: `#/tickets/${id}`, label: 'Open ticket' }),
+    'assets.Asset': (id) => ({ href: `#/assets/${id}`, label: 'Open asset' }),
+    'assets.Maintenance': () => ({ href: '#/maintenance', label: 'Open maintenance' }),
+    'assets.Disposal': () => ({ href: '#/disposals', label: 'Open disposals' }),
+  };
+
   return (
     <div>
       <PageHeader
@@ -93,6 +100,30 @@ export function Notifications() {
           </button>
         </>}
       />
+      <div className="filter-bar" role="search">
+        <select
+          className="input"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          aria-label="Filter by read status"
+        >
+          <option value="all">All</option>
+          <option value="unread">Unread only</option>
+          <option value="read">Read only</option>
+        </select>
+        <select
+          className="input"
+          value={entity}
+          onChange={(e) => setEntity(e.target.value)}
+          aria-label="Filter by entity type"
+        >
+          <option value="">All types</option>
+          <option value="tickets.Ticket">Tickets</option>
+          <option value="assets.Asset">Assets</option>
+          <option value="assets.Maintenance">Maintenance</option>
+          <option value="assets.Disposal">Disposals</option>
+        </select>
+      </div>
       {error && <div className="error-summary" role="alert">{error}</div>}
       {allMsg && <div className="success-summary" role="status">{allMsg}</div>}
       {items.length === 0 ? (
@@ -106,12 +137,11 @@ export function Notifications() {
               <div className="muted small">
                 {n.created_at ? new Date(n.created_at).toLocaleString() : ''}
                 {n.entity_type ? ` · ${n.entity_type}:${n.object_id}` : ''}
-                {n.entity_type === 'tickets.Ticket' && n.object_id ? (
-                  <> · <a href={`#/tickets/${n.object_id}`}>Open ticket</a></>
-                ) : null}
-                {n.entity_type === 'assets.Asset' && n.object_id ? (
-                  <> · <a href={`#/assets/${n.object_id}`}>Open asset</a></>
-                ) : null}
+                {entityLinks[n.entity_type] && n.object_id
+  ? <a href={entityLinks[n.entity_type](n.object_id).href}>
+      {entityLinks[n.entity_type](n.object_id).label}
+    </a>
+  : null}
               </div>
               <div className="notif-actions">
                 {!n.is_read && (
@@ -147,9 +177,9 @@ export function NotifBadge() {
     let cancelled = false;
     const fetchCount = async () => {
       try {
-        const r = await api.get('/common/notifications/');
-        const list = r.data.results ?? r.data ?? [];
-        if (!cancelled) setUnread(list.filter((n) => !n.is_read).length);
+        const r = await api.get('/api/common/notifications/unread_count/');
+        const data = r.data || r;
+        if (!cancelled) setUnread(data.count ?? data ?? 0);
       } catch {
         if (!cancelled) setUnread(null);
       }

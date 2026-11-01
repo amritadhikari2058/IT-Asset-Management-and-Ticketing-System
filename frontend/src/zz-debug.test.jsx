@@ -15,13 +15,16 @@ vi.mock('./pages', () => ({
   Login: () => <div>STUB LOGIN</div>,
   ResetPassword: () => <div>STUB RESET</div>,
   VerifyEmail: () => <div>STUB VERIFY</div>,
+  SLAConfig: () => <div>STUB SLA CONFIG</div>,
+  SLAReport: () => <div>STUB SLA REPORT</div>,
+  EmployeeDetail: () => <div>STUB EMPLOYEE</div>,
 }));
 import App from './App';
 describe('debug6', () => {
   it('renders with stubbed pages', async () => {
     mockAuth.mockReturnValue({ access: 'token', user: { email: 'a', role: 'system_admin', employee_id: 'E1' }, profileLoading: false, isStaff: true, isAdmin: true, canCreateTickets: true, login: vi.fn(), logout: vi.fn(), refreshProfile: vi.fn() });
     window.location.hash = '#/tickets';
-    const r = render(<App />);
+    render(<App />);
     await new Promise((res) => setTimeout(res, 100));
     process.stdout.write('MAIN=' + (document.querySelector('main')?.innerHTML.slice(0, 200)) + '\n');
     expect(true).toBe(true);

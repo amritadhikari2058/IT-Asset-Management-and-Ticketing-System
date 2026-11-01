@@ -5,23 +5,53 @@ import { AssetForm, AssetDetail } from './assets';
 import { AuditLogPage } from './audit';
 import { TicketForm, TicketDetail } from './tickets';
 import { Notifications, NotifBadge } from './notifications';
+import { Maintenance } from './maintenance';
+import { Disposals } from './disposals';
+import { Dashboard, DepartmentReports } from './dashboard';
 
 const NAV = [
   { section: 'Work' },
+{ hash: '#/dashboard', label: 'Dashboard', staffOnly: true },
   { hash: '#/tickets', label: 'Tickets' },
-  { hash: '#/reports/sla', label: 'SLA report' },
+  { hash: '#/self-service', label: 'Self-Service', staffOnly: false },
   { hash: '#/assets', label: 'Assets' },
+  { section: 'Operations', staffOnly: true },
+  { hash: '#/maintenance', label: 'Maintenance', staffOnly: true },
+  { hash: '#/disposals', label: 'Disposals', staffOnly: true },
+  { section: 'Reports' },
+  { hash: '#/reports/sla', label: 'SLA report', staffOnly: true },
+  { hash: '#/reports/departments', label: 'Department reports', staffOnly: true },
   { section: 'Organize' },
   { hash: '#/categories', label: 'Categories' },
   { hash: '#/departments', label: 'Departments' },
   { hash: '#/notifications', label: 'Notifications', badge: true },
-  { hash: '#/users', label: 'Employees' },
+  { hash: '#users', label: 'Employees' },
 ];
 
+/** Drop staff-only entries and any section left with no visible items. */
+function visibleNav(nav, isStaff) {
+  const kept = nav.filter((n) => n.section || !n.staffOnly || isStaff);
+  const out = [];
+  for (let i = 0; i < kept.length; i += 1) {
+    if (!kept[i].section) {
+      out.push(kept[i]);
+      continue;
+    }
+    let j = i + 1;
+    while (j < kept.length && !kept[j].section) j += 1;
+    if (j > i + 1) out.push(kept[i]);
+  }
+  return out;
+}
+
 const TITLES = {
+  '#/dashboard': 'Dashboard',
   '#/tickets': 'Tickets',
   '#/reports/sla': 'SLA report',
+  '#/reports/departments': 'Department reports',
   '#/assets': 'Assets',
+  '#/maintenance': 'Maintenance',
+  '#/disposals': 'Disposals',
   '#/categories': 'Categories',
   '#/departments': 'Departments',
   '#/notifications': 'Notifications',
@@ -45,23 +75,29 @@ function crumbs(hash) {
   if (h === '#/tickets/new') return ['Tickets', 'New'];
   if (h === '#/assets/new') return ['Assets', 'New'];
   if (h === '#/recycle' || h === '#/audit') return ['Administration', TITLES[h]];
+  if (h.startsWith('#/reports/')) return ['Reports', TITLES[h]];
   if ((m = h.match(/^#\/users\/(\d+)$/))) return ['Employees', `Employee #${m[1]}`];
   return [TITLES[h] ?? 'Tickets'];
 }
 
 function matchRoute(hash) {
+  const route = hash.split('?')[0];
   let m;
-  if ((m = hash.match(/^#\/tickets\/(\d+)\/edit$/))) return <TicketForm id={m[1]} />;
-  if (hash === '#/tickets/new') return <TicketForm />;
-  if ((m = hash.match(/^#\/tickets\/(\d+)$/))) return <TicketDetail id={m[1]} />;
-  if ((m = hash.match(/^#\/assets\/(\d+)\/edit$/))) return <AssetForm id={m[1]} />;
-  if (hash === '#/assets/new') return <AssetForm />;
-  if ((m = hash.match(/^#\/assets\/(\d+)$/))) return <AssetDetail id={m[1]} />;
-  if ((m = hash.match(/^#\/users\/(\d+)\/?$/))) return <EmployeeDetail id={m[1]} />;
+  if ((m = route.match(/^#\/tickets\/(\d+)\/edit$/))) return <TicketForm id={m[1]} />;
+  if (route === '#/tickets/new') return <TicketForm />;
+  if ((m = route.match(/^#\/tickets\/(\d+)$/))) return <TicketDetail id={m[1]} />;
+  if ((m = route.match(/^#\/assets\/(\d+)\/edit$/))) return <AssetForm id={m[1]} />;
+  if (route === '#/assets/new') return <AssetForm />;
+  if ((m = route.match(/^#\/assets\/(\d+)$/))) return <AssetDetail id={m[1]} />;
+  if ((m = route.match(/^#\/users\/(\d+)\/?$/))) return <EmployeeDetail id={m[1]} />;
   const routes = {
+    '#/dashboard': <Dashboard />,
     '#/tickets': <Tickets />,
     '#/reports/sla': <SLAReport />,
-    '#/assets': <Assets />,
+    '#/reports/departments': <DepartmentReports />,
+'#/assets': <Assets />,
+    '#/maintenance': <Maintenance />,
+    '#/disposals': <Disposals />,
     '#/categories': <Categories />,
     '#/departments': <Departments />,
     '#/notifications': <Notifications />,
@@ -70,10 +106,11 @@ function matchRoute(hash) {
     '#/sla-config': <SLAConfig />,
     '#/users': <Users />,
     '#/profile': <Profile />,
-    '#/verify-email': <VerifyEmail />,
-    '#/reset-password': <ResetPassword />,
+    '#verify-email': <VerifyEmail />,
+    '#reset-password': <ResetPassword />,
+    '#self-service': <SelfService />,
   };
-  return routes[hash] ?? <Tickets />;
+  return routes[route] ?? <Tickets />;
 }
 
 function isActive(hash, h) {
@@ -81,7 +118,7 @@ function isActive(hash, h) {
 }
 
 function Shell() {
-  const { access, logout, user, profileLoading, isAdmin } = useAuth();
+  const { access, logout, user, profileLoading, isAdmin, isStaff } = useAuth();
   const [hash, setHash] = useState(location.hash || '#/tickets');
   const [navOpen, setNavOpen] = useState(false);
   useEffect(() => {
@@ -103,6 +140,7 @@ function Shell() {
   }
   const el = matchRoute(hash);
   const active = (h) => isActive(hash, h) ? 'active' : '';
+  const nav = visibleNav(NAV, isStaff);
   return (
     <div className="shell">
       <a className="skip-link" href="#main-content">Skip to main content</a>
@@ -112,7 +150,7 @@ function Shell() {
           <span className="brand-name">Service Desk<small>Ticket &amp; Asset</small></span>
         </a>
         <nav className="sidenav" aria-label="Primary">
-          {NAV.map((n, i) => n.section
+          {nav.map((n, i) => n.section
             ? <div key={i} className="sidenav-section">{n.section}</div>
             : (
               <a key={n.hash} href={n.hash} className={active(n.hash)} aria-current={isActive(hash, n.hash) ? 'page' : undefined}>
