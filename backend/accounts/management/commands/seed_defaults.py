@@ -37,7 +37,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         from accounts.models import Department, User
         from assets.models import AssetCategory
-        from tickets.models import TicketCategory
+        from tickets.models import TicketCategory, TicketSLA
 
         for name, desc in TICKET_CATEGORIES:
             TicketCategory.all_objects.get_or_create(
@@ -48,6 +48,14 @@ class Command(BaseCommand):
         for name, code, desc in DEPARTMENTS:
             Department.all_objects.get_or_create(
                 code=code, defaults={"name": name, "description": desc})
+
+        # Default SLA targets per priority (hours). Idempotent.
+        for priority, hours in (
+            ("critical", 4), ("high", 8), ("medium", 24), ("low", 72),
+        ):
+            TicketSLA.all_objects.get_or_create(
+                priority=priority,
+                defaults={"target_resolution_hours": hours, "is_active": True})
 
         eng = Department.objects.filter(code="ENG").first()
         demos = [

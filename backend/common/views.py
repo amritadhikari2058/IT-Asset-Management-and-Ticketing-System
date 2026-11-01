@@ -270,7 +270,8 @@ def export_dataset(request, dataset):
 
     Query params:
       - format: csv (default) | xlsx | pdf | docx
-      - scope: all (default) | selected (requires ?ids=a,b,c)
+      - scope: all (default) | selected (requires ?ids=a,b,c) | filtered
+               (applies the same filter query params as the list endpoint)
       - ids: comma separated row ids used with scope=selected
 
     The response is an attachment; every export writes a protected AuditLog
@@ -290,7 +291,12 @@ def export_dataset(request, dataset):
     scope = (request.query_params.get("scope") or "all").lower()
     ids_raw = request.query_params.get("ids") or ""
     ids = [i for i in str(ids_raw).split(",") if i.strip()]
-    rows = build_rows(dataset, request.user)
+    if scope == "filtered":
+        # Apply the same filter query params the list endpoint honors so the
+        # export matches the user's current filtered view.
+        rows = build_rows(dataset, request.user, dict(request.query_params))
+    else:
+        rows = build_rows(dataset, request.user)
     if scope == "selected":
         id_set = set(ids)
         rows = [r for r in rows if str(r.get("id")) in id_set]

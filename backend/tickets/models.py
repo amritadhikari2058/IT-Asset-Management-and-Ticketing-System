@@ -118,6 +118,11 @@ class Ticket(SoftDeleteModel):
     resolution_notes = models.TextField(blank=True, default="")
     resolved_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
+    # SLA tracking: due date computed from priority target at creation; flagged
+    # breached once past due without resolution. SLA targets live in
+    # TicketSLA configuration (admin-configurable per priority).
+    sla_due_at = models.DateTimeField(null=True, blank=True)
+    sla_breached = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -137,6 +142,43 @@ class Ticket(SoftDeleteModel):
         if from_status == to_status:
             return True
         return to_status in cls.VALID_TRANSITIONS.get(from_status, set())
+
+    @property
+    def is_overdue(self):
+        """Ticket is past its SLA due date and not yet resolved/closed."""
+        if self.status in ("resolved", "closed", "archived"):
+            return False
+        if not self.sla_due_at:
+            return False
+        from django.utils import timezone
+        return timezone.now() > self.sla_due_at
+
+
+class TicketSLA(SoftDeleteModel):
+    """SLA target per ticket priority. Admin-configurable.
+
+    target_resolution_hours is the clock within which a ticket of this
+    priority should be resolved. Used to compute sla_due_at on creation and
+    to flag overdue tickets.
+    """
+
+    priority = models.CharField(
+        max_length=20, choices=Ticket.PRIORITY_CHOICES, unique=True)
+    target_resolution_hours = models.PositiveIntegerField(
+        default=24,
+        help_text="Target resolution window in hours for this priority.")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["priority"]
+        permissions = [
+            ("manage_ticketsla", "Can manage ticket SLA configuration"),
+        ]
+
+    def __str__(self):
+        return f"SLA {self.get_priority_display()}: {self.target_resolution_hours}h"
 
 
 class TicketNote(models.Model):

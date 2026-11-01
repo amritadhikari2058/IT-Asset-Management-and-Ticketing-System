@@ -14,6 +14,7 @@ import csv
 import io
 from datetime import datetime
 
+from django.db.models import Q
 from django.http import HttpResponse
 from rest_framework.renderers import BaseRenderer
 
@@ -127,13 +128,33 @@ DATASETS = {
 }
 
 
-def employee_rows(user=None):
+def employee_rows(user=None, filters=None):
     from accounts.models import Department, User
 
+    filters = filters or {}
+    qs = User.objects.filter(is_deleted=False)
+    q = (filters.get("q") or "").strip()
+    if q:
+        qs = qs.filter(
+            Q(employee_id__icontains=q) | Q(email__icontains=q)
+            | Q(first_name__icontains=q) | Q(last_name__icontains=q))
+    department = filters.get("department")
+    if department:
+        try:
+            qs = qs.filter(home_department__id=int(department))
+        except (TypeError, ValueError):
+            qs = qs.filter(home_department__code__iexact=department)
+    role = filters.get("role")
+    if role:
+        qs = qs.filter(role=role)
+    is_active = filters.get("is_active")
+    if is_active is not None:
+        wanted = str(is_active).strip().lower() in ("true", "1", "yes")
+        qs = qs.filter(is_active=wanted)
     departments = list(Department.objects.order_by("name"))
     dept_by_id = {d.id: d for d in departments}
     rows = []
-    for u in User.objects.filter(is_deleted=False).order_by("employee_id"):
+    for u in qs.order_by("employee_id"):
         dept = dept_by_id.get(u.home_department_id)
         rows.append({
             "id": u.pk,
@@ -153,9 +174,14 @@ def employee_rows(user=None):
     return rows
 
 
-def department_rows(user=None):
+def department_rows(user=None, filters=None):
     from accounts.models import Department
 
+    filters = filters or {}
+    qs = Department.objects.all()
+    q = (filters.get("q") or "").strip()
+    if q:
+        qs = qs.filter(Q(name__icontains=q) | Q(code__icontains=q))
     return [
         {
             "id": d.pk,
@@ -170,13 +196,30 @@ def department_rows(user=None):
             "created_at": d.created_at.isoformat() if d.created_at else "",
             "updated_at": d.updated_at.isoformat() if d.updated_at else "",
         }
-        for d in Department.objects.order_by("name")
+        for d in qs.order_by("name")
     ]
 
 
-def asset_rows(user=None):
+def asset_rows(user=None, filters=None):
     from assets.models import Asset
 
+    filters = filters or {}
+    qs = Asset.objects.all()
+    q = (filters.get("q") or "").strip()
+    if q:
+        qs = qs.filter(
+            Q(name__icontains=q) | Q(asset_tag__icontains=q)
+            | Q(serial_number__icontains=q) | Q(location__icontains=q)
+            | Q(department__name__icontains=q) | Q(department__code__icontains=q))
+    status = filters.get("status")
+    if status:
+        qs = qs.filter(status=status)
+    category = filters.get("category")
+    if category:
+        qs = qs.filter(category_id=category)
+    department = filters.get("department")
+    if department:
+        qs = qs.filter(department_id=department)
     return [
         {
             "id": a.pk,
@@ -193,16 +236,24 @@ def asset_rows(user=None):
             "created_at": a.created_at.isoformat() if a.created_at else "",
             "updated_at": a.updated_at.isoformat() if a.updated_at else "",
         }
-        for a in Asset.objects.order_by("asset_tag")
+        for a in qs.order_by("asset_tag")
     ]
 
 
-def assignment_rows(user=None):
+def assignment_rows(user=None, filters=None):
     from assets.models import Assignment
 
+    filters = filters or {}
+    qs = Assignment.objects.select_related(
+        "asset", "assigned_to", "assigned_by").all()
+    asset = filters.get("asset")
+    if asset:
+        qs = qs.filter(asset_id=asset)
+    assigned_to = filters.get("assigned_to")
+    if assigned_to:
+        qs = qs.filter(assigned_to_id=assigned_to)
     rows = []
-    for a in Assignment.objects.select_related(
-            "asset", "assigned_to", "assigned_by").order_by("id"):
+    for a in qs.order_by("id"):
         rows.append({
             "id": a.pk,
             "asset_tag": a.asset.asset_tag if a.asset_id else "",
@@ -216,13 +267,32 @@ def assignment_rows(user=None):
     return rows
 
 
-def ticket_rows(user=None):
+def ticket_rows(user=None, filters=None):
     from django.db.models import Q
     from tickets.models import Ticket
 
+    filters = filters or {}
     qs = Ticket.objects.all()
     if user is not None and user.pk and getattr(user, "role", "") == "employee":
         qs = qs.filter(Q(requester=user) | Q(assignee=user))
+    q = (filters.get("q") or "").strip()
+    if q:
+        qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q))
+    status = filters.get("status")
+    if status:
+        qs = qs.filter(status=status)
+    priority = filters.get("priority")
+    if priority:
+        qs = qs.filter(priority=priority)
+    category = filters.get("category")
+    if category:
+        qs = qs.filter(category_id=category)
+    department = filters.get("department")
+    if department:
+        qs = qs.filter(department_id=department)
+    assignee = filters.get("assignee")
+    if assignee:
+        qs = qs.filter(assignee_id=assignee)
     return [
         {
             "id": t.pk,
@@ -241,7 +311,16 @@ def ticket_rows(user=None):
     ]
 
 
-def category_rows(model):
+def category_rows(model, filters=None):
+    filters = filters or {}
+    qs = model.objects.all()
+    q = (filters.get("q") or "").strip()
+    if q:
+        qs = qs.filter(Q(name__icontains=q) | Q(description__icontains=q))
+    is_active = filters.get("is_active")
+    if is_active is not None:
+        wanted = str(is_active).strip().lower() in ("true", "1", "yes")
+        qs = qs.filter(is_active=wanted)
     return [
         {
             "id": c.pk,
@@ -251,13 +330,21 @@ def category_rows(model):
             "created_at": c.created_at.isoformat() if c.created_at else "",
             "updated_at": c.updated_at.isoformat() if c.updated_at else "",
         }
-        for c in model.objects.order_by("name")
+        for c in qs.order_by("name")
     ]
 
 
-def ticket_history_rows(user=None):
+def ticket_history_rows(user=None, filters=None):
     from tickets.models import TicketHistory
 
+    filters = filters or {}
+    qs = TicketHistory.objects.select_related("actor").all()
+    ticket = filters.get("ticket")
+    if ticket:
+        qs = qs.filter(ticket_id=ticket)
+    action = filters.get("action")
+    if action:
+        qs = qs.filter(action=action)
     return [
         {
             "id": h.pk,
@@ -269,8 +356,7 @@ def ticket_history_rows(user=None):
             "new_values": str(h.new_values or {}),
             "note": h.note or "",
         }
-        for h in TicketHistory.objects.select_related("actor").order_by(
-            "ticket_id", "-timestamp", "-id")[:5000]
+        for h in qs.order_by("ticket_id", "-timestamp", "-id")[:5000]
     ]
 
 
@@ -280,19 +366,19 @@ BUILDERS = {
     "assets": asset_rows,
     "assignments": assignment_rows,
     "tickets": ticket_rows,
-    "ticket_categories": lambda: category_rows(
-        __import__("tickets.models", fromlist=["TicketCategory"]).TicketCategory),
-    "asset_categories": lambda: category_rows(
-        __import__("assets.models", fromlist=["AssetCategory"]).AssetCategory),
+    "ticket_categories": lambda filters=None: category_rows(
+        __import__("tickets.models", fromlist=["TicketCategory"]).TicketCategory, filters),
+    "asset_categories": lambda filters=None: category_rows(
+        __import__("assets.models", fromlist=["AssetCategory"]).AssetCategory, filters),
     "ticket_history": ticket_history_rows,
 }
 
 
-def build_rows(dataset, user=None):
+def build_rows(dataset, user=None, filters=None):
     builder = BUILDERS.get(dataset)
     if not builder:
         return []
-    return builder(user)
+    return builder(user, filters or {})
 
 
 def _cell(row, field):

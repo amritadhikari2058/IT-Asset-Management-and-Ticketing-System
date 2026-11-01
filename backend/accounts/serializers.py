@@ -27,6 +27,10 @@ class UserSerializer(serializers.ModelSerializer):
     home_department_name = serializers.CharField(
         source="home_department.name", read_only=True
     )
+    has_photo = serializers.SerializerMethodField(read_only=True)
+
+    def get_has_photo(self, obj):
+        return bool(obj.photo and getattr(obj.photo, "name", ""))
 
     class Meta:
         model = User
@@ -35,10 +39,11 @@ class UserSerializer(serializers.ModelSerializer):
                   "last_name", "role", "home_department",
                   "home_department_name", "phone", "job_title",
                   "can_create_tickets", "is_active", "is_deleted",
-                  "date_joined"]
+                  "date_joined", "has_photo"]
         read_only_fields = ["id", "employee_id", "username", "role",
                             "can_create_tickets",
-                            "is_deleted", "date_joined", "email_verified"]
+                            "is_deleted", "date_joined", "email_verified",
+                            "has_photo"]
 
 
 class UserCreateSerializer(serializers.ModelSerializer):

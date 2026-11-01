@@ -431,6 +431,7 @@ export function TicketDetail({ id }) {
           <div className="row-gap detail-badges">
             <Badge kind="status" value={t.status} />
             <Badge kind="priority" value={t.priority} />
+            {t.is_overdue && <Badge kind="status" value="overdue" label="Overdue" />}
             <span className="muted small">{t.category_name ?? ''}</span>
           </div>
         </div>

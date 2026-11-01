@@ -20,13 +20,15 @@ from rest_framework.response import Response
 
 from assets.models import (
     Asset, AssetAttachment, AssetCategory, AssetHistory, Assignment,
+    Disposal, Maintenance,
 )
 from assets.serializers import (
     AssetAssignSerializer, AssetAttachmentSerializer,
     AssetCategorySerializer, AssetHistorySerializer, AssetSerializer,
-    AssignmentSerializer,
+    AssignmentSerializer, DisposalSerializer, MaintenanceSerializer,
 )
 from common.audit import log_action
+from common.models import Notification
 from common.permissions import IsITStaff, IsSystemAdmin
 from tickets.serializers import validate_attachment_file
 
@@ -430,6 +432,14 @@ class AssetViewSet(viewsets.ModelViewSet):
         target = User.objects.filter(pk=target_id).first() if target_id else None
         old = {"assigned_to": obj.assigned_to_id, "status": obj.status}
         assignment = None
+        # An asset undergoing maintenance cannot be assigned.
+        if target and obj.has_open_maintenance:
+            m = obj.upcoming_maintenance
+            return Response(
+                {"detail": "Assignment blocked: asset is undergoing "
+                           f"maintenance ({m.title}, {m.status}).",
+                 "maintenance_id": m.pk},
+                status=status.HTTP_409_CONFLICT)
         try:
             with transaction.atomic():
                 if target:
@@ -1128,3 +1138,327 @@ class AssetAttachmentViewSet(viewsets.ModelViewSet):
             or "application/octet-stream")
         resp["Content-Disposition"] = f'attachment; filename="{name}"'
         return resp
+
+
+def _history_maintenance(maintenance, actor, action, old=None, new=None,
+                         note=""):
+    AssetHistory.objects.create(
+        asset=maintenance.asset, actor=actor, action=action,
+        old_values=old or {}, new_values=new or {}, note=note)
+
+
+def _notify_maintenance(maintenance, actor, old=None):
+    """In-app notification for maintenance events.
+
+    Notifies the assigned technician (and the actor is never notified of
+    their own action). Completion also notifies the asset's current holder.
+    """
+    from django.utils import timezone
+
+    recipient = maintenance.assigned_to
+    if (recipient is None or getattr(recipient, "pk", None) is None
+            or not getattr(recipient, "is_active", True)
+            or getattr(recipient, "is_deleted", False)):
+        return None
+    actor_pk = getattr(actor, "pk", None)
+    if actor_pk is not None and recipient.pk == actor_pk:
+        return None
+    status = maintenance.status
+    title = f"Maintenance: {maintenance.title}"
+    if status == "in_progress":
+        body = f"{maintenance.asset.asset_tag} maintenance started."
+    elif status == "completed":
+        body = f"{maintenance.asset.asset_tag} maintenance completed."
+    elif status == "overdue":
+        body = f"{maintenance.asset.asset_tag} maintenance is overdue."
+    else:
+        body = f"{maintenance.asset.asset_tag} maintenance scheduled for " \
+               f"{maintenance.scheduled_date:%Y-%m-%d}."
+    notification = Notification.objects.create(
+        recipient=recipient, title=title[:255], body=body,
+        entity_type="assets.Maintenance", object_id=str(maintenance.pk))
+    # Also notify the current asset holder when maintenance completes.
+    if (status == "completed" and maintenance.asset.assigned_to_id
+            and maintenance.asset.assigned_to_id != recipient.pk
+            and maintenance.asset.assigned_to.is_active
+            and not maintenance.asset.assigned_to.is_deleted):
+        Notification.objects.create(
+            recipient=maintenance.asset.assigned_to,
+            title=f"Asset under maintenance: {maintenance.asset.asset_tag}",
+            body=f"Your assigned asset is undergoing maintenance: "
+                 f"{maintenance.title}.",
+            entity_type="assets.Asset", object_id=str(maintenance.asset.pk))
+    return notification
+
+
+class MaintenanceViewSet(viewsets.ModelViewSet):
+    """Maintenance records for assets. IT staff manage; reads open."""
+
+    queryset = Maintenance.objects.select_related(
+        "asset", "assigned_to", "created_by").all()
+    serializer_class = MaintenanceSerializer
+
+    def get_permissions(self):
+        if self.action in ("create", "update", "partial_update", "destroy"):
+            return [IsITStaff()]
+        return super().get_permissions()
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        asset_id = self.request.query_params.get("asset")
+        if asset_id:
+            qs = qs.filter(asset_id=asset_id)
+        status = self.request.query_params.get("status")
+        if status:
+            qs = qs.filter(status=status)
+        assigned_to = self.request.query_params.get("assigned_to")
+        if assigned_to:
+            qs = qs.filter(assigned_to_id=assigned_to)
+        return qs.order_by("-scheduled_date", "-id")
+
+    def perform_create(self, serializer):
+        obj = serializer.save(created_by=self.request.user)
+        _history_maintenance(obj, self.request.user, "created",
+                             new={"status": obj.status,
+                                  "scheduled_date": str(obj.scheduled_date)})
+        log_action(actor=self.request.user, action="create", instance=obj)
+        _notify_maintenance(obj, self.request.user)
+
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        old = {"status": instance.status, "assigned_to": instance.assigned_to_id,
+               "scheduled_date": str(instance.scheduled_date)}
+        obj = serializer.save()
+        from django.utils import timezone
+        stamped = False
+        if obj.status != old["status"]:
+            if obj.status == "in_progress" and not obj.start_date:
+                obj.start_date = timezone.now()
+                stamped = True
+            if obj.status == "completed" and not obj.completion_date:
+                obj.completion_date = timezone.now()
+                stamped = True
+            if stamped:
+                obj.save(update_fields=["start_date", "completion_date"])
+        _history_maintenance(obj, self.request.user, "updated", old=old,
+                             new={k: str(v) for k, v in
+                                  serializer.validated_data.items()})
+        log_action(actor=self.request.user, action="update", instance=obj,
+                   details={"old": old, "new": {
+                       "status": obj.status,
+                       "assigned_to": obj.assigned_to_id}})
+        _notify_maintenance(obj, self.request.user, old=old)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        asset_tag = obj.asset.asset_tag
+        obj.soft_delete(by_user=request.user, reason="maintenance removed")
+        log_action(actor=request.user, action="soft_delete", instance=obj)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"])
+    def mark_overdue(self, request, pk=None):
+        """Flag a scheduled/in-progress maintenance as overdue."""
+        obj = self.get_object()
+        if obj.status in ("completed", "cancelled"):
+            return Response(
+                {"detail": f"Cannot mark a {obj.status} maintenance "
+                           f"overdue."}, status=400)
+        obj.status = "overdue"
+        obj.save(update_fields=["status", "updated_at"])
+        _history_maintenance(obj, request.user, "status_change",
+                             new={"status": "overdue"})
+        log_action(actor=request.user, action="status_change",
+                   instance=obj, details={"to": "overdue"})
+        _notify_maintenance(obj, request.user)
+        return Response(MaintenanceSerializer(obj).data)
+
+
+def _history_disposal(disposal, actor, action, old=None, new=None, note=""):
+    AssetHistory.objects.create(
+        asset=disposal.asset, actor=actor, action=action,
+        old_values=old or {}, new_values=new or {}, note=note)
+
+
+def _notify_disposal(disposal, actor, old=None):
+    """In-app notification for disposal events."""
+    recipient = disposal.responsible_person
+    if (recipient is None or getattr(recipient, "pk", None) is None
+            or not getattr(recipient, "is_active", True)
+            or getattr(recipient, "is_deleted", False)):
+        recipient = disposal.created_by
+    if (recipient is None or getattr(recipient, "pk", None) is None
+            or not getattr(recipient, "is_active", True)
+            or getattr(recipient, "is_deleted", False)):
+        return None
+    actor_pk = getattr(actor, "pk", None)
+    if actor_pk is not None and recipient.pk == actor_pk:
+        return None
+    status = disposal.approval_status
+    title = f"Disposal: {disposal.asset.asset_tag}"
+    if status == "approved":
+        body = f"Disposal of {disposal.asset.asset_tag} approved."
+    elif status == "rejected":
+        body = f"Disposal of {disposal.asset.asset_tag} rejected."
+    elif disposal.is_completed:
+        body = f"Disposal of {disposal.asset.asset_tag} completed."
+    else:
+        body = f"Disposal of {disposal.asset.asset_tag} pending approval."
+    return Notification.objects.create(
+        recipient=recipient, title=title[:255], body=body,
+        entity_type="assets.Disposal", object_id=str(disposal.pk))
+
+
+def _complete_disposal(disposal, actor):
+        """Mark an approved disposal complete and dispose the asset.
+
+        Clears the holder, closes any open assignment, sets asset status to
+        disposed, and records history + audit. Idempotent.
+        """
+        from django.db import transaction
+        from django.utils import timezone
+        if disposal.is_completed:
+            return disposal
+        asset = disposal.asset
+        with transaction.atomic():
+            # Resolve any open assignment before disposing.
+            for open_a in asset.assignments.filter(
+                    returned_at__isnull=True):
+                open_a.returned_at = timezone.now()
+                open_a.save(update_fields=["returned_at"])
+            old = {"status": asset.status, "assigned_to": asset.assigned_to_id}
+            asset.assigned_to = None
+            asset.status = "disposed"
+            asset.save(update_fields=["assigned_to", "status", "updated_at"])
+            _history_disposal(disposal, actor, "completed",
+                              old={"asset_status": old["status"],
+                                   "asset_holder": old["assigned_to"]},
+                              new={"asset_status": "disposed",
+                                   "asset_holder": None})
+            log_action(actor=actor, action="disposal",
+                       instance=asset,
+                       details={"disposal_id": disposal.pk,
+                                "method": disposal.disposal_method,
+                                "value": str(disposal.disposal_cost)
+                                if disposal.disposal_cost is not None
+                                else None})
+            disposal.disposal_date = timezone.now()
+            disposal.save(update_fields=["disposal_date", "updated_at"])
+            _history_disposal(disposal, actor, "disposal_date_set",
+                              new={"disposal_date": str(disposal.disposal_date)})
+            _notify_disposal(disposal, actor)
+        return disposal
+
+
+class DisposalViewSet(viewsets.ModelViewSet):
+    """Asset disposal workflow: draft -> approve/reject -> complete.
+
+    A disposed asset keeps its distinct status and can never be assigned
+    again. Disposal requires the asset's assignment to be resolved first.
+    """
+
+    queryset = Disposal.objects.select_related(
+        "asset", "responsible_person", "approver", "created_by").all()
+    serializer_class = DisposalSerializer
+
+    def get_permissions(self):
+        if self.action in ("create", "update", "partial_update", "destroy",
+                           "approve", "reject", "complete"):
+            return [IsITStaff()]
+        return super().get_permissions()
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        asset_id = self.request.query_params.get("asset")
+        if asset_id:
+            qs = qs.filter(asset_id=asset_id)
+        approval_status = self.request.query_params.get("approval_status")
+        if approval_status:
+            qs = qs.filter(approval_status=approval_status)
+        return qs.order_by("-created_at", "-id")
+
+    def perform_create(self, serializer):
+        obj = serializer.save(created_by=self.request.user)
+        _history_disposal(obj, self.request.user, "created",
+                          new={"approval_status": obj.approval_status})
+        log_action(actor=self.request.user, action="create", instance=obj)
+        _notify_disposal(obj, self.request.user)
+
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        old = {"approval_status": instance.approval_status,
+               "disposal_date": str(instance.disposal_date)}
+        obj = serializer.save()
+        if obj.approval_status != old["approval_status"]:
+            from django.utils import timezone
+            if obj.approval_status == "approved":
+                obj.approver = self.request.user
+                obj.approved_at = timezone.now()
+                obj.save(update_fields=["approver", "approved_at"])
+            _notify_disposal(obj, self.request.user, old=old)
+        _history_disposal(obj, self.request.user, "updated", old=old,
+                          new={k: str(v) for k, v in
+                               serializer.validated_data.items()})
+        log_action(actor=self.request.user, action="update", instance=obj,
+                   details={"old": old, "new": {
+                       "approval_status": obj.approval_status,
+                       "disposal_date": str(obj.disposal_date)}})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsITStaff])
+    def approve(self, request, pk=None):
+        obj = self.get_object()
+        if obj.is_completed:
+            return Response(
+                {"detail": "Disposal already completed."}, status=400)
+        obj.approval_status = "approved"
+        obj.approver = request.user
+        from django.utils import timezone
+        obj.approved_at = timezone.now()
+        obj.save(
+            update_fields=["approval_status", "approver", "approved_at",
+                           "updated_at"])
+        _history_disposal(obj, request.user, "approved",
+                          new={"approval_status": "approved"})
+        log_action(actor=request.user, action="approve",
+                   instance=obj, details={"asset": obj.asset.asset_tag})
+        _notify_disposal(obj, request.user)
+        return Response(DisposalSerializer(obj).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsITStaff])
+    def reject(self, request, pk=None):
+        obj = self.get_object()
+        if obj.is_completed:
+            return Response(
+                {"detail": "Cannot reject a completed disposal."}, status=400)
+        obj.approval_status = "rejected"
+        obj.approver = request.user
+        obj.save(update_fields=["approval_status", "approver", "updated_at"])
+        _history_disposal(obj, request.user, "rejected",
+                          new={"approval_status": "rejected"})
+        log_action(actor=request.user, action="reject",
+                   instance=obj, details={"asset": obj.asset.asset_tag})
+        _notify_disposal(obj, request.user)
+        return Response(DisposalSerializer(obj).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsITStaff])
+    def complete(self, request, pk=None):
+        obj = self.get_object()
+        if obj.approval_status != "approved":
+            return Response(
+                {"detail": "Disposal must be approved before completion."},
+                status=400)
+        if obj.is_completed:
+            return Response(DisposalSerializer(obj).data)
+        _complete_disposal(obj, request.user)
+        obj.refresh_from_db()
+        return Response(DisposalSerializer(obj).data)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        if obj.is_completed:
+            return Response(
+                {"detail": "Completed disposals cannot be deleted."},
+                status=409)
+        obj.soft_delete(by_user=request.user, reason="disposal removed")
+        log_action(actor=request.user, action="soft_delete", instance=obj)
+        return Response(status=status.HTTP_204_NO_CONTENT)

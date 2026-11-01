@@ -18,10 +18,12 @@ from common.audit import log_action
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from tickets.models import (
     Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketNote,
+    TicketSLA,
 )
 from tickets.serializers import (
     TicketAttachmentSerializer, TicketCategorySerializer,
     TicketHistorySerializer, TicketNoteSerializer, TicketSerializer,
+    TicketSLASerializer,
 )
 
 
@@ -327,6 +329,19 @@ class TicketViewSet(viewsets.ModelViewSet):
         obj = None
         with transaction.atomic():
             obj = serializer.save(requester=user)
+            # Compute the SLA due date from the active priority target, so the
+            # ticket carries a resolvable clock from creation. Missing/inactive
+            # SLA config leaves sla_due_at unset (no overdue clock).
+            from tickets.models import TicketSLA
+            sla = TicketSLA.objects.filter(
+                priority=obj.priority, is_active=True,
+                is_deleted=False).first()
+            if sla:
+                from django.utils import timezone
+                from datetime import timedelta
+                obj.sla_due_at = timezone.now() + timedelta(
+                    hours=sla.target_resolution_hours)
+                obj.save(update_fields=["sla_due_at"])
             _write_history(obj, user, "created", new={"status": "open"})
             log_action(actor=user, action="create", instance=obj)
             # In-app: the assignee learns they own it (the requester is the
@@ -981,6 +996,78 @@ class TicketAttachmentViewSet(viewsets.ModelViewSet):
             or "application/octet-stream")
         resp["Content-Disposition"] = f'attachment; filename="{name}"'
         return resp
+
+
+class TicketSLAViewSet(viewsets.ModelViewSet):
+    """Admin-configurable SLA targets per ticket priority."""
+
+    queryset = TicketSLA.objects.all().order_by("priority")
+    serializer_class = TicketSLASerializer
+    permission_classes = [IsSystemAdmin]
+
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        log_action(actor=self.request.user, action="create", instance=obj)
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        log_action(actor=self.request.user, action="update", instance=obj)
+
+    def destroy(self, request, *args, **kwargs):
+        # Never hard-delete SLA config; deactivate instead.
+        obj = self.get_object()
+        obj.is_active = False
+        obj.save(update_fields=["is_active"])
+        log_action(actor=request.user, action="update", instance=obj,
+                   details={"deactivated": True})
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def sla_report(request):
+    """SLA health: overdue count + average resolution time by priority.
+
+    Query params: ?date_from=&date_to= filter created_at window.
+    """
+    from django.utils import timezone
+    from tickets.models import Ticket
+
+    base = Ticket.objects.all()
+    date_from = request.query_params.get("date_from")
+    date_to = request.query_params.get("date_to")
+    if date_from:
+        base = base.filter(created_at__gte=date_from)
+    if date_to:
+        base = base.filter(created_at__lte=date_to)
+
+    now = timezone.now()
+    overdue = base.filter(
+        sla_due_at__lt=now).exclude(
+        status__in=["resolved", "closed", "archived"]).count()
+
+    resolved = base.exclude(resolved_at__isnull=True)
+    by_priority = []
+    for priority, _label in Ticket.PRIORITY_CHOICES:
+        pq = resolved.filter(priority=priority)
+        # Compute mean resolution hours in Python to stay DB-agnostic
+        # (sqlite cannot Avg date/time fields stored as text).
+        deltas = [
+            (t.resolved_at - t.created_at).total_seconds() / 3600
+            for t in pq.only("created_at", "resolved_at")]
+        avg_hours = round(sum(deltas) / len(deltas), 2) if deltas else None
+        by_priority.append({
+            "priority": priority,
+            "resolved": pq.count(),
+            "avg_resolution_hours": avg_hours,
+        })
+
+    return Response({
+        "overdue": overdue,
+        "by_priority": by_priority,
+        "filters": {"date_from": date_from, "date_to": date_to},
+        "generated_at": now.isoformat(),
+    })
 
 
 @api_view(["GET"])

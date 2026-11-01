@@ -23,6 +23,18 @@ function isImageFilename(name) {
 }
 const ATTACHMENT_MAX_MB = 10;
 
+/** Warranty expiry alert badge. Returns a Badge element or null. */
+const warrantyBadge = (expiry) => {
+  if (!expiry) return null;
+  const due = new Date(`${expiry}T00:00:00Z`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((due - today) / (1000 * 60 * 60 * 24));
+  if (days < 0) return <Badge kind="status" value="overdue" label="Warranty expired" />;
+  if (days <= 30) return <Badge kind="status" value="in_repair" label="Warranty expiring" />;
+  return null;
+};
+
 /** Client-side pre-check; returns a human message or '' when acceptable. */
 function attachmentProblem(file) {
   if (!file) return '';
@@ -620,7 +632,13 @@ export function AssetDetail({ id }) {
         <dt>Department</dt><dd>{a.department_name || '-'}</dd>
         <dt>Location</dt><dd>{a.location || '-'}</dd>
         <dt>Purchased</dt><dd>{a.purchase_date ?? '—'}</dd>
-        <dt>Warranty until</dt><dd>{a.warranty_expiry ?? '—'}</dd>
+        <dt>Warranty until</dt><dd>
+          {a.warranty_expiry ? (
+            <span className="row-gap" style={{ gap: 'var(--sp-1)', alignItems: 'center' }}>
+              {a.warranty_expiry} {warrantyBadge(a.warranty_expiry)}
+            </span>
+          ) : '—'}
+        </dd>
         <dt>Cost</dt><dd>{a.purchase_cost ?? '—'}</dd>
       </dl>
       {a.description && (

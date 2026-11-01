@@ -66,6 +66,7 @@ class Asset(SoftDeleteModel):
         ("in_repair", "In repair"),
         ("retired", "Retired"),
         ("lost", "Lost"),
+        ("disposed", "Disposed"),
     ]
 
     asset_tag = models.CharField(max_length=50, unique=True)
@@ -119,6 +120,9 @@ class Asset(SoftDeleteModel):
             ("hard_delete_asset", "Can permanently delete assets"),
             ("restore_asset", "Can restore soft-deleted assets"),
             ("view_asset_history", "Can view asset history"),
+            ("view_asset_maintenance", "Can view asset maintenance"),
+            ("manage_asset_maintenance", "Can manage asset maintenance"),
+            ("manage_asset_disposal", "Can manage asset disposal"),
         ]
         constraints = [
             # An assigned asset must have a holder.
@@ -129,11 +133,11 @@ class Asset(SoftDeleteModel):
                     | models.Q(assigned_to__isnull=False)
                 ),
             ),
-            # A retired or lost asset cannot have a holder.
+            # A retired, lost, or disposed asset cannot have a holder.
             models.CheckConstraint(
                 name="asset_ineligible_no_holder",
                 condition=(
-                    ~models.Q(status__in=["retired", "lost"])
+                    ~models.Q(status__in=["retired", "lost", "disposed"])
                     | models.Q(assigned_to__isnull=True)
                 ),
             ),
@@ -145,7 +149,7 @@ class Asset(SoftDeleteModel):
         - An asset may only be ``assigned`` when it has a holder and an open
           (not-yet-returned) assignment.
         - A holder implies ``assigned`` status.
-        - Retired / lost assets cannot be assigned.
+        - Retired / lost / disposed assets cannot be assigned.
         """
         super().clean()
         if self.status == "assigned" and not self.assigned_to_id:
@@ -156,7 +160,7 @@ class Asset(SoftDeleteModel):
             raise ValidationError(
                 {"assigned_to": "A holder requires status 'assigned'.",
                  "status": "Set status 'assigned' when assigning a holder."})
-        if self.status in ("retired", "lost") and self.assigned_to_id:
+        if self.status in ("retired", "lost", "disposed") and self.assigned_to_id:
             raise ValidationError(
                 {"assigned_to": f"A {self.get_status_display()} asset cannot "
                                 "have a holder.",
@@ -169,6 +173,210 @@ class Asset(SoftDeleteModel):
 
     def __str__(self):
         return f"{self.asset_tag} - {self.name}"
+
+    @property
+    def has_open_maintenance(self):
+        """True when the asset has a maintenance that is not yet completed
+        or cancelled (i.e. scheduled / in-progress / overdue)."""
+        return self.maintenance.filter(
+            status__in=["scheduled", "in_progress", "overdue"]).exists()
+
+    @property
+    def upcoming_maintenance(self):
+        """Earliest upcoming (not completed/cancelled) maintenance, if any."""
+        return self.maintenance.filter(
+            status__in=["scheduled", "in_progress", "overdue"]).order_by(
+                "scheduled_date", "id").first()
+
+
+class Maintenance(SoftDeleteModel):
+    """Maintenance record for an asset.
+
+    Lifecycle: scheduled -> in_progress -> completed, or cancelled. A
+    maintenance whose scheduled date passes without completion is treated
+    as overdue (computed via ``is_overdue``; the status may also be set to
+    ``overdue`` explicitly).
+    """
+
+    MAINTENANCE_TYPE_CHOICES = [
+        ("preventive", "Preventive"),
+        ("corrective", "Corrective"),
+        ("inspection", "Inspection"),
+        ("upgrade", "Upgrade"),
+        ("cleaning", "Cleaning"),
+        ("other", "Other"),
+    ]
+
+    STATUS_CHOICES = [
+        ("scheduled", "Scheduled"),
+        ("in_progress", "In progress"),
+        ("completed", "Completed"),
+        ("cancelled", "Cancelled"),
+        ("overdue", "Overdue"),
+    ]
+
+    asset = models.ForeignKey(
+        Asset, on_delete=models.PROTECT, related_name="maintenance")
+    title = models.CharField(max_length=200)
+    maintenance_type = models.CharField(
+        max_length=20, choices=MAINTENANCE_TYPE_CHOICES, default="preventive")
+    description = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default="scheduled")
+    scheduled_date = models.DateTimeField()
+    start_date = models.DateTimeField(null=True, blank=True)
+    completion_date = models.DateTimeField(null=True, blank=True)
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="maintenance_tasks",
+        help_text="Technician / responsible employee.",
+    )
+    vendor = models.CharField(
+        max_length=200, blank=True, default="",
+        help_text="External service provider, where applicable.")
+    cost = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
+    resolution_notes = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="maintenance_created")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-scheduled_date", "-id"]
+        permissions = [
+            ("manage_asset_maintenance", "Can manage asset maintenance"),
+        ]
+
+    def __str__(self):
+        return f"{self.asset.asset_tag} - {self.title} ({self.status})"
+
+    @property
+    def is_overdue(self):
+        if self.status in ("completed", "cancelled"):
+            return False
+        if not self.scheduled_date:
+            return False
+        from django.utils import timezone
+        return timezone.now() > self.scheduled_date
+
+
+class Disposal(SoftDeleteModel):
+    """Asset disposal record.
+
+    Disposal is a distinct lifecycle event from retirement or marking an
+    asset lost. A disposed asset must have its assignment resolved first
+    (holder cleared / open assignment closed) and cannot be assigned
+    afterwards. Disposal requires approval before completion.
+    """
+
+    DISPOSAL_METHOD_CHOICES = [
+        ("recycled", "Recycled"),
+        ("donated", "Donated"),
+        ("sold", "Sold"),
+        ("scrapped", "Scrapped"),
+        ("returned_to_vendor", "Returned to vendor"),
+        ("other", "Other"),
+    ]
+
+    APPROVAL_STATUS_CHOICES = [
+        ("pending", "Pending approval"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+
+    asset = models.ForeignKey(
+        Asset, on_delete=models.PROTECT, related_name="disposals")
+    disposal_date = models.DateTimeField(null=True, blank=True)
+    disposal_reason = models.TextField()
+    disposal_method = models.CharField(
+        max_length=30, choices=DISPOSAL_METHOD_CHOICES, default="other")
+    disposal_value = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
+    responsible_person = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="disposals_responsible",
+        help_text="Person carrying out the disposal.")
+    approval_status = models.CharField(
+        max_length=20, choices=APPROVAL_STATUS_CHOICES, default="pending")
+    approver = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="disposals_approved")
+    approved_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="disposals_created")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        permissions = [
+            ("manage_asset_disposal", "Can manage asset disposal"),
+        ]
+
+    def __str__(self):
+        return f"{self.asset.asset_tag} disposal ({self.approval_status})"
+
+    @property
+    def is_completed(self):
+        return bool(self.disposal_date)
+
+    def clean(self):
+        super().clean()
+        if self.approval_status in ("approved", "rejected") and not self.approver:
+            raise ValidationError(
+                {"approver": "An approver is required when approval is "
+                             "not pending."})
+        if self.disposal_date and self.approval_status != "approved":
+            raise ValidationError(
+                {"disposal_date": "A disposal date can only be set once the "
+                                  "disposal is approved."})
+
+
+class AssetAttachment(SoftDeleteModel):
+    """Private asset files. Same lifecycle as ticket attachments.
+
+    - UUID storage names under asset_attachments/ (no traversal).
+    - Soft delete keeps the bytes; restore re-exposes them.
+    - Permanent deletion unlinks the file only when no retained record
+      still references the same stored file (see recycle-bin flow).
+    """
+
+    asset = models.ForeignKey(
+        Asset, on_delete=models.PROTECT, related_name="attachments")
+    file = models.FileField(upload_to=asset_attachment_upload_to)
+    original_filename = models.CharField(max_length=255, blank=True, default="")
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="asset_attachments")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Attachment {self.original_filename or self.pk} on {self.asset_id}"
 
 
 class Assignment(models.Model):

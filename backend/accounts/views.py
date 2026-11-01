@@ -13,6 +13,7 @@ from django.db.models import Count, Q
 from openpyxl import load_workbook
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -24,6 +25,7 @@ from accounts.serializers import (
 )
 from common.audit import log_action
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
+from tickets.serializers import validate_attachment_file
 
 
 def _is_privileged(user):
@@ -528,6 +530,56 @@ class UserViewSet(viewsets.ModelViewSet):
         obj.is_active = True
         obj.save(update_fields=["is_active"])
         log_action(actor=request.user, action="reactivate", instance=obj)
+        return Response(UserSerializer(obj).data)
+
+    @action(detail=True, methods=["get", "post"],
+            parser_classes=[JSONParser, MultiPartParser, FormParser])
+    def photo(self, request, pk=None):
+        """Secure employee photo: download (GET) or upload/replace (POST).
+
+        Access: the employee themselves, or IT staff. Never exposes a
+        storage URL; the file is streamed through this endpoint after an
+        access check. Only images are accepted.
+        """
+        import mimetypes
+        import os
+
+        from django.http import FileResponse
+
+        obj = self.get_object()
+        is_self = (
+            request.user.is_authenticated and request.user.pk == obj.pk)
+        if not (is_self or _is_privileged(request.user)):
+            return Response({"detail": "Forbidden."}, status=403)
+
+        if request.method == "GET":
+            if not obj.photo or not getattr(obj.photo, "name", ""):
+                return Response({"detail": "No photo on file."}, status=404)
+            try:
+                handle = obj.photo.open("rb")
+            except FileNotFoundError:
+                return Response(
+                    {"detail": "Photo missing from storage."}, status=410)
+            name = os.path.basename(obj.photo.name)
+            resp = FileResponse(
+                handle,
+                content_type=mimetypes.guess_type(name)[0]
+                or "application/octet-stream")
+            resp["Content-Disposition"] = f'inline; filename="{name}"'
+            return resp
+
+        upload = request.FILES.get("photo")
+        if not upload:
+            return Response(
+                {"detail": "Provide a 'photo' file."}, status=400)
+        try:
+            validate_attachment_file(upload)
+        except ValidationError as exc:
+            return Response({"photo": exc.detail}, status=400)
+        obj.photo = upload
+        obj.save(update_fields=["photo"])
+        log_action(actor=request.user, action="update", instance=obj,
+                   details={"photo": True})
         return Response(UserSerializer(obj).data)
 
     @action(detail=True, methods=["post"],

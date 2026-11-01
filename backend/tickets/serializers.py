@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from tickets.models import (
     Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketNote,
+    TicketSLA,
 )
 
 
@@ -22,6 +23,12 @@ class TicketSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(
         source="department.name", read_only=True
     )
+    sla_due_at = serializers.DateTimeField(read_only=True)
+    sla_breached = serializers.BooleanField(read_only=True)
+    is_overdue = serializers.SerializerMethodField(read_only=True)
+
+    def get_is_overdue(self, obj):
+        return obj.is_overdue
 
     class Meta:
         model = Ticket
@@ -30,8 +37,10 @@ class TicketSerializer(serializers.ModelSerializer):
                   "assignee", "assignee_email", "department",
                   "department_name", "on_behalf_reason", "asset",
                   "resolution_notes", "resolved_at", "closed_at",
+                  "sla_due_at", "sla_breached", "is_overdue",
                   "created_at", "updated_at"]
         read_only_fields = ["id", "requester", "resolved_at", "closed_at",
+                            "sla_due_at", "sla_breached", "is_overdue",
                             "created_at", "updated_at"]
 
     def validate(self, attrs):
@@ -55,6 +64,14 @@ class TicketSerializer(serializers.ModelSerializer):
                 "Selected user is inactive and cannot be assigned tickets."
             )
         return user
+
+
+class TicketSLASerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TicketSLA
+        fields = ["id", "priority", "target_resolution_hours", "is_active",
+                  "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
 
 
 class TicketNoteSerializer(serializers.ModelSerializer):

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth, AuthProvider } from './auth';
-import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, Tickets, Users, VerifyEmail } from './pages';
+import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, SLAConfig, SLAReport, Tickets, Users, VerifyEmail } from './pages';
 import { AssetForm, AssetDetail } from './assets';
 import { AuditLogPage } from './audit';
 import { TicketForm, TicketDetail } from './tickets';
@@ -9,6 +9,7 @@ import { Notifications, NotifBadge } from './notifications';
 const NAV = [
   { section: 'Work' },
   { hash: '#/tickets', label: 'Tickets' },
+  { hash: '#/reports/sla', label: 'SLA report' },
   { hash: '#/assets', label: 'Assets' },
   { section: 'Organize' },
   { hash: '#/categories', label: 'Categories' },
@@ -19,12 +20,14 @@ const NAV = [
 
 const TITLES = {
   '#/tickets': 'Tickets',
+  '#/reports/sla': 'SLA report',
   '#/assets': 'Assets',
   '#/categories': 'Categories',
   '#/departments': 'Departments',
   '#/notifications': 'Notifications',
   '#/recycle': 'Recycle Bin',
   '#/audit': 'Audit Log',
+  '#/sla-config': 'SLA config',
   '#/users': 'Employees',
   '#/profile': 'My Profile',
 };
@@ -57,12 +60,14 @@ function matchRoute(hash) {
   if ((m = hash.match(/^#\/users\/(\d+)\/?$/))) return <EmployeeDetail id={m[1]} />;
   const routes = {
     '#/tickets': <Tickets />,
+    '#/reports/sla': <SLAReport />,
     '#/assets': <Assets />,
     '#/categories': <Categories />,
     '#/departments': <Departments />,
     '#/notifications': <Notifications />,
     '#/recycle': <RecycleBin />,
     '#/audit': <AuditLogPage />,
+    '#/sla-config': <SLAConfig />,
     '#/users': <Users />,
     '#/profile': <Profile />,
     '#/verify-email': <VerifyEmail />,
@@ -123,6 +128,9 @@ function Shell() {
               </a>
               <a href="#/audit" className={active('#/audit')} aria-current={isActive(hash, '#/audit') ? 'page' : undefined}>
                 <span className="nav-label">Audit Log</span>
+              </a>
+              <a href="#/sla-config" className={active('#/sla-config')} aria-current={isActive(hash, '#/sla-config') ? 'page' : undefined}>
+                <span className="nav-label">SLA config</span>
               </a>
             </>
           )}

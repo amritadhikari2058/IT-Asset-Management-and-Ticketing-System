@@ -145,6 +145,17 @@ class UserManager(DjangoUserManager):
         )
 
 
+def employee_photo_upload_to(instance, filename):
+    """Safe filename: uuid + whitelisted image extension, no user paths."""
+    import os
+    import uuid
+
+    ext = os.path.splitext(filename or "")[1].lower().lstrip(".")
+    safe_ext = "".join(c for c in ext if c.isalnum())[:10]
+    return f"employee_photos/{uuid.uuid4().hex}" + (
+        f".{safe_ext}" if safe_ext else "")
+
+
 class User(AbstractUser):
     """Email-login user. username kept for admin compat; email is unique."""
 
@@ -187,6 +198,11 @@ class User(AbstractUser):
         related_name="users_deleted",
     )
     deletion_reason = models.TextField(blank=True, default="")
+    # Private profile photo. Stored under uuid names (no public URLs),
+    # downloaded through the permission-checked photo endpoint. Soft-delete
+    # keeps the bytes; restore re-exposes them.
+    photo = models.FileField(
+        upload_to=employee_photo_upload_to, null=True, blank=True)
 
     objects = UserManager()
 

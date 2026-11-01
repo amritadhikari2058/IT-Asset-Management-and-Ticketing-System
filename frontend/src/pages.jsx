@@ -3,11 +3,11 @@ import api from './api';
 import { useAuth } from './auth';
 import {
   Badge, CategorySelect, ConfirmDialog, DataTable, DepartmentSelect, EmptyState,
-  Field, LoadingRows, Modal, PageHeader, Pager, TableControls, UserSelect,
-  useSort, useTableColumns,
+  ExportDialog, Field, LoadingRows, Modal, PageHeader, Pager, PhotoThumbnail,
+  TableControls, UserSelect, useSort, useTableColumns,
 } from './components';
 import { fetchPage, fieldMsg, parseApiError } from './api-utils';
-import { AssetBulkCreateModal, EmployeeCreateModal, EmployeeImportModal, TicketBulkCreateModal } from './bulk';
+import { AssetBulkCreateModal, EmployeeCreateModal, EmployeeImportModal, ReportTable, TicketBulkCreateModal } from './bulk';
 
 const TICKET_STATUSES = ['', 'open', 'in_progress', 'resolved', 'closed', 'reopened', 'archived'];
 const TICKET_PRIORITIES = ['', 'low', 'medium', 'high', 'critical'];
@@ -65,11 +65,19 @@ export function Tickets() {
   const [sort, changeSort, orderingParam] = useSort();
   const [reportDateFrom, setReportDateFrom] = useState('');
   const [reportDateTo, setReportDateTo] = useState('');
+  const [exportOpen, setExportOpen] = useState(false);
 
   const TICKET_COLUMNS = [
     { key: 'id', label: 'ID' },
     { key: 'title', label: 'Subject', render: (t) => <a className="row-title" href={`#/tickets/${t.id}`}>{t.title}</a> },
-    { key: 'status', label: 'Status', sortable: 'status', render: (t) => <Badge kind="status" value={t.status} /> },
+    { key: 'status', label: 'Status', sortable: 'status', render: (t) => (
+      <span className="row-gap" style={{ gap: 'var(--sp-1)', alignItems: 'center' }}>
+        <Badge kind="status" value={t.status} />
+        {t.is_overdue && (
+          <Badge kind="status" value="overdue" label="Overdue" />
+        )}
+      </span>
+    ) },
     { key: 'priority', label: 'Priority', sortable: 'priority', render: (t) => <Badge kind="priority" value={t.priority} /> },
     { key: 'category', label: 'Category', render: (t) => t.category_name ?? '-' },
     { key: 'assignee', label: 'Assignee', render: (t) => t.assignee_email ? <span className="ellipsis" title={t.assignee_email}>{t.assignee_email}</span> : '-' },
@@ -186,9 +194,19 @@ export function Tickets() {
         actions={<>
           {canCreateTickets && <a className="btn-primary" href="#/tickets/new">+ New ticket</a>}
           {canCreateTickets && <button type="button" className="btn-secondary" onClick={() => setShowBulkCreate(true)}>Bulk create…</button>}
+          <button type="button" className="btn-secondary" onClick={() => setExportOpen(true)}>Export…</button>
         </>}
       />
       {showBulkCreate && <TicketBulkCreateModal onClose={() => setShowBulkCreate(false)} onCreated={() => loadUrl(buildUrl())} />}
+      {exportOpen && (
+        <ExportDialog
+          dataset="tickets"
+          open={exportOpen}
+          selectedIds={[...sel]}
+          filterParams={f}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
       <div className="filter-bar" role="search">
         <input
           className="input grow" value={f.q} onChange={(e) => applyFilters({ q: e.target.value })}
@@ -249,8 +267,8 @@ export function Tickets() {
         </div>
         <div className="panel-pad">
           <div className="report-filters">
-            <input className="input input-date" type="date" value={reportDateFrom} onChange={(e) => setReportDateFrom(e.target.value)} aria-label="Report start date" />
-            <input className="input input-date" type="date" value={reportDateTo} onChange={(e) => setReportDateTo(e.target.value)} aria-label="Report end date" />
+            <input className="input input-date" type="date" value={reportDateFrom} onChange={(e) => setReportDateFrom(e.target.value)} aria-label="Report start date" style={{ maxWidth: '150px' }} />
+            <input className="input input-date" type="date" value={reportDateTo} onChange={(e) => setReportDateTo(e.target.value)} aria-label="Report end date" style={{ maxWidth: '150px' }} />
             <button type="button" className="btn-secondary" onClick={() => loadReport()}>Apply dates</button>
             {(reportDateFrom || reportDateTo) && (
               <button type="button" className="btn-ghost" onClick={resetReportDates}>Reset</button>
@@ -283,6 +301,18 @@ const fmtDateTime = (d) => new Date(d).toLocaleString();
 const fmtMoney = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(v);
+};
+
+/** Warranty expiry alert badge. Returns a Badge element or null. */
+const warrantyBadge = (expiry) => {
+  if (!expiry) return null;
+  const due = new Date(`${expiry}T00:00:00Z`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((due - today) / (1000 * 60 * 60 * 24));
+  if (days < 0) return <Badge kind="status" value="overdue" label="Warranty expired" />;
+  if (days <= 30) return <Badge kind="status" value="in_repair" label="Warranty expiring" />;
+  return null;
 };
 
 /** Parse the ?page= value of a paginated list URL (server default = 1). */
@@ -357,6 +387,7 @@ export function Assets() {
   const [sel, setSel] = useState(new Set());
   const [f, setF] = useState({ q: '', status: '', category: '', department: '' });
   const [showBulkCreate, setShowBulkCreate] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [sort, changeSort, orderingParam] = useSort();
   const [lastUrl, setLastUrl] = useState('/assets/');
   // Destructive/secondary confirmations and per-row action state.
@@ -384,7 +415,12 @@ export function Assets() {
     { key: 'name', label: 'Name', sortable: 'name', render: (a) => (
       <span className="ellipsis" title={a.name ?? ''}>{a.name || <span className="cell-muted">—</span>}</span>
     ) },
-    { key: 'status', label: 'Status', sortable: 'status', render: (a) => <Badge kind="status" value={a.status} /> },
+    { key: 'status', label: 'Status', sortable: 'status', render: (a) => (
+      <span className="row-gap" style={{ gap: 'var(--sp-1)', alignItems: 'center' }}>
+        <Badge kind="status" value={a.status} />
+        {warrantyBadge(a.warranty_expiry)}
+      </span>
+    ) },
     { key: 'category', label: 'Category', render: (a) => a.category_name ?? <span className="cell-muted">—</span> },
     { key: 'department', label: 'Department', render: (a) => a.department_name ?? <span className="cell-muted">None</span> },
     { key: 'assigned_to', label: 'Assignee', render: (a) => a.assigned_to_email ?? <span className="cell-muted">Unassigned</span> },
@@ -402,14 +438,12 @@ export function Assets() {
       : <span className="cell-muted">—</span>) },
     { key: 'created_at', label: 'Created', render: (a) => a.created_at ? fmtDateTime(a.created_at) : <span className="cell-muted">—</span> },
     { key: 'photo', label: 'Photo', render: (a) => a.photo_attachment_id ? (
-      <button
-        type="button" className="btn-small"
-        onClick={() => openAssetPhotoPreview(a.photo_attachment_id)}
-        disabled={photoPreviewBusyId === a.photo_attachment_id}
-        aria-label={`Preview photo of ${a.asset_tag}`}
-      >
-        {photoPreviewBusyId === a.photo_attachment_id ? 'Loading…' : 'Preview'}
-      </button>
+      <PhotoThumbnail
+        id={a.photo_attachment_id}
+        getUrl={(id) => `/assets/attachments/${id}/download/`}
+        onPreview={openAssetPhotoPreview}
+        label={`Preview photo of ${a.asset_tag}`}
+      />
     ) : <span className="cell-muted">—</span> },
     ...(isStaff ? [{
       key: 'actions', label: 'Actions', thClass: 'table-actions',
@@ -581,9 +615,19 @@ export function Assets() {
         actions={<>
           {isStaff && <a className="btn-primary" href="#/assets/new">+ New asset</a>}
           {isStaff && <button type="button" className="btn-secondary" onClick={() => setShowBulkCreate(true)}>Bulk create…</button>}
+          {isStaff && <button type="button" className="btn-secondary" onClick={() => setExportOpen(true)}>Export…</button>}
         </>}
       />
       {showBulkCreate && <AssetBulkCreateModal onClose={() => setShowBulkCreate(false)} onImported={() => loadUrl(lastUrl)} />}
+      {exportOpen && (
+        <ExportDialog
+          dataset="assets"
+          open={exportOpen}
+          selectedIds={[...sel]}
+          filterParams={f}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
       {actionError && <div className="error-summary" role="alert">{actionError}</div>}
       <div className="filter-bar" role="search">
         <div className="field-inline grow">
@@ -836,12 +880,12 @@ export function Categories() {
         <div className="panel-title"><h4>Add category</h4></div>
         <div className="panel-pad">
         <form onSubmit={add}>
-          <div className="row-gap">
+          <div className="row-gap" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
             <select className="input input-auto" value={which} onChange={(e) => setWhich(e.target.value)} aria-label="Category type">
               <option value="ticket">Ticket category</option>
               <option value="asset">Asset category</option>
             </select>
-            <input className="input grow" value={name} onChange={(e) => setName(e.target.value)} placeholder="New category name" aria-label="New category name" disabled={saving} />
+            <input className="input input-auto" value={name} onChange={(e) => setName(e.target.value)} placeholder="New category name" aria-label="New category name" disabled={saving} style={{ maxWidth: '320px' }} />
             <button type="submit" className="btn-primary" disabled={saving || !name.trim()}>
               {saving ? 'Adding…' : '+ Add'}
             </button>
@@ -1333,9 +1377,15 @@ function ResetPasswordModal({ user, onClose, onReset }) {
 }
 
 export function EmployeeDetail({ id }) {
+  const { isStaff } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState('');
+  // Protected photo upload/download (staff set any employee's photo).
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoError, setPhotoError] = useState('');
+  const [photoMsg, setPhotoMsg] = useState('');
   const load = async () => {
     setLoading(true);
     setListError('');
@@ -1349,6 +1399,68 @@ export function EmployeeDetail({ id }) {
     }
   };
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const doUploadPhoto = async (ev) => {
+    ev.preventDefault();
+    if (photoBusy || !photoFile) return;
+    setPhotoBusy(true);
+    setPhotoError('');
+    setPhotoMsg('');
+    try {
+      const fd = new FormData();
+      fd.append('photo', photoFile);
+      await api.post(`/accounts/users/${id}/photo/`, fd);
+      setPhotoFile(null);
+      setPhotoMsg('Photo updated.');
+      setData((d) => d ? { ...d, user: { ...d.user, has_photo: true } } : d);
+    } catch (e) {
+      const p = parseApiError(e);
+      setPhotoError(p.fields.photo || p.global || 'Could not upload photo.');
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
+
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState(null);
+  const [photoPreviewName, setPhotoPreviewName] = useState('');
+  const [photoPreviewBusyId, setPhotoPreviewBusyId] = useState(null);
+  const [photoPreviewError, setPhotoPreviewError] = useState('');
+
+  const openPhotoPreview = async (userId) => {
+    if (photoPreviewBusyId) return;
+    setPhotoPreviewBusyId(userId);
+    setPhotoPreviewError('');
+    try {
+      const r = await api.get(`/accounts/users/${userId}/photo/`, {
+        responseType: 'blob',
+      });
+      const cd = r.headers?.['content-disposition'] || '';
+      const m = cd.match(/filename="([^"]+)"/);
+      const url = URL.createObjectURL(r.data);
+      setPhotoPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+      setPhotoPreviewName((m && m[1]) || `photo-${userId}`);
+    } catch (e) {
+      setPhotoPreviewError(
+        e?.response?.status === 403
+          ? 'You do not have permission to preview this photo.'
+          : 'Photo preview failed.',
+      );
+    } finally {
+      setPhotoPreviewBusyId(null);
+    }
+  };
+  const closePhotoPreview = () => {
+    setPhotoPreviewUrl((url) => {
+      if (url) URL.revokeObjectURL(url);
+      return null;
+    });
+    setPhotoPreviewName('');
+    setPhotoPreviewError('');
+  };
+
   if (!data) {
     return (
       <div className="form-wrap">
@@ -1385,6 +1497,36 @@ export function EmployeeDetail({ id }) {
       <div className="panel">
         <div className="panel-title"><h4>Profile</h4></div>
         <div className="panel-pad">
+        <div className="row-gap" style={{ marginBottom: 'var(--sp-3)', alignItems: 'flex-start' }}>
+          <div style={{ minWidth: '150px' }}>
+            {u.has_photo ? (
+              <PhotoThumbnail
+                id={u.id}
+                getUrl={(id) => `/accounts/users/${id}/photo/`}
+                onPreview={openPhotoPreview}
+                label={`Photo of ${u.employee_id}`}
+              />
+            ) : (
+              <span className="cell-muted">No photo on file.</span>
+            )}
+          </div>
+          {isStaff && (
+            <div style={{ marginLeft: 'var(--sp-3)', minWidth: '260px' }}>
+              <form onSubmit={doUploadPhoto} noValidate className="row-gap" style={{ alignItems: 'flex-start' }}>
+                <input
+                  type="file" accept="image/*" onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}
+                  disabled={photoBusy} aria-label="Employee photo"
+                />
+                {photoFile && <span className="muted small">{photoFile.name}</span>}
+                {photoError && <div className="field-error" role="alert">{photoError}</div>}
+                {photoMsg && <div className="success-summary" role="status">{photoMsg}</div>}
+                <button type="submit" className="btn-secondary" disabled={photoBusy || !photoFile}>
+                  {photoBusy ? 'Uploading…' : 'Upload photo'}
+                </button>
+              </form>
+            </div>
+          )}
+        </div>
         <dl className="detail-grid">
           <dt>Employee ID</dt><dd>{u.employee_id}</dd>
           <dt>Email</dt><dd>{u.email}</dd>
@@ -1475,6 +1617,17 @@ export function EmployeeDetail({ id }) {
       {!assetRows.length && !reqRows.length && !assRows.length && !(data.recent_audit || []).length && (
         <p className="muted small">No assets, tickets, or recent audit activity recorded for this employee.</p>
       )}
+      {photoPreviewUrl && (
+        <Modal title={photoPreviewName || 'Employee photo'} onClose={closePhotoPreview}>
+          <div className="preview-media">
+            <img src={photoPreviewUrl} alt={photoPreviewName || 'Employee photo'} />
+            {photoPreviewError && <div className="field-error" role="alert">{photoPreviewError}</div>}
+          </div>
+        </Modal>
+      )}
+      {photoPreviewError && !photoPreviewUrl && (
+        <div className="error-summary" role="alert">{photoPreviewError}</div>
+      )}
     </div>
   );
 }
@@ -1490,7 +1643,6 @@ export function Users() {
   const [f, setF] = useState({ q: '', department: '', role: '', status: '' });
   const [sort, changeSort, orderingParam] = useSort();
   const [msg, setMsg] = useState('');
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -1502,8 +1654,27 @@ export function Users() {
   const [roleError, setRoleError] = useState('');
   const [editingUser, setEditingUser] = useState(null);
   const [resetTarget, setResetTarget] = useState(null); // {user}
+  // Protected employee photo preview (blob download; never public URLs).
+  const [empPhotoPreviewUrl, setEmpPhotoPreviewUrl] = useState(null);
+  const [empPhotoPreviewName, setEmpPhotoPreviewName] = useState('');
+  const [empPhotoPreviewBusyId, setEmpPhotoPreviewBusyId] = useState(null);
+  const [empPhotoPreviewError, setEmpPhotoPreviewError] = useState('');
+  // Row selection for bulk actions (IT staff only).
+  const [selUsers, setSelUsers] = useState(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkPending, setBulkPending] = useState(null); // {action, ids}
+  const [bulkResult, setBulkResult] = useState(null); // {label, successful, skipped, failed}
+  const [exportOpen, setExportOpen] = useState(false);
 
   const USER_COLUMNS = [
+    { key: 'photo', label: 'Photo', render: (u) => u.has_photo ? (
+      <PhotoThumbnail
+        id={u.id}
+        getUrl={(id) => `/accounts/users/${id}/photo/`}
+        onPreview={openEmployeePhotoPreview}
+        label={`Photo of ${u.employee_id}`}
+      />
+    ) : <span className="cell-muted">—</span> },
     { key: 'employee_id', label: 'Employee ID', sortable: 'employee_id', render: (u) => <a className="row-title" href={`#/users/${u.id}`}>{u.employee_id}</a> },
     { key: 'email', label: 'Email', sortable: 'email', render: (u) => <span className="ellipsis" title={u.email}>{u.email}</span> },
     { key: 'role', label: 'Role', render: (u) => u.role.replace(/_/g, ' ') },
@@ -1558,7 +1729,7 @@ export function Users() {
   const { visibleColumns: visibleUserColumns, toggleColumn: toggleUserColumn, resetColumns: resetUserColumns, tableVisible: userTableVisible, toggleTable: toggleUserTable } = useTableColumns(
     'employees',
     USER_COLUMNS.map((c) => c.key),
-    ['employee_id', 'email', 'role', 'home_department', 'is_active', 'actions'],
+    ['photo', 'employee_id', 'email', 'role', 'home_department', 'is_active', 'actions'],
   );
   const userColumns = USER_COLUMNS.filter((c) => visibleUserColumns.has(c.key));
 
@@ -1603,6 +1774,113 @@ export function Users() {
   }, [builtUrl]); // eslint-disable-line react-hooks/exhaustive-deps
   const refresh = () => loadUrl(builtUrl);
   const changeUserSort = (field) => changeSort(field);
+
+  const toggleUser = (id) => setSelUsers((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  /** Build the per-row result table rows from a bulk user operation payload. */
+  const bulkResultRows = (result) => {
+    const ok = Array.isArray(result.successful) ? result.successful : [];
+    const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+    const failed = Array.isArray(result.failed) ? result.failed : [];
+    return [
+      ...ok.map((id) => ({ row: '', key: id, outcome: 'successful', message: '' })),
+      ...skipped.map((s) => ({ row: '', key: s.id ?? s.employee_id ?? '', outcome: 'skipped', message: s.reason ?? '' })),
+      ...failed.map((f) => ({ row: '', key: f.id ?? '', outcome: 'failed', message: typeof f.errors === 'string' ? f.errors : JSON.stringify(f.errors) })),
+    ];
+  };
+
+  const bulkLabel = (action) => action === 'activate' ? 'Activate' : action === 'deactivate' ? 'Deactivate' : 'Delete';
+
+  const bulkPreviewMessage = (preview) => {
+    const affected = preview?.affected ?? 0;
+    const blocked = Array.isArray(preview?.blocked) ? preview.blocked : [];
+    const msg = `Affects ${affected} user(s).`;
+    if (blocked.length) {
+      return `${msg} ${blocked.length} cannot be processed (e.g. ${blocked.slice(0, 3).join(', ')}${blocked.length > 3 ? '…' : ''}).`;
+    }
+    return msg;
+  };
+
+  const prepareBulk = async (action) => {
+    const ids = [...selUsers];
+    if (!ids.length) return;
+    setBulkBusy(true);
+    setErr('');
+    try {
+      const url = action === 'delete' ? '/accounts/users/bulk_delete/' : '/accounts/users/bulk_activate/';
+      const prev = await api.post(url, {
+        ids, preview: true,
+        ...(action === 'delete' ? {} : { activate: action === 'activate' }),
+      });
+      setBulkPending({ action, ids, preview: prev.data });
+    } catch (e) {
+      setErr(e?.response?.status === 403 ? 'Forbidden: this bulk operation requires elevated permissions.' : 'Bulk preview failed.');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const executeBulk = async () => {
+    if (!bulkPending) return;
+    setBulkBusy(true);
+    setErr('');
+    try {
+      const { action, ids } = bulkPending;
+      const url = action === 'delete' ? '/accounts/users/bulk_delete/' : '/accounts/users/bulk_activate/';
+      const res = await api.post(url, {
+        ids, preview: false, confirm: true,
+        ...(action === 'delete' ? { reason: 'bulk delete' } : { activate: action === 'activate' }),
+      });
+      setBulkResult({
+        label: bulkLabel(action),
+        successful: res.data.successful,
+        skipped: res.data.skipped,
+        failed: res.data.failed,
+      });
+      setSelUsers(new Set());
+      setBulkPending(null);
+      await refresh();
+    } catch (e) {
+      setErr(e?.response?.status === 403 ? 'Forbidden: this bulk operation requires elevated permissions.' : 'Bulk operation failed.');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const openEmployeePhotoPreview = async (userId) => {
+    if (empPhotoPreviewBusyId) return;
+    setEmpPhotoPreviewBusyId(userId);
+    setEmpPhotoPreviewError('');
+    try {
+      const r = await api.get(`/accounts/users/${userId}/photo/`, {
+        responseType: 'blob',
+      });
+      const cd = r.headers?.['content-disposition'] || '';
+      const m = cd.match(/filename="([^"]+)"/);
+      const url = URL.createObjectURL(r.data);
+      setEmpPhotoPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+      setEmpPhotoPreviewName((m && m[1]) || `photo-${userId}`);
+    } catch (e) {
+      setEmpPhotoPreviewError(
+        e?.response?.status === 403
+          ? 'You do not have permission to preview this photo.'
+          : 'Photo preview failed.',
+      );
+    } finally {
+      setEmpPhotoPreviewBusyId(null);
+    }
+  };
+  const closeEmployeePhotoPreview = () => {
+    setEmpPhotoPreviewUrl((url) => {
+      if (url) URL.revokeObjectURL(url);
+      return null;
+    });
+    setEmpPhotoPreviewName('');
+    setEmpPhotoPreviewError('');
+  };
   const doActivate = async () => {
     if (!confirmUser || rowBusy) return;
     setRowBusy(confirmUser.user.id);
@@ -1646,32 +1924,6 @@ export function Users() {
   const openResetModal = (u) => {
     setResetTarget(u);
   };
-  const run = async (kind) => {
-    const ids = prompt('Comma-separated user IDs:');
-    if (!ids) return;
-    const list = ids.split(',').map((s) => Number(s.trim())).filter(Boolean);
-    if (!list.length) return;
-    const url = kind === 'activate' ? '/accounts/users/bulk_activate/' : '/accounts/users/bulk_delete/';
-    setBusy(true);
-    setErr('');
-    setMsg('');
-    try {
-      const prev = await api.post(url, { ids: list, preview: true, ...(kind === 'activate' ? { activate: true } : {}) });
-      if (!confirm(`Affects ${prev.data.affected ?? prev.data.preview?.length}. Confirm?`)) return;
-      const res = await api.post(url, { ids: list, preview: false, confirm: true, ...(kind === 'activate' ? { activate: true } : { reason: 'bulk' }) });
-      const d = res.data;
-      setMsg(`Done: ${d.successful?.length ?? 0} successful`
-        + (d.skipped ? `, ${d.skipped.length} skipped` : '')
-        + (d.failed?.length ? `, ${d.failed.length} failed` : ''));
-      refresh();
-    } catch (e) {
-      setErr(e.response?.status === 403
-        ? 'Forbidden: this bulk operation requires elevated permissions.'
-        : 'Bulk operation failed.');
-    } finally {
-      setBusy(false);
-    }
-  };
   const filtersActive = !!(f.q || f.department || f.role || f.status);
   return (
     <div>
@@ -1681,10 +1933,23 @@ export function Users() {
         actions={<>
           {isStaff && <button type="button" className="btn-primary" onClick={() => setShowCreate(true)}>+ Add employee</button>}
           {isStaff && <button type="button" className="btn-secondary" onClick={() => setShowImport(true)}>Bulk import…</button>}
-          {isStaff && <button type="button" className="btn-ghost" onClick={() => run('activate')} disabled={busy}>Bulk activate…</button>}
-          {isStaff && <button type="button" className="btn-ghost" onClick={() => run('delete')} disabled={busy}>Bulk soft-delete…</button>}
-        </>}
-      />
+          {isStaff && <button type="button" className="btn-secondary" onClick={() => setExportOpen(true)}>Export…</button>}
+        </>} />
+        {isStaff && selUsers.size > 0 && (
+          <div className="toolbar" role="toolbar" aria-label="Bulk actions">
+            <span className="muted small">{selUsers.size} selected</span>
+            <button type="button" className="btn-small" onClick={() => prepareBulk('activate')} disabled={bulkBusy}>
+              Activate selected
+            </button>
+            <button type="button" className="btn-small" onClick={() => prepareBulk('deactivate')} disabled={bulkBusy}>
+              Deactivate selected
+            </button>
+            <button type="button" className="btn-small btn-danger" onClick={() => prepareBulk('delete')} disabled={bulkBusy}>
+              Delete selected
+            </button>
+            <button type="button" className="btn-small" onClick={() => setSelUsers(new Set())}>Clear</button>
+          </div>
+        )}
       {err && <div className="error-summary" role="alert">{err}</div>}
       {msg && <div className="success-summary" role="status">{msg}</div>}
       <div className="filter-bar" role="search">
@@ -1749,6 +2014,8 @@ export function Users() {
                 columns={userColumns}
                 rows={items}
                 keyOf={(u) => u.id}
+                selected={isStaff ? selUsers : undefined}
+                onToggle={isStaff ? toggleUser : undefined}
                 sort={sort}
                 onSort={changeUserSort}
                 emptyTitle="No employees found."
@@ -1823,6 +2090,56 @@ export function Users() {
             </div>
           </form>
         </Modal>
+      )}
+      {empPhotoPreviewUrl && (
+        <Modal
+          title={empPhotoPreviewName || 'Employee photo'}
+          onClose={closeEmployeePhotoPreview}
+        >
+          <div className="preview-media">
+            <img src={empPhotoPreviewUrl} alt={empPhotoPreviewName || 'Employee photo'} />
+            {empPhotoPreviewError && <div className="field-error" role="alert">{empPhotoPreviewError}</div>}
+          </div>
+        </Modal>
+      )}
+      {empPhotoPreviewError && !empPhotoPreviewUrl && (
+        <div className="error-summary" role="alert">{empPhotoPreviewError}</div>
+      )}
+      {bulkPending && (
+        <ConfirmDialog
+          title={`${bulkLabel(bulkPending.action)} ${bulkPending.ids.length} user(s)?`}
+          message={bulkPreviewMessage(bulkPending.preview)}
+          confirmLabel={bulkLabel(bulkPending.action)}
+          danger={bulkPending.action === 'delete'}
+          busy={bulkBusy}
+          onConfirm={executeBulk}
+          onCancel={() => setBulkPending(null)}
+        />
+      )}
+      {bulkResult && (
+        <Modal title={`Bulk ${bulkResult.label}`} onClose={() => setBulkResult(null)} size="lg">
+          <div className="row-gap" style={{ marginBottom: 'var(--sp-2)' }}>
+            <b>{bulkResult.label} result</b>
+            <span className="muted small">
+              {bulkResult.successful?.length ?? 0} successful
+              {bulkResult.skipped?.length ? `, ${bulkResult.skipped.length} skipped` : ''}
+              {bulkResult.failed?.length ? `, ${bulkResult.failed.length} failed` : ''}
+            </span>
+          </div>
+          <ReportTable rows={bulkResultRows(bulkResult)} />
+          <div className="row-end">
+            <button type="button" className="btn-ghost" onClick={() => setBulkResult(null)}>Close</button>
+          </div>
+        </Modal>
+      )}
+      {exportOpen && (
+        <ExportDialog
+          dataset="employees"
+          open={exportOpen}
+          selectedIds={[...selUsers]}
+          filterParams={f}
+          onClose={() => setExportOpen(false)}
+        />
       )}
     </div>
   );
@@ -1978,6 +2295,7 @@ export function Departments() {
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
 
   const DEPARTMENT_COLUMNS = [
     { key: 'name', label: 'Name', sortable: 'name' },
@@ -2075,6 +2393,7 @@ export function Departments() {
         sub={count != null ? `${count} departments` : 'Home departments, ticket routing, and membership.'}
         actions={<>
           {isStaff && <button type="button" className="btn-primary" onClick={() => setCreating(true)}>+ New department</button>}
+          {isStaff && <button type="button" className="btn-secondary" onClick={() => setExportOpen(true)}>Export…</button>}
         </>}
       />
       {err && <div className="error-summary" role="alert">{err}</div>}
@@ -2140,6 +2459,248 @@ export function Departments() {
           onCancel={() => setDeleting(null)}
         />
       )}
+      {exportOpen && (
+        <ExportDialog
+          dataset="departments"
+          open={exportOpen}
+          filterParams={q ? { q } : {}}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Admin-only SLA target configuration per ticket priority. */
+export function SLAConfig() {
+  const { isAdmin } = useAuth();
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [editTarget, setEditTarget] = useState(null);
+  const [editForm, setEditForm] = useState({
+    target_resolution_hours: '', is_active: true,
+  });
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+
+  const load = async () => {
+    if (!isAdmin) return;
+    setLoading(true);
+    setError('');
+    try {
+      const r = await api.get('/tickets/sla/');
+      setItems(r.data.results ?? r.data ?? []);
+    } catch {
+      setError('Could not load SLA configuration.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openEdit = (sla) => {
+    setEditTarget(sla);
+    setEditForm({
+      target_resolution_hours: String(sla.target_resolution_hours ?? ''),
+      is_active: sla.is_active,
+    });
+    setSaveError('');
+  };
+  const saveEdit = async (ev) => {
+    ev.preventDefault();
+    if (!editTarget || saving || !isAdmin) return;
+    setSaving(true);
+    setSaveError('');
+    try {
+      await api.patch(`/tickets/sla/${editTarget.id}/`, {
+        target_resolution_hours: Number(editForm.target_resolution_hours),
+        is_active: editForm.is_active,
+      });
+      setMsg(`SLA for "${editTarget.priority}" updated.`);
+      setEditTarget(null);
+      await load();
+    } catch (e) {
+      setSaveError(parseApiError(e).global || 'Could not update SLA.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!isAdmin) {
+    return (
+      <div className="form-wrap">
+        <div className="error-summary" role="alert">System Admin only.</div>
+      </div>
+    );
+  }
+  if (loading) return <div className="panel-pad"><LoadingRows n={3} /></div>;
+  if (error) return <div className="error-summary" role="alert">{error}</div>;
+
+  return (
+    <div>
+      <PageHeader
+        title="SLA configuration"
+        sub="Target resolution window per ticket priority (System Admin)."
+        actions={<button
+          type="button" className="btn-ghost" onClick={load} disabled={loading}>
+          {loading ? 'Loading…' : 'Refresh'}
+        </button>}
+      />
+      {error && <div className="error-summary" role="alert">{error}</div>}
+      {msg && <div className="success-summary" role="status">{msg}</div>}
+      <div className="panel">
+        <div className="panel-title"><h4>SLA targets</h4></div>
+        <div className="panel-pad">
+          <DataTable
+            columns={[
+              {
+                key: 'priority', label: 'Priority',
+                render: (s) => s.priority[0].toUpperCase() + s.priority.slice(1),
+              },
+              { key: 'target_resolution_hours', label: 'Target (hours)' },
+              {
+                key: 'is_active', label: 'Active',
+                render: (s) => <Badge kind="status" value={s.is_active ? 'active' : 'inactive'} />,
+              },
+              {
+                key: 'actions', label: 'Actions', thClass: 'cell-actions',
+                render: (s) => (
+                  <div className="cell-actions">
+                    <button type="button" className="btn-small"
+                      onClick={() => openEdit(s)} disabled={saving}>
+                      Edit…
+                    </button>
+                  </div>
+                ),
+              },
+            ]}
+            rows={items} keyOf={(s) => s.priority}
+            emptyTitle="No SLA configuration."
+            emptyHint="Seed defaults with `python manage.py seed_defaults`."
+          />
+        </div>
+      </div>
+      {editTarget && (
+        <Modal title={`SLA target — ${editTarget.priority}`} onClose={() => { if (!saving) setEditTarget(null); }}>
+          <form onSubmit={saveEdit} noValidate>
+            {saveError && <div className="field-error" role="alert">{saveError}</div>}
+            <Field label="Target resolution hours" required
+              error={saveError || undefined}>
+              <input
+                className="input" type="number" min="1"
+                value={editForm.target_resolution_hours}
+                onChange={(e) => setEditForm((f) => ({ ...f, target_resolution_hours: e.target.value }))}
+                disabled={saving} />
+            </Field>
+            <label className="check-row">
+              <input type="checkbox"
+                checked={editForm.is_active}
+                onChange={(e) => setEditForm((f) => ({ ...f, is_active: e.target.checked }))}
+                disabled={saving} />
+              Active
+            </label>
+            <div className="row-end">
+              <button type="button" className="btn-ghost" onClick={() => setEditTarget(null)} disabled={saving}>Cancel</button>
+              <button type="submit" className="btn-primary" disabled={saving || !editForm.target_resolution_hours}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/** SLA health report: overdue tickets and average resolution time by priority. */
+export function SLAReport() {
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [report, setReport] = useState(null);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const p = new URLSearchParams();
+      if (dateFrom) p.set('date_from', dateFrom);
+      if (dateTo) p.set('date_to', dateTo);
+      const r = await api.get(`/tickets/reports/sla/?${p.toString()}`);
+      setReport(r.data);
+    } catch {
+      setError('Could not load the SLA report.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const applyDates = () => { load(); };
+  const resetDates = () => {
+    setDateFrom(''); setDateTo(''); setError(''); load();
+  };
+
+  return (
+    <div>
+      <PageHeader
+        title="SLA report"
+        sub="Overdue tickets and average resolution time by priority."
+        actions={<>
+          <input className="input input-date" type="date" value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)} aria-label="Report start date" style={{ maxWidth: '150px' }} />
+          <input className="input input-date" type="date" value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)} aria-label="Report end date" style={{ maxWidth: '150px' }} />
+          <button type="button" className="btn-secondary" onClick={applyDates} disabled={loading}>
+            {loading ? 'Loading…' : 'Apply dates'}
+          </button>
+          {(dateFrom || dateTo) && (
+            <button type="button" className="btn-ghost" onClick={resetDates}>Reset</button>
+          )}
+        </>}
+      />
+      {error && <div className="error-summary" role="alert">{error}</div>}
+      {msg && <div className="success-summary" role="status">{msg}</div>}
+      <div className="panel">
+        <div className="panel-title"><h4>SLA health</h4></div>
+        <div className="panel-pad">
+          {loading ? <div className="panel-pad"><LoadingRows n={3} /></div> : (
+            <div className="row-gap" style={{ gap: 'var(--sp-4)', flexWrap: 'wrap' }}>
+              <div style={{ minWidth: '200px' }}>
+                <div className="muted small">Overdue tickets</div>
+                <div style={{ fontSize: 'var(--font-2xl)', fontWeight: '650' }}>
+                  {report?.overdue ?? '—'}
+                </div>
+              </div>
+              <div style={{ minWidth: '200px' }}>
+                <div className="muted small">Report window</div>
+                <div className="muted small">
+                  {(report?.filters?.date_from || 'any') + ' → ' + (report?.filters?.date_to || 'any')}
+                </div>
+              </div>
+            </div>
+          )}
+          <div style={{ marginTop: 'var(--sp-3)' }}>
+            <DataTable
+              columns={[
+                { key: 'priority', label: 'Priority',
+                  render: (r) => r.priority[0].toUpperCase() + r.priority.slice(1) },
+                { key: 'resolved', label: 'Resolved' },
+                { key: 'avg_resolution_hours', label: 'Avg resolution (hours)',
+                  render: (r) => r.avg_resolution_hours == null ? '—' : r.avg_resolution_hours },
+              ]}
+              rows={report?.by_priority ?? []}
+              keyOf={(r) => r.priority}
+              emptyTitle="No resolved tickets in scope."
+              emptyHint="Resolve some tickets to populate resolution-time stats."
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

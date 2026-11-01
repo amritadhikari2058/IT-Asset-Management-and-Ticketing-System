@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import api from './api';
-import { parseApiError } from './api-utils';
+import { blobErrorMessage, downloadBlob, parseApiError } from './api-utils';
 import { useAuth } from './auth';
 
 const STATUS_TONE = {
   open: 'blue', in_progress: 'amber', resolved: 'green', closed: 'gray',
   reopened: 'purple', archived: 'gray',
   available: 'green', assigned: 'blue', in_repair: 'amber', retired: 'gray',
-  lost: 'red', active: 'green', inactive: 'gray',
+  lost: 'red', overdue: 'red', active: 'green', inactive: 'gray',
 };
 const PRIORITY_TONE = { low: 'gray', medium: 'blue', high: 'amber', critical: 'red' };
 
@@ -34,6 +34,62 @@ export function Badge({ kind, value, label }) {
     : (STATUS_TONE[value] ?? 'gray');
   const text = label ?? prettyValue(kind, value);
   return <span className={`badge badge-${tone}`}>{text}</span>;
+}
+
+/**
+ * Secure inline photo thumbnail.
+ *
+ * Fetches the image as a blob through the permission-checked download
+ * endpoint (never a public storage URL), shows it as a small inline image,
+ * and falls back to a placeholder on missing/failed images. Clicking opens
+ * the larger preview via `onPreview(id)`.
+ *
+ * Props:
+ *   id        - record/attachment id used to build the download url
+ *   getUrl    - (id) => download endpoint url string
+ *   onPreview - (id) => called to open the larger secure preview
+ *   label     - accessible label
+ */
+export function PhotoThumbnail({ id, getUrl, onPreview, label }) {
+  const [src, setSrc] = useState(null);
+  const [error, setError] = useState(false);
+  const [busy, setBusy] = useState(!!id);
+
+  useEffect(() => {
+    if (!id) { setBusy(false); return; }
+    let cancelled = false;
+    setBusy(true);
+    api.get(getUrl(id), { responseType: 'blob' })
+      .then((r) => {
+        if (!cancelled) {
+          setSrc(URL.createObjectURL(r.data));
+          setError(false);
+        }
+      })
+      .catch(() => { if (!cancelled) setError(true); })
+      .finally(() => { if (!cancelled) setBusy(false); });
+    return () => { cancelled = true; };
+  }, [id, getUrl]);
+
+  useEffect(() => () => { if (src) URL.revokeObjectURL(src); }, [src]);
+
+  const open = () => { if (onPreview) onPreview(id); };
+  const content = busy ? (
+    <span className="spinner" aria-hidden="true" />
+  ) : error ? (
+    <span className="photo-placeholder" aria-hidden="true">🙁</span>
+  ) : (
+    <img src={src} alt="" className="photo-thumb" />
+  );
+  return (
+    <div className="photo-cell" role="button" tabIndex={0}
+         onClick={open}
+         onKeyDown={(e) => { if (e.key === 'Enter') open(); }}
+         aria-label={label || 'Photo'}
+         title={label || 'Photo'}>
+      {content}
+    </div>
+  );
 }
 
 export function PageHeader({ title, sub, actions }) {
@@ -377,6 +433,116 @@ export function ConfirmDialog({ title, message, confirmLabel = 'Confirm', danger
           {busy ? 'Working…' : confirmLabel}
         </button>
       </div>
+    </Modal>
+  );
+}
+
+/**
+ * Reusable export dialog connecting to the backend multi-format export API.
+ * Supports CSV / XLSX / PDF / DOCX and scopes: all / selected / filtered.
+ * The backend streams the file; we download it via a blob with a proper
+ * filename taken from the Content-Disposition header.
+ */
+export function ExportDialog({
+  dataset,
+  open,
+  onClose,
+  selectedIds = [],
+  filterParams = {},
+}) {
+  const [format, setFormat] = useState('csv');
+  const [scope, setScope] = useState('all');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const doExport = async (ev) => {
+    ev.preventDefault();
+    setBusy(true);
+    setError('');
+    setMsg('');
+    try {
+      const p = new URLSearchParams();
+      p.set('format', format);
+      p.set('scope', scope);
+      if (scope === 'selected' && selectedIds.length) {
+        p.set('ids', selectedIds.join(','));
+      }
+      if (scope === 'filtered') {
+        for (const [k, v] of Object.entries(filterParams)) {
+          if (v !== '' && v != null) p.set(k, v);
+        }
+      }
+      const r = await api.get(
+        `/common/exports/${dataset}/?${p.toString()}`,
+        { responseType: 'blob' },
+      );
+      const cd = r.headers?.['content-disposition'] || '';
+      const m = cd.match(/filename="([^"]+)"/);
+      const filename = (m && m[1]) || `${dataset}_export.${format}`;
+      downloadBlob(r.data, filename);
+      setMsg(`Downloaded ${filename}.`);
+    } catch (e) {
+      setError(await blobErrorMessage(e, 'Export failed.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) return null;
+  const canSelected = selectedIds.length > 0;
+  return (
+    <Modal title={`Export ${dataset}`} onClose={onClose} size="lg">
+      <form onSubmit={doExport} noValidate>
+        <Field label="Format">
+          <select
+            className="input"
+            value={format}
+            onChange={(e) => setFormat(e.target.value)}
+            disabled={busy}
+          >
+            <option value="csv">CSV</option>
+            <option value="xlsx">Excel (XLSX)</option>
+            <option value="pdf">PDF</option>
+            <option value="docx">Word (DOCX)</option>
+          </select>
+        </Field>
+        <Field label="Scope">
+          <select
+            className="input"
+            value={scope}
+            onChange={(e) => setScope(e.target.value)}
+            disabled={busy}
+          >
+            <option value="all">All permitted records</option>
+            {canSelected ? (
+              <option value="selected">
+                Selected records ({selectedIds.length})
+              </option>
+            ) : null}
+            <option value="filtered">Filtered records</option>
+          </select>
+          {scope === 'selected' && !canSelected && (
+            <div className="field-error" role="alert">
+              No records selected.
+            </div>
+          )}
+        </Field>
+        {error && <div className="field-error" role="alert">{error}</div>}
+        {msg && <div className="success-summary" role="status">{msg}</div>}
+        <div className="row-end">
+          <button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={busy || (scope === 'selected' && !canSelected)}
+          >
+            {busy ? 'Exporting…' : 'Export'}
+          </button>
+        </div>
+      </form>
     </Modal>
   );
 }
