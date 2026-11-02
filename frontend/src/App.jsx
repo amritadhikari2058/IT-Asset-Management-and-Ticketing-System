@@ -8,6 +8,7 @@ import { Notifications, NotifBadge } from './notifications';
 import { Maintenance } from './maintenance';
 import { Disposals } from './disposals';
 import { Dashboard, DepartmentReports } from './dashboard';
+import {SelfService} from './self-service';
 
 const NAV = [
   { section: 'Work' },
