@@ -78,6 +78,15 @@ if not DEBUG and not _SECRET_KEY_FROM_ENV and 'test' not in sys.argv:
         "SECRET_KEY. Set a unique SECRET_KEY environment variable.")
 
 
+# Security headers / cookie hardening (Phase 8). Dev-friendly defaults;
+# production sets the *_SECURE / SECURE_SSL_REDIRECT / SECURE_HSTS_SECONDS
+# environment variables.
+SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
+CSRF_COOKIE_SECURE = os.environ.get('CSRF_COOKIE_SECURE', 'false').lower() == 'true'
+SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'false').lower() == 'true'
+SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', '0') or 0)
+
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -102,13 +111,21 @@ from django.utils import timezone
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
 CELERY_TIMEZONE = timezone.get_default_timezone_name() if hasattr(timezone, 'get_default_timezone_name') else 'UTC'
+# Task execution defaults: bounded retries + exponential backoff.
+CELERY_TASK_MAX_RETRIES = int(os.getenv('CELERY_TASK_MAX_RETRIES', '3'))
+CELERY_TASK_RETRY_BACKOFF = int(os.getenv('CELERY_TASK_RETRY_BACKOFF', '60'))
+CELERY_TASK_TIME_LIMIT = int(os.getenv('CELERY_TASK_TIME_LIMIT', '300'))
 CELERY_BEAT_SCHEDULE = {
     'check-sla-escalations': {
         'task': 'tickets.tasks.check_sla_escalations',
         'schedule': 300.0,  # every 5 minutes
     },
+    'check-maintenance-reminders': {
+        'task': 'assets.tasks.check_maintenance_reminders',
+        'schedule': 3600.0,  # hourly
+    },
     'process-inbound-emails': {
-        'task': 'common.tasks.process_inbound_email',
+        'task': 'common.tasks.process_inbound_mailbox',
         'schedule': 60.0,  # every minute
     },
 }
@@ -234,6 +251,24 @@ ATTACHMENT_ALLOWED_EXTENSIONS = [
 ]
 ATTACHMENT_MAX_SIZE_MB = float(os.environ.get('ATTACHMENT_MAX_SIZE_MB', '10'))
 
+# ---------- Email intake (organizational support mailbox via IMAP) ----------
+INBOUND_MAILBOX_ENABLED = os.environ.get('INBOUND_MAILBOX_ENABLED', 'true').lower() == 'true'
+INBOUND_MAILBOX_HOST = os.environ.get('INBOUND_MAILBOX_HOST', '')
+INBOUND_MAILBOX_PORT = int(os.environ.get('INBOUND_MAILBOX_PORT', '993') or '993')
+INBOUND_MAILBOX_USER = os.environ.get('INBOUND_MAILBOX_USER', '')
+INBOUND_MAILBOX_PASSWORD = os.environ.get('INBOUND_MAILBOX_PASSWORD', '')
+INBOUND_MAILBOX_USE_TLS = os.environ.get('INBOUND_MAILBOX_USE_TLS', 'true').lower() == 'true'
+INBOUND_MAILBOX_NAME = os.environ.get('INBOUND_MAILBOX_NAME', 'INBOX')
+INBOUND_SUPPORT_MAILBOX = os.environ.get('INBOUND_SUPPORT_MAILBOX', 'support@example.com')
+INBOUND_ALLOWED_SENDER_DOMAINS = [
+    d.strip().lower() for d in
+    (os.environ.get('INBOUND_ALLOWED_SENDER_DOMAINS', '') or '').split(',')
+    if d.strip()
+]
+INBOUND_MAILBOX_POLL_SECONDS = float(os.environ.get('INBOUND_MAILBOX_POLL_SECONDS', '60') or '60')
+# Dedup window for outbound ticket emails (per ticket + subject + recipient).
+EMAIL_DEDUP_TTL_SECONDS = float(os.environ.get('EMAIL_DEDUP_TTL_SECONDS', '3600') or '3600')
+
 # ---------- Email (console dev/test, SMTP prod via env; provider-agnostic) ----------
 EMAIL_BACKEND = os.environ.get(
     'EMAIL_BACKEND',
@@ -254,6 +289,21 @@ SERVER_EMAIL = os.environ.get('SERVER_EMAIL', DEFAULT_FROM_EMAIL)
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173').rstrip('/')
 BACKEND_URL = os.environ.get('BACKEND_URL', 'http://127.0.0.1:8000').rstrip('/')
 
+# Cache (outbound email dedup + ephemeral state). LocMem default for dev;
+# multi-process/production deployments set CACHE_LOCATION to a Redis URL.
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+    }
+}
+if os.environ.get('CACHE_LOCATION'):
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': os.environ['CACHE_LOCATION'],
+        }
+    }
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
@@ -266,6 +316,16 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 20,
     'PAGE_SIZE_QUERY_PARAM': 'page_size',
     'MAX_PAGE_SIZE': 100,
+    # Phase 8: throttling for sensitive endpoints (generous defaults so
+    # normal usage is unaffected; auth endpoints can opt into tighter scopes).
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.UserRateThrottle',
+        'rest_framework.throttling.AnonRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'default': '200 per minute',
+        'auth': '20 per minute',
+    },
 }
 
 from datetime import timedelta
@@ -297,4 +357,40 @@ THEME = {
     'SUPPORTING_BACKGROUND': '#F8FAFC',
     'MAIN_TEXT': '#1E293B',
     'BORDERS': '#E2E8F0',
+}
+
+
+# ---------- Logging (Phase 8) ----------
+# Console-based structured-ish logging for dev + production (systemd/gunicorn
+# capture). Avoids writing sensitive data: email helpers log only domains and
+# exception types, never credentials/bodies.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': ('%(asctime)s %(levelname)s %(name)s %(module)s: '
+                       '%(message)s'),
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': os.environ.get('LOG_LEVEL', 'INFO'),
+    },
+    'loggers': {
+        'django': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'django.server': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'accounts': {'handlers': ['console'], 'level': 'INFO', 'propagate': True},
+        'common': {'handlers': ['console'], 'level': 'INFO', 'propagate': True},
+        'tickets': {'handlers': ['console'], 'level': 'INFO', 'propagate': True},
+        'assets': {'handlers': ['console'], 'level': 'INFO', 'propagate': True},
+        'celery': {'handlers': ['console'], 'level': 'INFO', 'propagate': True},
+    },
 }

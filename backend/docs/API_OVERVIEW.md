@@ -196,6 +196,12 @@ Trailing slashes required (DRF default).
   are unconditional; verification/reset emails ignore the flag.
 - `POST notifications/mark_all_read/` → `{updated: N}` for the caller's
   own unread, non-deleted notifications (idempotent; not dismissal).
+- `GET /api/common/operations/status/` (IT staff/admin): operational
+  visibility — inbound email health (last successful processing, pending/
+  failed counts, processed-today, totals via `common.EmailProcessing`),
+  background task health (`celery_healthy` broker ping + last 20
+  `common.BackgroundTaskRun` outcomes), and inbound mailbox configuration
+  snapshot.
 - `GET /api/recycle-bin/?entity_type&date_from&date_to&deleted_by`
 - `GET /api/recycle-bin/<type>/<id>/` → record + `blocked[]` reasons.
 - `POST .../restore/` → 200 or 409 `{blockers}` (pass `force:true` to

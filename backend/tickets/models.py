@@ -13,6 +13,8 @@ Rules enforced:
 """
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
+from datetime import timedelta
 
 from common.models import SoftDeleteModel
 
@@ -153,6 +155,20 @@ class Ticket(SoftDeleteModel):
         from django.utils import timezone
         return timezone.now() > self.sla_due_at
 
+    @property
+    def priority_sla(self):
+        """Active SLA configuration for this ticket's priority (or None).
+
+        Read-only lookup used by SLA notification paths; missing/inactive
+        config means no SLA clock is attached, so notifications no-op.
+        """
+        from tickets.models import TicketSLA
+        try:
+            return TicketSLA.objects.get(
+                priority=self.priority, is_active=True, is_deleted=False)
+        except (TicketSLA.DoesNotExist, TicketSLA.MultipleObjectsReturned):
+            return None
+
 
 class TicketSLA(SoftDeleteModel):
     """SLA target per ticket priority. Admin-configurable.
@@ -195,22 +211,33 @@ class TicketSLA(SoftDeleteModel):
     def __str__(self):
         return f"SLA {self.get_priority_display()}: {self.target_resolution_hours}h"
 
-    def escalation_deadline(self):
-        """Return the datetime at which an escalation notification should fire."""
-        from django.utils import timezone
-        if self.escalation_hours:
-            return timezone.now() + timedelta(hours=self.escalation_hours)
-        # default: 80 % of target
-        return timezone.now() + timedelta(
-            hours=self.target_resolution_hours * 4 // 5)
+    def escalation_deadline(self, from_dt=None):
+        """Return the datetime at which an escalation notification should fire.
 
-    def breach_deadline(self):
-        """Return the datetime at which a breach notification should fire."""
+        ``from_dt`` is the SLA deadline (ticket ``sla_due_at``); when omitted
+        the current time is used. Defaults to the configured escalation
+        window before the deadline (escalation_hours or 80% of the target).
+        """
         from django.utils import timezone
+        ref = from_dt or timezone.now()
+        if self.escalation_hours:
+            return ref - timedelta(hours=self.escalation_hours)
+        # default: 80% of target before the deadline
+        return ref - timedelta(hours=max(1, self.target_resolution_hours * 4 // 5))
+
+    def breach_deadline(self, from_dt=None):
+        """Return the datetime at which a breach notification should fire.
+
+        ``from_dt`` is the SLA deadline (ticket ``sla_due_at``); when omitted
+        the current time is used. Defaults to the configured breach window
+        after the deadline (breach_hours or target + 4).
+        """
+        from django.utils import timezone
+        ref = from_dt or timezone.now()
         if self.breach_hours:
-            return timezone.now() + timedelta(hours=self.breach_hours)
+            return ref + timedelta(hours=self.breach_hours)
         # default: 4 hours after the target window
-        return timezone.now() + timedelta(hours=self.target_resolution_hours + 4)
+        return ref + timedelta(hours=self.target_resolution_hours + 4)
 
 
 class SLAEscalation(models.Model):

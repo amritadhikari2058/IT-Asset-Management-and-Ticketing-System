@@ -3,7 +3,7 @@ from django.urls import include, path
 from common.privacy_views import PrivacyErasureViewSet
 from common.views import (AuditLogViewSet, NotificationViewSet,  # noqa: F401
                           dashboard, data_integrity, department_report,
-                          export_dataset)
+                          export_dataset, operations_status)
 
 from rest_framework import routers
 
@@ -18,5 +18,7 @@ urlpatterns = [
     path("dashboard/", dashboard, name="dashboard"),
     path("reports/departments/", department_report, name="department-report"),
     path("exports/<str:dataset>/", export_dataset, name="export"),
+    path("operations/status/", operations_status,
+         name="operations-status"),
     path("", include(router.urls)),
 ]

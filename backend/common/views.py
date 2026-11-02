@@ -7,9 +7,10 @@
 """
 from datetime import datetime, time
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Max, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
@@ -19,7 +20,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from common.audit import log_action
-from common.models import AuditLog, Notification
+from common.models import AuditLog, BackgroundTaskRun, EmailProcessing, Notification
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from common.serializers import (
     AuditLogSerializer, NotificationSerializer, RecycleBinEntrySerializer,
@@ -395,6 +396,62 @@ def department_report(request):
                        "with date_from on or before date_to."},
             status=status.HTTP_400_BAD_REQUEST)
     return Response(department_report_data(date_from, date_to))
+
+
+@api_view(["GET"])
+@permission_classes([IsITStaff])
+def operations_status(request):
+    """Operational status: inbound email intake + background task health.
+
+    IT staff / admins only. Returns:
+      - email: last successful mailbox processing timestamp, pending/failed
+        counts, processed-today count (drives safe retry / alerting).
+      - tasks: recent background task run outcomes + Celery broker health.
+      - inbound: mailbox polling configuration snapshot.
+
+    Deliberately simple: no external monitoring stack required.
+    """
+    last_success = EmailProcessing.objects.filter(
+        status="processed").aggregate(last=Max("processed_at"))["last"]
+    pending = EmailProcessing.objects.filter(status="pending").count()
+    failed = EmailProcessing.objects.filter(status="failed").count()
+    today_start = timezone.now().replace(hour=0, minute=0, second=0,
+                                        microsecond=0)
+    processed_today = EmailProcessing.objects.filter(
+        status="processed", processed_at__gte=today_start).count()
+
+    runs = list(BackgroundTaskRun.objects.order_by("-id")[:20].values(
+        "task_name", "status", "started_at", "finished_at", "success",
+        "error_summary"))
+
+    celery_healthy = False
+    try:
+        from config.celery import app as celery_app
+        inspector = celery_app.control.inspect()
+        celery_healthy = bool(inspector and inspector.ping())
+    except Exception:
+        celery_healthy = False
+
+    return Response({
+        "email": {
+            "last_successful_processing_at": last_success,
+            "pending": pending,
+            "failed": failed,
+            "processed_today": processed_today,
+            "total": EmailProcessing.objects.count(),
+        },
+        "tasks": {
+            "celery_healthy": celery_healthy,
+            "recent_runs": runs,
+        },
+        "inbound": {
+            "enabled": getattr(settings, "INBOUND_MAILBOX_ENABLED", True),
+            "mailbox": getattr(settings, "INBOUND_MAILBOX_NAME", "INBOX"),
+            "support_mailbox":
+                getattr(settings, "INBOUND_SUPPORT_MAILBOX", ""),
+            "poll_seconds": getattr(settings, "INBOUND_MAILBOX_POLL_SECONDS", 60),
+        },
+    })
 
 
 def _resolve(
