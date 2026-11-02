@@ -119,7 +119,8 @@ def dashboard_data(date_from=None, date_to=None):
         "status", "priority", "sla_due_at", "resolved_at", "created_at"))
     sla = _sla_metrics(ticket_list, now)
 
-    open_maintenance = Maintenance.objects.filter(
+    open_maintenance = Maintenance.objects.select_related(
+        "asset").filter(
         status__in=["scheduled", "in_progress", "overdue"])
     upcoming = open_maintenance.filter(
         scheduled_date__gte=now).order_by("scheduled_date", "id")[:8]

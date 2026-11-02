@@ -211,6 +211,11 @@ class User(AbstractUser):
 
     class Meta:
         ordering = ["employee_id"]
+        indexes = [
+            models.Index(fields=["role"], name="user_role_idx"),
+            models.Index(fields=["home_department"], name="user_home_dept_idx"),
+            models.Index(fields=["is_active"], name="user_is_active_idx"),
+        ]
         permissions = [
             ("hard_delete_user", "Can permanently delete users"),
             ("restore_user", "Can restore soft-deleted users"),
@@ -222,6 +227,11 @@ class User(AbstractUser):
     @property
     def is_system_admin(self):
         return self.role == "system_admin" or self.is_superuser
+
+    def is_employee_or_similar(self):
+        """True for ordinary employees (non-IT-staff) who should see only
+        published knowledge-base articles and their own tickets/assets."""
+        return self.is_authenticated and getattr(self, "role", "") == "employee"
 
     def soft_delete(self, by_user=None, reason=""):
         self.is_deleted = True

@@ -17,13 +17,13 @@ from rest_framework.response import Response
 from common.audit import log_action
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from tickets.models import (
-    Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketNote,
-    TicketSLA,
+    Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketKbArticle,
+    TicketNote, TicketSLA,
 )
 from tickets.serializers import (
     TicketAttachmentSerializer, TicketCategorySerializer,
-    TicketHistorySerializer, TicketNoteSerializer, TicketSerializer,
-    TicketSLASerializer,
+    TicketHistorySerializer, TicketKbArticleSerializer, TicketNoteSerializer,
+    TicketSerializer, TicketSLASerializer,
 )
 
 
@@ -1024,6 +1024,48 @@ class TicketAttachmentViewSet(viewsets.ModelViewSet):
             or "application/octet-stream")
         resp["Content-Disposition"] = f'attachment; filename="{name}"'
         return resp
+
+
+class TicketKbArticleViewSet(viewsets.ModelViewSet):
+    """Links KB articles to tickets.
+
+    Permissions:
+    - IT staff can create/list/update/delete links (curate articles for a
+      ticket).
+    - Employees can only PATCH the `helpful` flag on links to tickets they
+      can see (their own + home-department tickets), marking an article as
+      solving/not solving their issue.
+    """
+    serializer_class = TicketKbArticleSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        visible_ids = _ticket_visible_qs(user).values("pk")
+        qs = TicketKbArticle.objects.filter(ticket_id__in=visible_ids)
+        if not _is_ticket_staff(user):
+            # Employees see links on tickets they can see, and can only
+            # vote on their own ticket links.
+            return qs.filter(ticket__requester=user)
+        return qs
+
+    def perform_create(self, serializer):
+        if not _is_ticket_staff(self.request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied(
+                "Only IT staff can link KB articles to tickets.")
+        serializer.save(linked_by=self.request.user)
+
+    def perform_update(self, serializer):
+        obj = self.get_object()
+        if not _is_ticket_staff(self.request.user):
+            # Employees may only toggle `helpful` on their own ticket links.
+            allowed = {"helpful"}
+            changed = set(serializer.validated_data.keys()) - allowed
+            if changed:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied(
+                    "Employees can only update the helpful flag.")
+        serializer.save()
 
 
 class TicketSLAViewSet(viewsets.ModelViewSet):

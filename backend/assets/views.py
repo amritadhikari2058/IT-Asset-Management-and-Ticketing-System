@@ -21,7 +21,7 @@ from rest_framework.response import Response
 
 from assets.models import (
     Asset, AssetAttachment, AssetCategory, AssetHistory, Assignment,
-    Disposal, Maintenance,
+    Disposal, Maintenance, Vendor,
 )
 from assets.serializers import (
     AssetAssignSerializer, AssetAttachmentSerializer,
@@ -31,12 +31,15 @@ from assets.serializers import (
     KnowledgeBaseArticleCreateUpdateSerializer,
     KnowledgeBaseCategorySerializer,
     KnowledgeBaseCategoryCreateUpdateSerializer,
+    KnowledgeBaseFeedbackSerializer,
     KnowledgeBaseTagSerializer,
+    VendorSerializer,
 )
-from assets.models import KnowledgeBaseArticle, KnowledgeBaseCategory, KnowledgeBaseTag
+from assets.models import (KnowledgeBaseArticle, KnowledgeBaseCategory,
+                           KnowledgeBaseTag, KnowledgeBaseFeedback)
 from common.audit import log_action
 from common.models import Notification
-from common.permissions import IsITStaff, IsSystemAdmin
+from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from tickets.serializers import validate_attachment_file
 
 logger = logging.getLogger(__name__)
@@ -304,7 +307,7 @@ class AssetCategoryViewSet(viewsets.ModelViewSet):
 
 class AssetViewSet(viewsets.ModelViewSet):
     queryset = Asset.objects.select_related(
-        "category", "assigned_to", "department").all()
+        "category", "assigned_to", "department", "vendor").all()
     serializer_class = AssetSerializer
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
@@ -316,7 +319,7 @@ class AssetViewSet(viewsets.ModelViewSet):
         return super().get_permissions()
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = _asset_visible_qs(self.request.user)
         image_qs = AssetAttachment.objects.filter(
             asset=OuterRef("pk"), is_deleted=False).filter(
             Q(file__iendswith=".png") | Q(file__iendswith=".jpg")
@@ -404,7 +407,21 @@ class AssetViewSet(viewsets.ModelViewSet):
                 {"status": f"Status '{new_status}' must be set through "
                            "its dedicated workflow (assign, retire, or "
                            "mark lost), not generic editing."})
-        obj = serializer.save()
+        try:
+            obj = serializer.save()
+        except IntegrityError:
+            # Concurrent duplicate serial (DB trigger backstop): the
+            # serializer check ran before the competing write committed.
+            serial = (serializer.validated_data.get("serial_number")
+                      or "").strip()
+            if serial and Asset.all_objects.filter(
+                    serial_number=serial).exclude(
+                    pk=self.get_object().pk).exists():
+                raise ValidationError({"serial_number": (
+                    f"Serial number '{serial}' is already used by another "
+                    "asset. Serial numbers must be unique.")})
+            raise ValidationError({"detail": "Could not save the asset: a "
+                                             "concurrent write conflicted."})
         _history(obj, self.request.user, "updated", old=old,
                  new={"name": obj.name, "status": obj.status})
         log_action(actor=self.request.user, action="update", instance=obj)
@@ -1021,13 +1038,23 @@ class AssetViewSet(viewsets.ModelViewSet):
 
 
 def _asset_visible_qs(user):
-    """Assets visible to the user (mirrors AssetViewSet: no role scoping).
+    """Assets visible to the user (private files are exactly as visible as
+    their asset — never more).
 
-    Attachment reads reuse this so files are exactly as visible as their
-    asset — never more.
+    IT staff / admins see the operational scope. Employees see only assets
+    assigned to them or in their home department — mirroring ticket
+    visibility — so they cannot enumerate or download other employees'
+    assets and attachments (IDOR protection).
     """
-    return Asset.objects.select_related(
+    qs = Asset.objects.select_related(
         "category", "assigned_to", "department").all()
+    if is_system_admin(user) or getattr(user, "role", "") in (
+            "it_manager", "it_support"):
+        return qs
+    filt = Q(assigned_to=user)
+    if getattr(user, "home_department_id", None):
+        filt |= Q(department_id=user.home_department_id)
+    return qs.filter(filt)
 
 
 #: Sortable list fields (strict allowlist — anything else falls back to
@@ -1052,6 +1079,13 @@ class AssignmentViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
+        user = self.request.user
+        if not (is_system_admin(user) or getattr(user, "role", "") in
+                ("it_manager", "it_support")):
+            # Employees only see assignments on assets they can view:
+            # their own assignments, or assignments on home-department assets.
+            visible_ids = _asset_visible_qs(user).values("pk")
+            qs = qs.filter(asset_id__in=visible_ids)
         asset_id = self.request.query_params.get("asset")
         if asset_id:
             qs = qs.filter(asset_id=asset_id)
@@ -1388,6 +1422,133 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         if user.is_staff or user.has_perm("assets.manage_knowledge_base"):
             return KnowledgeBaseArticle.objects.all()
         return KnowledgeBaseArticle.objects.none()
+
+    @action(detail=False, methods=["get"])
+    def usefulness(self, request):
+        """Knowledge Base usefulness dashboard (IT staff only).
+
+        Returns aggregate stats plus per-article feedback rates so IT staff
+        can identify articles that need improvement.
+        """
+        from rest_framework.exceptions import PermissionDenied
+
+        if not (request.user.is_staff
+                or request.user.has_perm("assets.manage_knowledge_base")
+                or getattr(request.user, "role", "") == "system_admin"):
+            raise PermissionDenied("IT staff only.")
+
+        from django.db.models import Avg, Count, F, Q
+        from django.utils import timezone
+
+        articles = KnowledgeBaseArticle.objects.filter(
+            status="published").select_related("category")
+        q = request.query_params.get("q", "").strip()
+        if q:
+            articles = articles.filter(
+                Q(title__icontains=q) | Q(content__icontains=q))
+        category = request.query_params.get("category")
+        if category:
+            articles = articles.filter(category_id=category)
+        date_from = request.query_params.get("date_from")
+        if date_from:
+            articles = articles.filter(created_at__date__gte=date_from)
+
+        total_articles = articles.count()
+        total_feedback = KnowledgeBaseFeedback.objects.filter(
+            is_deleted=False, article__status="published").count()
+        helpful_votes = KnowledgeBaseFeedback.objects.filter(
+            is_deleted=False, article__status="published", helpful=True).count()
+        not_helpful_votes = total_feedback - helpful_votes
+
+        # Per-article stats.
+        article_stats = []
+        for a in articles.prefetch_related("feedback").order_by("-created_at"):
+            fb = [f for f in a.feedback.all() if not f.is_deleted]
+            n_helpful = sum(1 for f in fb if f.helpful)
+            n_not_helpful = len(fb) - n_helpful
+            n_total = len(fb)
+            rate = round(n_helpful / n_total * 100, 1) if n_total else None
+            article_stats.append({
+                "id": a.id,
+                "title": a.title,
+                "slug": a.slug,
+                "category": a.category.name if a.category_id else None,
+                "views": a.view_count,
+                "feedback_count": n_total,
+                "helpful": n_helpful,
+                "not_helpful": n_not_helpful,
+                "helpful_rate": rate,
+            })
+
+        # Sort: articles with low feedback rate first (ineffective), then no
+        # feedback, then by most feedback.
+        def _sort_key(s):
+            rate = s["helpful_rate"]
+            if rate is None:
+                return (2, 0)  # no feedback
+            return (0, rate)  # low rate first
+
+        article_stats.sort(key=_sort_key)
+
+        return Response({
+            "total_articles": total_articles,
+            "total_feedback": total_feedback,
+            "helpful_votes": helpful_votes,
+            "not_helpful_votes": not_helpful_votes,
+            "overall_helpful_rate": (
+                round(helpful_votes / total_feedback * 100, 1)
+                if total_feedback else None),
+            "articles": article_stats,
+        })
+
+
+class KnowledgeBaseFeedbackViewSet(viewsets.ModelViewSet):
+    """Employee usefulness feedback for published KB articles.
+
+    Permissions:
+    - Any authenticated user can create/update their own feedback on a
+      published article (one row per article+user).
+    - IT staff can see all feedback (stats / ineffective-article detection).
+    """
+    serializer_class = KnowledgeBaseFeedbackSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if getattr(user, "role", "") in ("system_admin", "it_manager",
+                                         "it_support"):
+            return KnowledgeBaseFeedback.objects.all()
+        return KnowledgeBaseFeedback.objects.filter(user=user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class VendorViewSet(viewsets.ModelViewSet):
+    """Vendor / supplier CRUD.
+
+    IT staff can create, update, soft-delete, and restore vendors.
+    Employees can list and view vendors (for asset detail pages).
+    """
+    queryset = Vendor.objects.all()
+    serializer_class = VendorSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Vendor.objects.all()
+        if getattr(user, "role", "") == "employee":
+            # Employees see only non-deleted vendors.
+            qs = qs.filter(is_deleted=False)
+        return qs
+
+    def perform_destroy(self, instance):
+        # Soft-delete vendors; hard-delete only via recycle bin (admin).
+        instance.soft_delete(by_user=self.request.user,
+                             reason="vendor removed")
 
 
 class DisposalViewSet(viewsets.ModelViewSet):

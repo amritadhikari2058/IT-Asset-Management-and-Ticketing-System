@@ -145,3 +145,151 @@ def poll_support_mailbox():
 def process_inbound_email_task(self):  # pragma: no cover - operational entry
     """Manual/safe-retry entry that runs one mailbox poll."""
     return poll_support_mailbox()
+
+
+@shared_task(bind=True, max_retries=2, retry_backoff=300)
+def run_scheduled_reports(self):
+    """Due scheduled reports: render, export, email, record history.
+
+    Idempotent per (scheduled_report, run window): a ScheduledReportRun row
+    is created before delivery so a retried task does not double-send.
+    """
+    from django.db import transaction
+    from django.core.mail import EmailMessage
+    from common.models import ScheduledReport, ScheduledReportRun
+
+    now = timezone.now()
+    due = ScheduledReport.objects.filter(
+        enabled=True, next_run_at__lte=now).select_related("saved_report")
+
+    results = {"checked": 0, "sent": 0, "failed": 0}
+    for sr in due:
+        results["checked"] += 1
+        run = None
+        try:
+            with transaction.atomic():
+                run = ScheduledReportRun.objects.create(
+                    scheduled_report=sr,
+                    status="running", success=False,
+                    started_at=now)
+            # Render the saved report by calling the existing report endpoint
+            # logic directly (no HTTP round-trip needed).
+            from tickets.views import category_report, sla_report
+            from rest_framework.test import APIRequestFactory
+
+            factory = APIRequestFactory()
+            req = factory.get("/api/tickets/reports/by-category/",
+                              data=sr.saved_report.filters or {})
+            # Attach the user so permission-aware reports work.
+            req.user = sr.saved_report.user
+
+            if sr.saved_report.report_type == "ticket_category":
+                resp = category_report(req)
+            elif sr.saved_report.report_type == "ticket_sla":
+                resp = sla_report(req)
+            else:
+                raise ValueError(f"Unknown report type: {sr.saved_report.report_type}")
+
+            payload = resp.data if hasattr(resp, "data") else resp
+            fmt = sr.format or "csv"
+            content = _render_report(payload, fmt)
+            filename = f"{sr.saved_report.name.replace(' ', '_')}_{now:%Y%m%d}.{fmt}"
+            content_type = {
+                "csv": "text/csv",
+                "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "pdf": "application/pdf",
+                "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }.get(fmt, "application/octet-stream")
+
+            recipients = sr.recipients or []
+            sent_count = 0
+            for to_email in recipients:
+                try:
+                    email = EmailMessage(
+                        subject=f"Scheduled report: {sr.saved_report.name}",
+                        body="Please find the attached scheduled report.",
+                        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+                        to=[to_email],
+                    )
+                    email.attach(filename, content, content_type)
+                    email.send(fail_silently=False)
+                    sent_count += 1
+                except Exception as exc:  # one bad recipient must not abort
+                    logger.warning(
+                        "Scheduled report email failed to %s: %s",
+                        to_email.split("@")[-1] if to_email else "?",
+                        type(exc).__name__)
+
+            with transaction.atomic():
+                run.status = "succeeded"
+                run.success = True
+                run.finished_at = timezone.now()
+                run.recipient_count = sent_count
+                run.save(update_fields=["status", "success", "finished_at",
+                                        "recipient_count"])
+
+            # Compute next run and advance.
+            _advance_next_run(sr)
+            results["sent"] += 1
+
+        except Exception as exc:
+            logger.exception("Scheduled report %s failed: %s", sr.pk, sr)
+            if run:
+                with transaction.atomic():
+                    run.status = "failed"
+                    run.success = False
+                    run.error_summary = type(exc).__name__
+                    run.finished_at = timezone.now()
+                    run.save(update_fields=["status", "success",
+                                            "error_summary", "finished_at"])
+            # Still advance next_run so a persistently-failing report doesn't
+            # block the queue forever.
+            _advance_next_run(sr)
+            results["failed"] += 1
+
+    return results
+
+
+def _advance_next_run(sr):
+    """Move next_run_at forward by one cadence."""
+    from datetime import timedelta
+    now = timezone.now()
+    base = sr.next_run_at or now
+    if sr.schedule == "daily":
+        sr.next_run_at = base + timedelta(days=1)
+    elif sr.schedule == "weekly":
+        sr.next_run_at = base + timedelta(weeks=1)
+    elif sr.schedule == "monthly":
+        sr.next_run_at = base + timedelta(days=30)
+    sr.save(update_fields=["next_run_at"])
+
+
+def _render_report(payload, fmt):
+    """Serialize report payload to the requested format (csv/json/xlsx/pdf/docx).
+
+    Reuses the existing export infrastructure (common.exports) so scheduled
+    reports support all four formats without a separate implementation.
+    """
+    if fmt == "json":
+        import json
+        return json.dumps(payload, default=str, indent=2)
+
+    rows = payload.get("results", []) if isinstance(payload, dict) else payload
+    fields = list(rows[0].keys()) if rows and isinstance(rows, list) else []
+    title = "Scheduled Report"
+
+    if fmt == "csv":
+        from common.exports import _csv_bytes
+        return _csv_bytes(rows, fields)
+    if fmt == "xlsx":
+        from common.exports import _xlsx_bytes
+        return _xlsx_bytes(rows, fields, title)
+    if fmt == "pdf":
+        from common.exports import _pdf_bytes
+        return _pdf_bytes(rows, fields, title)
+    if fmt == "docx":
+        from common.exports import _docx_bytes
+        return _docx_bytes(rows, fields, title)
+    # Fallback to CSV.
+    from common.exports import _csv_bytes
+    return _csv_bytes(rows, fields)

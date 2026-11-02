@@ -515,7 +515,10 @@ class AssetAttachmentTests(TestCase):
         self.c = APIClient()
         self.acat = AssetCategory.objects.create(name="Laptop")
         self.asset = Asset.objects.create(asset_tag="AT1", name="n",
-                                          category=self.acat)
+                                          category=self.acat,
+                                          assigned_to=self.emp,
+                                          status="assigned",
+                                          department=self.dep)
         auth(self.c, self.mgr)
 
     def tearDown(self):
@@ -942,6 +945,55 @@ class AssetSerialUniquenessTests(TestCase):
         self.assertIn("serial_number", res.data)
         self.assertIn("already used", str(res.data["serial_number"]))
         self.assertEqual(Asset.all_objects.count(), 1)
+
+
+class AssetWarrantyTests(TestCase):
+    """warranty_start/warranty_expiry are stored and returned by the API."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        auth(self.c, self.mgr)
+
+    def test_warranty_dates_round_trip(self):
+        res = self.c.post("/api/assets/", {
+            "asset_tag": "W1", "name": "Warranty laptop",
+            "category": self.acat.pk,
+            "purchase_date": "2024-01-15",
+            "warranty_start": "2024-02-01",
+            "warranty_expiry": "2026-02-01",
+            "purchase_cost": "1299.00",
+        }, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["warranty_start"], "2024-02-01")
+        self.assertEqual(res.data["warranty_expiry"], "2026-02-01")
+        self.assertEqual(res.data["purchase_date"], "2024-01-15")
+
+        a = Asset.objects.get(asset_tag="W1")
+        self.assertEqual(str(a.warranty_start), "2024-02-01")
+        self.assertEqual(str(a.warranty_expiry), "2026-02-01")
+
+    def test_warranty_dates_optional(self):
+        res = self.c.post("/api/assets/", {
+            "asset_tag": "W2", "name": "No warranty",
+            "category": self.acat.pk,
+        }, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertIsNone(res.data["warranty_start"])
+        self.assertIsNone(res.data["warranty_expiry"])
+
+    def test_warranty_dates_update(self):
+        a = Asset.objects.create(asset_tag="W3", name="w3",
+                                 category=self.acat)
+        res = self.c.patch(f"/api/assets/{a.pk}/", {
+            "warranty_start": "2025-01-01",
+            "warranty_expiry": "2027-01-01",
+        }, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        a.refresh_from_db()
+        self.assertEqual(str(a.warranty_start), "2025-01-01")
+        self.assertEqual(str(a.warranty_expiry), "2027-01-01")
 
 
 class AssetBulkSerialTests(TestCase):

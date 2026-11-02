@@ -3,7 +3,8 @@ from rest_framework import routers
 
 from tickets.views import (
     TicketAttachmentViewSet, TicketCategoryViewSet, TicketHistoryViewSet,
-    TicketSLAViewSet, TicketViewSet, category_report, sla_report,
+    TicketKbArticleViewSet, TicketSLAViewSet, TicketViewSet,
+    category_report, sla_report,
 )
 
 router = routers.DefaultRouter()
@@ -13,6 +14,8 @@ router.register("attachments", TicketAttachmentViewSet,
                 basename="ticketattachment")
 router.register("histories", TicketHistoryViewSet, basename="tickethistory")
 router.register("sla", TicketSLAViewSet, basename="ticketsla")
+router.register("kb-articles", TicketKbArticleViewSet,
+                basename="ticketkbarticle")
 router.register("", TicketViewSet, basename="ticket")
 
 urlpatterns = router.urls + [

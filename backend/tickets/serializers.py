@@ -1,8 +1,8 @@
 from rest_framework import serializers
 
 from tickets.models import (
-    Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketNote,
-    TicketSLA,
+    Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketKbArticle,
+    TicketNote, TicketSLA,
 )
 
 
@@ -133,3 +133,38 @@ def validate_attachment_file(f):
             ext in ("exe", "bat", "cmd", "sh", "ps1", "msi"):
         raise serializers.ValidationError("Executable files are blocked.")
     return f
+
+
+class TicketKbArticleSerializer(serializers.ModelSerializer):
+    """Links KB articles to tickets (staff curates, employee votes helpful)."""
+
+    article_title = serializers.CharField(source="article.title",
+                                          read_only=True)
+    article_slug = serializers.CharField(source="article.slug",
+                                         read_only=True)
+    article_status = serializers.CharField(source="article.status",
+                                           read_only=True)
+    linked_by_email = serializers.CharField(
+        source="linked_by.email", read_only=True)
+
+    class Meta:
+        model = TicketKbArticle
+        fields = ["id", "ticket", "article", "article_title", "article_slug",
+                  "article_status", "helpful", "linked_by", "linked_by_email",
+                  "linked_at"]
+        read_only_fields = ["id", "linked_by", "linked_at",
+                            "article_title", "article_slug",
+                            "article_status", "linked_by_email"]
+
+    def validate(self, attrs):
+        user = self.context["request"].user
+        ticket = attrs.get("ticket") or getattr(self.instance, "ticket", None)
+        article = attrs.get("article") or getattr(
+            self.instance, "article", None)
+        if self.instance is None and ticket and article:
+            if TicketKbArticle.objects.filter(
+                    ticket=ticket, article=article, is_deleted=False).exists():
+                raise serializers.ValidationError(
+                    {"article": "This KB article is already linked to the "
+                                "ticket."})
+        return attrs

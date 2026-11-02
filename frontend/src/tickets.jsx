@@ -9,6 +9,7 @@ import { fieldMsg, parseApiError } from './api-utils';
 
 const PRIORITIES = ['low', 'medium', 'high', 'critical'];
 const STATUSES = ['open', 'in_progress', 'resolved', 'closed', 'reopened', 'archived'];
+
 // Mirrors Ticket.VALID_TRANSITIONS in backend/tickets/models.py so the
 // dropdown only offers moves the server accepts. The backend stays the
 // authority (it still returns a 400 for anything invalid) - this just
@@ -32,6 +33,8 @@ export function TicketForm({ id }) {
     department: '', on_behalf_reason: '', asset: '', assignee: '', status: 'open',
     resolution_notes: '',
   });
+  const [kbSuggestions, setKbSuggestions] = useState([]);
+  const [kbSearchTimer, setKbSearchTimer] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const [globalError, setGlobalError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -68,6 +71,30 @@ export function TicketForm({ id }) {
 
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const crossDept = user?.home_department && form.department && Number(form.department) !== Number(user.home_department);
+
+  // Debounced KB article search while typing title/description.
+  useEffect(() => {
+    if (!isEdit) {
+      clearTimeout(kbSearchTimer);
+      const timer = setTimeout(async () => {
+        const query = (form.title.trim() + ' ' + form.description.trim()).trim();
+        if (query.length < 3) {
+          setKbSuggestions([]);
+          return;
+        }
+        try {
+          const r = await api.get('/assets/knowledge-base/', {
+            params: { q: query, page_size: 5 },
+          });
+          setKbSuggestions(r.data.results ?? r.data ?? []);
+        } catch {
+          setKbSuggestions([]);
+        }
+      }, 300);
+      setKbSearchTimer(timer);
+    }
+    return () => clearTimeout(kbSearchTimer);
+  }, [form.title, form.description, isEdit, kbSearchTimer]);
 
   const submit = async (ev) => {
     ev.preventDefault();
@@ -194,6 +221,25 @@ export function TicketForm({ id }) {
             <AssetSelect value={form.asset} onChange={set('asset')} disabled={submitting} />
           </Field>
         </div>
+        {!isEdit && kbSuggestions.length > 0 && (
+          <Field label="Related knowledge-base articles">
+            <p className="muted small">
+              Published articles that may help (click to open in a new tab):
+            </p>
+            <div className="row-gap" style={{ flexWrap: 'wrap', gap: 'var(--sp-1)' }}>
+              {kbSuggestions.map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  className="btn-ghost btn-small"
+                  onClick={() => window.open(`#/kb/${a.id}`, '_blank')}
+                >
+                  {a.title}
+                </button>
+              ))}
+            </div>
+          </Field>
+        )}
         {(crossDept || form.on_behalf_reason) && (
           <Field
             label="On-behalf-of reason"
@@ -249,6 +295,7 @@ export function TicketDetail({ id }) {
   const [ticket, setTicket] = useState(null);
   const [notes, setNotes] = useState([]);
   const [history, setHistory] = useState(null); // null = not permitted / not loaded
+  const [kbArticles, setKbArticles] = useState([]); // linked KB articles
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [noteBody, setNoteBody] = useState('');
@@ -266,6 +313,7 @@ export function TicketDetail({ id }) {
   const [dlError, setDlError] = useState({});
   const [attToDelete, setAttToDelete] = useState(null);
   const [attBusy, setAttBusy] = useState(false);
+  const [newKbSlug, setNewKbSlug] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -288,6 +336,11 @@ export function TicketDetail({ id }) {
           setHistory(h.data.results ?? h.data ?? []);
         } catch { setHistory(null); }
       }
+      // Linked KB articles (visible to anyone who can see the ticket).
+      try {
+        const k = await api.get('/tickets/kb-articles/', { params: { ticket: id } });
+        setKbArticles(k.data.results ?? k.data ?? []);
+      } catch { setKbArticles([]); }
     } catch (e) {
       setError(parseApiError(e).global || 'Could not load ticket.');
     } finally {
@@ -402,6 +455,43 @@ export function TicketDetail({ id }) {
       setAttToDelete(null);
     } finally {
       setAttBusy(false);
+    }
+  };
+
+  const voteKb = async (linkId, helpful) => {
+    try {
+      await api.patch(`/tickets/kb-articles/${linkId}/`, { helpful });
+      setKbArticles(kbArticles.map((l) => l.id === linkId ? { ...l, helpful } : l));
+    } catch (e) {
+      setError(parseApiError(e).global || 'Could not record feedback.');
+    }
+  };
+
+  const unlinkKb = async (linkId) => {
+    if (!confirm('Unlink this KB article from the ticket?')) return;
+    try {
+      await api.delete(`/tickets/kb-articles/${linkId}/`);
+      setKbArticles(kbArticles.filter((l) => l.id !== linkId));
+    } catch (e) {
+      setError(parseApiError(e).global || 'Could not unlink article.');
+    }
+  };
+
+  const linkKb = async (ev) => {
+    ev.preventDefault();
+    if (submitting || !newKbSlug.trim()) return;
+    setSubmitting(true);
+    try {
+      await api.post('/tickets/kb-articles/', { article: newKbSlug.trim(), ticket: id });
+      setNewKbSlug('');
+      // reload to get the full link with article details
+      const k = await api.get('/tickets/kb-articles/', { params: { ticket: id } });
+      setKbArticles(k.data.results ?? k.data ?? []);
+    } catch (e) {
+      const p = parseApiError(e);
+      setGlobalError(p.global || 'Could not link article.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -580,6 +670,56 @@ export function TicketDetail({ id }) {
                 </li>
               ))}
             </ul>
+          )}
+        </section>
+      )}
+
+      {kbArticles.length > 0 && (
+        <section className="section">
+          <h4>Related knowledge-base articles</h4>
+          <ul className="file-list">
+            {kbArticles.map((link) => (
+              <li key={link.id} className="file-row">
+                <div className="file-main">
+                  <div className="file-name">
+                    <a href={`#/kb/${link.article_id}`}>{link.article_title}</a>
+                  </div>
+                  <div className="file-meta">
+                    {link.article_status ? link.article_status.charAt(0).toUpperCase() + link.article_status.slice(1) : ''} · linked {link.linked_at ? new Date(link.linked_at).toLocaleDateString() : ''}
+                  </div>
+                </div>
+                <div className="file-actions">
+                  {link.helpful === null && !isStaff && (
+                    <div className="row-gap" style={{ gap: 'var(--sp-1)' }}>
+                      <button type="button" className="btn-small" onClick={() => voteKb(link.id, true)}>Helped</button>
+                      <button type="button" className="btn-small" onClick={() => voteKb(link.id, false)}>Not helpful</button>
+                    </div>
+                  )}
+                  {link.helpful !== null && !isStaff && (
+                    <span className="badge badge-gray">
+                      You voted {link.helpful ? 'helped' : 'not helpful'}
+                    </span>
+                  )}
+                  {isStaff && (
+                    <button
+                      type="button" className="btn-small btn-danger"
+                      onClick={() => unlinkKb(link.id)}
+                      aria-label={`Unlink article ${link.article_title}`}
+                    >
+                      Unlink
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+          {isStaff && (
+            <form onSubmit={linkKb} className="form-grid" style={{ marginTop: 'var(--sp-2)' }}>
+              <Field label="Link KB article">
+                <input className="input" type="text" value={form.newKbSlug} onChange={(e) => set('newKbSlug')(e.target.value)} placeholder="Article slug (e.g. vpn-reset)" disabled={submitting} />
+              </Field>
+              <button type="submit" className="btn-secondary" disabled={submitting || !form.newKbSlug.trim()}>Link article</button>
+            </form>
           )}
         </section>
       )}

@@ -95,6 +95,13 @@ class Asset(SoftDeleteModel):
         on_delete=models.PROTECT,
         related_name="assets",
     )
+    vendor = models.ForeignKey(
+        "assets.Vendor",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assets",
+        help_text="Vendor that supplied this asset.")
     status = models.CharField(
         max_length=20, choices=STATUS_CHOICES, default="available"
     )
@@ -107,6 +114,7 @@ class Asset(SoftDeleteModel):
     )
     location = models.CharField(max_length=200, blank=True, default="")
     purchase_date = models.DateField(null=True, blank=True)
+    warranty_start = models.DateField(null=True, blank=True)
     warranty_expiry = models.DateField(null=True, blank=True)
     purchase_cost = models.DecimalField(
         max_digits=12, decimal_places=2, null=True, blank=True
@@ -116,6 +124,13 @@ class Asset(SoftDeleteModel):
 
     class Meta:
         ordering = ["asset_tag"]
+        indexes = [
+            models.Index(fields=["status"], name="asset_status_idx"),
+            models.Index(fields=["assigned_to"], name="asset_assigned_to_idx"),
+            models.Index(fields=["department"], name="asset_department_idx"),
+            models.Index(fields=["category"], name="asset_category_idx"),
+            models.Index(fields=["vendor"], name="asset_vendor_idx"),
+        ]
         permissions = [
             ("hard_delete_asset", "Can permanently delete assets"),
             ("restore_asset", "Can restore soft-deleted assets"),
@@ -376,6 +391,75 @@ class KnowledgeBaseArticle(models.Model):
     def increment_view(self):
         """Atomically increment the view counter."""
         KnowledgeBaseArticle.objects.filter(pk=self.pk).update(view_count=F("view_count") + 1)
+
+
+class KnowledgeBaseFeedback(SoftDeleteModel):
+    """Employee usefulness feedback for a published KB article.
+
+    One row per (article, user): re-submitting replaces the previous vote
+    (no duplicate inflation). Employees may update their own feedback;
+    IT staff see all feedback for stats / ineffective-article detection.
+    """
+    FEEDBACK_CHOICES = [
+        ("helpful", "Helped solve my issue"),
+        ("not_helpful", "Did not help"),
+    ]
+
+    article = models.ForeignKey(
+        KnowledgeBaseArticle,
+        on_delete=models.CASCADE,
+        related_name="feedback",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="kb_feedback",
+    )
+    helpful = models.BooleanField(default=True)
+    comment = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        unique_together = [("article", "user")]
+        indexes = [
+            models.Index(fields=["article"], name="kb_feedback_article_idx"),
+            models.Index(fields=["user"], name="kb_feedback_user_idx"),
+            models.Index(fields=["helpful"], name="kb_feedback_helpful_idx"),
+        ]
+
+    def __str__(self):
+        return f"Feedback on '{self.article}' by {self.user}: {self.helpful}"
+
+
+class Vendor(SoftDeleteModel):
+    """Vendor / supplier for asset procurement.
+
+    Tracks the company that supplied an asset plus contact details so that
+    warranty claims, renewals, and disposal (return to vendor) can be traced.
+    """
+
+    name = models.CharField(max_length=200, unique=True)
+    contact_person = models.CharField(max_length=200, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    phone = models.CharField(max_length=50, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["name"], name="vendor_name_idx"),
+        ]
+        permissions = [
+            ("manage_vendor", "Can manage vendors"),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
 class Disposal(SoftDeleteModel):

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useAuth, AuthProvider } from './auth';
 import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, SLAConfig, SLAReport, Tickets, Users, VerifyEmail } from './pages';
+import { KnowledgeBase } from './kb';
 import { AssetForm, AssetDetail } from './assets';
 import { AuditLogPage } from './audit';
 import { TicketForm, TicketDetail } from './tickets';
@@ -8,12 +9,14 @@ import { Notifications, NotifBadge } from './notifications';
 import { Maintenance } from './maintenance';
 import { Disposals } from './disposals';
 import { Dashboard, DepartmentReports } from './dashboard';
-import {SelfService} from './self-service';
+import { SelfService } from "./self-service";
+import { SavedReports } from './saved-reports';
 
 const NAV = [
   { section: 'Work' },
 { hash: '#/dashboard', label: 'Dashboard', staffOnly: true },
   { hash: '#/tickets', label: 'Tickets' },
+  { hash: '#/kb', label: 'Knowledge Base', staffOnly: false },
   { hash: '#/self-service', label: 'Self-Service', staffOnly: false },
   { hash: '#/assets', label: 'Assets' },
   { section: 'Operations', staffOnly: true },
@@ -22,6 +25,7 @@ const NAV = [
   { section: 'Reports' },
   { hash: '#/reports/sla', label: 'SLA report', staffOnly: true },
   { hash: '#/reports/departments', label: 'Department reports', staffOnly: true },
+  { hash: '#/reports/saved', label: 'Saved reports', staffOnly: false },
   { section: 'Organize' },
   { hash: '#/categories', label: 'Categories' },
   { hash: '#/departments', label: 'Departments' },
@@ -48,8 +52,10 @@ function visibleNav(nav, isStaff) {
 const TITLES = {
   '#/dashboard': 'Dashboard',
   '#/tickets': 'Tickets',
+  '#/kb': 'Knowledge Base',
   '#/reports/sla': 'SLA report',
   '#/reports/departments': 'Department reports',
+  '#/reports/saved': 'Saved reports',
   '#/assets': 'Assets',
   '#/maintenance': 'Maintenance',
   '#/disposals': 'Disposals',
@@ -59,6 +65,7 @@ const TITLES = {
   '#/recycle': 'Recycle Bin',
   '#/audit': 'Audit Log',
   '#/sla-config': 'SLA config',
+  '#/kb': 'Knowledge Base',
   '#/users': 'Employees',
   '#/profile': 'My Profile',
 };
@@ -91,11 +98,14 @@ function matchRoute(hash) {
   if (route === '#/assets/new') return <AssetForm />;
   if ((m = route.match(/^#\/assets\/(\d+)$/))) return <AssetDetail id={m[1]} />;
   if ((m = route.match(/^#\/users\/(\d+)\/?$/))) return <EmployeeDetail id={m[1]} />;
+  if ((m = route.match(/^#\/kb\/(\d+)$/))) return <KnowledgeBaseDetail id={m[1]} />;
   const routes = {
     '#/dashboard': <Dashboard />,
     '#/tickets': <Tickets />,
+    '#/kb': <KnowledgeBase />,
     '#/reports/sla': <SLAReport />,
     '#/reports/departments': <DepartmentReports />,
+    '#/reports/saved': <SavedReports />,
 '#/assets': <Assets />,
     '#/maintenance': <Maintenance />,
     '#/disposals': <Disposals />,

@@ -5,9 +5,12 @@ address exists, so it never reveals account membership.
 """
 from django.contrib.auth import get_user_model
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
+
+from common.throttling import AuthRateThrottle
 
 from accounts import email_utils
 
@@ -17,6 +20,7 @@ GENERIC_RESET_MSG = ("If an account exists for that email, a reset link "
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([AuthRateThrottle])
 def password_reset_request(request):
     email = (request.data.get("email") or "").strip()
     User = get_user_model()
@@ -31,6 +35,7 @@ def password_reset_request(request):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([AuthRateThrottle])
 def password_reset_confirm(request):
     uid, token, pwd = (request.data.get("uid"), request.data.get("token"),
                        request.data.get("new_password", ""))
@@ -83,6 +88,7 @@ def change_password(request):
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
+@throttle_classes([AuthRateThrottle])
 def verification_confirm(request):
     uid, token = request.query_params.get("uid"), request.query_params.get("token")
     User = get_user_model()
@@ -93,3 +99,31 @@ def verification_confirm(request):
     user.email_verified = True
     user.save(update_fields=["email_verified"])
     return Response({"detail": "Email verified."})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([AuthRateThrottle])
+def logout(request):
+    """Invalidate the caller's refresh token so existing sessions can no
+    longer refresh access tokens.
+
+    The refresh token is read from the request body (``refresh``). It is
+    blacklisted via rest_framework_simplejwt.token_blacklist so it can
+    never be used again. Access tokens are short-lived and expire on their
+    own; clients should also clear localStorage on logout.
+    """
+    refresh_token = (request.data.get("refresh") or "").strip()
+    if not refresh_token:
+        return Response(
+            {"detail": "Provide the refresh token."},
+            status=status.HTTP_400_BAD_REQUEST)
+    try:
+        from rest_framework_simplejwt.tokens import RefreshToken
+        token = RefreshToken(refresh_token)
+        token.blacklist()
+    except Exception:
+        # Invalid / already-blacklisted token: still return success so the
+        # client can clear localStorage regardless.
+        pass
+    return Response({"detail": "Logged out."})

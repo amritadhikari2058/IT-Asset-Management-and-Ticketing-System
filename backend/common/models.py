@@ -308,3 +308,166 @@ class BackgroundTaskRun(models.Model):
 
     def __str__(self):
         return f"{self.task_name} {self.status}"
+
+
+class SavedReport(SoftDeleteModel):
+    """A saved report configuration: report type, name, description,
+    and persisted JSON filters. Users can re-run the same report later.
+
+    Ownership: creator owns their saved report. IT staff / admins can see
+    all saved reports (for sharing / admin visibility).
+    """
+    REPORT_TYPE_CHOICES = [
+        ("ticket_category", "Tickets by category"),
+        ("ticket_sla", "SLA health"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="saved_reports",
+    )
+    report_type = models.CharField(max_length=40, choices=REPORT_TYPE_CHOICES)
+    name = models.CharField(max_length=200)
+    description = models.TextField(blank=True, default="")
+    filters = models.JSONField(default=dict, blank=True,
+                               help_text="Persisted report filter parameters.")
+    is_shared = models.BooleanField(default=False,
+                                    help_text="Visible to IT staff and admins.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["user"], name="savedreport_user_idx"),
+            models.Index(fields=["report_type"], name="savedreport_type_idx"),
+            models.Index(fields=["is_shared"], name="savedreport_shared_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.report_type})"
+
+
+class ScheduledReport(SoftDeleteModel):
+    """A schedule that auto-generates and emails a SavedReport.
+
+    Supports daily / weekly / monthly cadence. On each tick, a Celery task
+    renders the saved report, exports it, and emails it to the configured
+    recipients. Execution history lives in ScheduledReportRun.
+    """
+    SCHEDULE_CHOICES = [
+        ("daily", "Daily"),
+        ("weekly", "Weekly"),
+        ("monthly", "Monthly"),
+    ]
+
+    FORMAT_CHOICES = [
+        ("csv", "CSV"),
+        ("xlsx", "XLSX"),
+        ("pdf", "PDF"),
+        ("docx", "DOCX"),
+    ]
+
+    saved_report = models.ForeignKey(
+        SavedReport, on_delete=models.CASCADE,
+        related_name="schedules",
+    )
+    schedule = models.CharField(max_length=10, choices=SCHEDULE_CHOICES)
+    recipients = models.JSONField(default=list, blank=True,
+                                  help_text="Email addresses to receive the report.")
+    format = models.CharField(max_length=10, choices=FORMAT_CHOICES, default="csv")
+    enabled = models.BooleanField(default=True)
+    next_run_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["saved_report"], name="scheduledreport_report_idx"),
+            models.Index(fields=["schedule"], name="scheduledreport_schedule_idx"),
+            models.Index(fields=["enabled", "next_run_at"], name="scheduledreport_due_idx"),
+        ]
+
+    def __str__(self):
+        return f"Schedule {self.schedule} for '{self.saved_report.name}'"
+
+
+class ScheduledReportRun(SoftDeleteModel):
+    """Execution history for scheduled report delivery."""
+    STATUS_CHOICES = (
+        ("succeeded", "Succeeded"),
+        ("failed", "Failed"),
+        ("skipped", "Skipped"),
+    )
+
+    scheduled_report = models.ForeignKey(
+        ScheduledReport, on_delete=models.CASCADE,
+        related_name="runs",
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    success = models.BooleanField(default=False)
+    error_summary = models.TextField(blank=True, default="")
+    recipient_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [
+            models.Index(fields=["scheduled_report", "status"]),
+            models.Index(fields=["started_at"]),
+        ]
+
+    def __str__(self):
+        return f"Run {self.status} @ {self.started_at:%Y-%m-%d %H:%M}"
+
+
+class UserNotificationPreference(SoftDeleteModel):
+    """Per-user notification channel preferences.
+
+    One row per user (auto-created on user creation via signal or
+    lazily on first access). Each channel flag controls whether the user
+    wants to receive that category of notification via email (in-app
+    notifications are always available). Preserves essential administrative
+    and security notifications regardless of preference.
+    """
+
+    EMAIL_CATEGORIES = [
+        ("ticket_assignment", "Ticket assigned to me"),
+        ("ticket_status_change", "Ticket status changed"),
+        ("ticket_reply", "New reply or note on my ticket"),
+        ("sla_escalation", "SLA escalation / breach"),
+        ("maintenance_reminder", "Maintenance reminder"),
+        ("asset_assignment", "Asset assigned or returned"),
+        ("system_alert", "System alerts"),
+    ]
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="notification_preferences",
+    )
+    email_enabled = models.BooleanField(default=True,
+                                        help_text="Master switch for email notifications.")
+    categories = models.JSONField(default=dict, blank=True,
+                                  help_text="Per-category email opt-in map: "
+                                            "{category_key: true/false}.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user"], name="usernotifpref_user_idx"),
+        ]
+
+    def __str__(self):
+        return f"Notification prefs for {self.user_id}"
+
+    def email_enabled_for(self, category):
+        """True if the user wants email for this category."""
+        if not self.email_enabled:
+            return False
+        return bool(self.categories.get(category, True))
+

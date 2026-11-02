@@ -2,6 +2,9 @@ from django.urls import include, path
 
 from common.privacy_views import PrivacyErasureViewSet
 from common.views import (AuditLogViewSet, NotificationViewSet,  # noqa: F401
+                          SavedReportViewSet, ScheduledReportViewSet,
+                          ScheduledReportRunViewSet,
+                          UserNotificationPreferenceViewSet,
                           dashboard, data_integrity, department_report,
                           export_dataset, operations_status)
 
@@ -12,6 +15,13 @@ router.register("audit-logs", AuditLogViewSet, basename="auditlog")
 router.register("notifications", NotificationViewSet, basename="notification")
 router.register("privacy-erasures", PrivacyErasureViewSet,
                 basename="privacyerasure")
+router.register("saved-reports", SavedReportViewSet, basename="savedreport")
+router.register("scheduled-reports", ScheduledReportViewSet,
+                basename="scheduledreport")
+router.register("scheduled-report-runs", ScheduledReportRunViewSet,
+                basename="scheduledreportrun")
+router.register("notification-preferences", UserNotificationPreferenceViewSet,
+                basename="usernotificationpreference")
 
 urlpatterns = [
     path("data-integrity/", data_integrity, name="data-integrity"),

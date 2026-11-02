@@ -80,9 +80,14 @@ if not DEBUG and not _SECRET_KEY_FROM_ENV and 'test' not in sys.argv:
 
 # Security headers / cookie hardening (Phase 8). Dev-friendly defaults;
 # production sets the *_SECURE / SECURE_SSL_REDIRECT / SECURE_HSTS_SECONDS
-# environment variables.
-SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
-CSRF_COOKIE_SECURE = os.environ.get('CSRF_COOKIE_SECURE', 'false').lower() == 'true'
+# environment variables. Cookies default to secure when not debugging so a
+# production deployment (DEBUG=false) is not accidentally cookie-insecure.
+SESSION_COOKIE_SECURE = (
+    os.environ.get('SESSION_COOKIE_SECURE',
+                   'false' if DEBUG else 'true').lower() == 'true')
+CSRF_COOKIE_SECURE = (
+    os.environ.get('CSRF_COOKIE_SECURE',
+                   'false' if DEBUG else 'true').lower() == 'true')
 SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'false').lower() == 'true'
 SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', '0') or 0)
 
@@ -128,6 +133,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'common.tasks.process_inbound_mailbox',
         'schedule': 60.0,  # every minute
     },
+    'run-scheduled-reports': {
+        'task': 'common.tasks.run_scheduled_reports',
+        'schedule': 300.0,  # every 5 minutes
+    },
 }
 
 AUTH_USER_MODEL = 'accounts.User'
@@ -146,6 +155,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'common.middleware.SecurityAuditMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -323,8 +333,10 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'default': '200 per minute',
-        'auth': '20 per minute',
+        'default': '200/minute',
+        'user': '200/minute',
+        'anon': '100/minute',
+        'auth': '20/minute',
     },
 }
 
@@ -392,5 +404,6 @@ LOGGING = {
         'tickets': {'handlers': ['console'], 'level': 'INFO', 'propagate': True},
         'assets': {'handlers': ['console'], 'level': 'INFO', 'propagate': True},
         'celery': {'handlers': ['console'], 'level': 'INFO', 'propagate': True},
+        'common.security': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
     },
 }

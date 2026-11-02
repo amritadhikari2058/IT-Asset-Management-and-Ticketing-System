@@ -109,6 +109,31 @@ export function PageHeader({ title, sub, actions }) {
   );
 }
 
+/** Card wrapper used by the self-service page. */
+export function Panel({ children }) {
+  return <div className="panel">{children}</div>;
+}
+
+/** Header inside a Panel. */
+export function PanelHeader({ children }) {
+  return <div className="panel-head">{children}</div>;
+}
+
+/** Padded body inside a Panel. */
+export function PanelPad({ children }) {
+  return <div className="panel-pad">{children}</div>;
+}
+
+/** Navigation link (hash route) used inside panels. */
+export function Link({ href, children, className, style, title, ...rest }) {
+  return (
+    <a href={href} className={className} style={style} title={title}
+       {...rest}>
+      {children}
+    </a>
+  );
+}
+
 export function EmptyState({ title, hint, action }) {
   return (
     <div className="empty-state">

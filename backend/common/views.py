@@ -5,11 +5,12 @@
   permanent deletion. Permanent deletion is System-Admin-only, requires
   explicit {"confirm": "<id>"} and writes a protected AuditLog.
 """
+import logging
 from datetime import datetime, time
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import transaction
+from django.db import models, transaction
 from django.db.models import Max, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -20,12 +21,19 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from common.audit import log_action
-from common.models import AuditLog, BackgroundTaskRun, EmailProcessing, Notification
+from common.models import (AuditLog, BackgroundTaskRun, EmailProcessing,
+                           Notification, SavedReport, ScheduledReport,
+                           ScheduledReportRun)
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from common.serializers import (
     AuditLogSerializer, NotificationSerializer, RecycleBinEntrySerializer,
+    SavedReportSerializer, ScheduledReportSerializer,
+    ScheduledReportRunSerializer,
+    UserNotificationPreferenceSerializer,
 )
 from common.exports import EXPORT_RENDERER_CLASSES
+
+logger = logging.getLogger(__name__)
 
 
 def _deleted_entries(entity_filter=None, date_from=None, date_to=None,
@@ -614,3 +622,246 @@ def recycle_bin_hard_delete(request, entity_type, pk):
                 pass
     return Response({"permanently_deleted": True, "entity_type": entity_type,
                      "object_id": str(pk)})
+
+
+class SavedReportViewSet(viewsets.ModelViewSet):
+    """Saved report configurations: CRUD + ownership/sharing."""
+
+    serializer_class = SavedReportSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = SavedReport.objects.all()
+        if not _is_ticket_staff(user):
+            # Employees see their own + shared reports.
+            qs = qs.filter(
+                models.Q(user=user) | models.Q(is_shared=True))
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+    def perform_update(self, serializer):
+        obj = self.get_object()
+        user = self.request.user
+        if not _is_ticket_staff(user) and obj.user_id != user.pk:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Cannot edit another user's saved report.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        if not _is_ticket_staff(user) and instance.user_id != user.pk:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Cannot delete another user's saved report.")
+        instance.soft_delete(by_user=user, reason="saved report removed")
+
+
+class ScheduledReportViewSet(viewsets.ModelViewSet):
+    """Scheduled report delivery: create/edit/enable/disable/delete."""
+
+    serializer_class = ScheduledReportSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = ScheduledReport.objects.all()
+        if not _is_ticket_staff(user):
+            qs = qs.filter(
+                models.Q(saved_report__user=user) |
+                models.Q(saved_report__is_shared=True))
+        return qs
+
+    def perform_create(self, serializer):
+        if not _is_ticket_staff(self.request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied(
+                "Only IT staff can create scheduled reports.")
+        obj = serializer.save()
+        _compute_next_run(obj)
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        _compute_next_run(obj)
+
+
+class ScheduledReportRunViewSet(viewsets.ReadOnlyModelViewSet):
+    """Scheduled report execution history (read-only)."""
+
+    serializer_class = ScheduledReportRunSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = ScheduledReportRun.objects.all()
+        if not _is_ticket_staff(user):
+            qs = qs.filter(
+                models.Q(scheduled_report__saved_report__user=user) |
+                models.Q(scheduled_report__saved_report__is_shared=True))
+        return qs
+
+    @action(detail=True, methods=["post"])
+    def retry(self, request, pk=None):
+        """Re-run a failed scheduled report delivery.
+
+        IT staff / admins only. Re-runs the report for the linked schedule
+        using its current saved-report filters, recipients and format.
+        """
+        from rest_framework.exceptions import PermissionDenied
+
+        if not _is_ticket_staff(request.user):
+            raise PermissionDenied("IT staff only.")
+        run = self.get_object()
+        sr = run.scheduled_report
+
+        # Mark the old run as skipped (superseded by retry).
+        if run.status in ("failed", "running"):
+            run.status = "skipped"
+            run.success = False
+            run.finished_at = timezone.now()
+            run.error_summary = "Superseded by retry."
+            run.save(update_fields=["status", "success", "finished_at",
+                                    "error_summary"])
+
+        # Trigger delivery immediately via the task (synchronously here to
+        # keep the retry atomic and visible). We call the shared task's
+        # underlying logic inline so the response reflects the outcome.
+        try:
+            _deliver_scheduled_report(sr)
+            return Response({"retried": True, "scheduled_report": sr.id})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Scheduled report retry %s failed", sr.pk)
+            new_run = ScheduledReportRun.objects.create(
+                scheduled_report=sr,
+                status="failed", success=False,
+                error_summary=type(exc).__name__,
+                started_at=timezone.now(),
+                finished_at=timezone.now())
+            return Response(
+                {"retried": False, "error": type(exc).__name__,
+                 "run": new_run.id}, status=500)
+
+
+def _deliver_scheduled_report(sr):
+    """Deliver one scheduled report now (used by task + retry action)."""
+    from django.db import transaction
+    from django.core.mail import EmailMessage
+    from common.models import ScheduledReportRun
+
+    now = timezone.now()
+    with transaction.atomic():
+        run = ScheduledReportRun.objects.create(
+            scheduled_report=sr,
+            status="running", success=False, started_at=now)
+
+    from tickets.views import category_report, sla_report
+    from rest_framework.test import APIRequestFactory
+
+    factory = APIRequestFactory()
+    req = factory.get("/api/tickets/reports/by-category/",
+                      data=sr.saved_report.filters or {})
+    req.user = sr.saved_report.user
+
+    if sr.saved_report.report_type == "ticket_category":
+        resp = category_report(req)
+    elif sr.saved_report.report_type == "ticket_sla":
+        resp = sla_report(req)
+    else:
+        raise ValueError(f"Unknown report type: {sr.saved_report.report_type}")
+
+    payload = resp.data if hasattr(resp, "data") else resp
+    fmt = sr.format or "csv"
+    content = _render_report(payload, fmt)
+    filename = f"{sr.saved_report.name.replace(' ', '_')}_{now:%Y%m%d}.{fmt}"
+    content_type = {
+        "csv": "text/csv",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pdf": "application/pdf",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }.get(fmt, "application/octet-stream")
+
+    recipients = sr.recipients or []
+    sent_count = 0
+    for to_email in recipients:
+        try:
+            email = EmailMessage(
+                subject=f"Scheduled report: {sr.saved_report.name}",
+                body="Please find the attached scheduled report.",
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+                to=[to_email],
+            )
+            email.attach(filename, content, content_type)
+            email.send(fail_silently=False)
+            sent_count += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Scheduled report email failed to %s: %s",
+                to_email.split("@")[-1] if to_email else "?",
+                type(exc).__name__)
+
+    with transaction.atomic():
+        run.status = "succeeded"
+        run.success = True
+        run.finished_at = timezone.now()
+        run.recipient_count = sent_count
+        run.save(update_fields=["status", "success", "finished_at",
+                                "recipient_count"])
+
+    _advance_next_run(sr)
+    return run
+
+
+def _compute_next_run(obj):
+    """Set next_run_at based on schedule cadence."""
+    from datetime import timedelta
+    now = timezone.now()
+    if obj.schedule == "daily":
+        obj.next_run_at = now + timedelta(days=1)
+    elif obj.schedule == "weekly":
+        obj.next_run_at = now + timedelta(weeks=1)
+    elif obj.schedule == "monthly":
+        obj.next_run_at = now + timedelta(days=30)
+    obj.save(update_fields=["next_run_at"])
+
+
+class UserNotificationPreferenceViewSet(viewsets.ModelViewSet):
+    """User notification channel preferences.
+
+    Users can only view/edit their own preferences. IT staff can view all
+    (read-only) for auditing.
+    """
+    serializer_class = UserNotificationPreferenceSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = UserNotificationPreference.objects.all()
+        if not _is_ticket_staff(user):
+            qs = qs.filter(user=user)
+        return qs
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        if serializer.validated_data.get("user") and \
+                serializer.validated_data["user"] != user:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Cannot set preferences for another user.")
+        serializer.save(user=user)
+
+    def perform_update(self, serializer):
+        obj = self.get_object()
+        if obj.user_id != self.request.user.pk and not _is_ticket_staff(
+                self.request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied(
+                "Cannot edit another user's preferences.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        # Preferences are not deleted; soft-delete is disabled for this model
+        # by design. Return 405.
+        from rest_framework.exceptions import MethodNotAllowed
+        raise MethodNotAllowed("DELETE")
+
+
+def _get_or_create_prefs(user):
+    """Get or create notification preferences for a user."""
+    prefs, _ = UserNotificationPreference.objects.get_or_create(user=user)
+    return prefs

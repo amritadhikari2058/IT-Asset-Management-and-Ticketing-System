@@ -3,9 +3,10 @@
 Single source of truth for feature status. Update it whenever a feature is
 completed or its scope changes.
 
-Last reviewed: Phase 8 in progress — email-to-ticket intake, outbound
-notifications, Celery/Redis background processing, and ops status endpoint
-shipped with focused backend tests (`common.test_phase7`).
+Last reviewed: Phase 12 complete — KB usefulness dashboard, notification
+preferences, asset vendor management, scheduled report XLSX/PDF/DOCX +
+retry, performance indexes, N+1 fix. All core test suites pass; frontend
+build and lint clean.
 
 ## How to read this document
 
@@ -38,6 +39,7 @@ shipped with focused backend tests (`common.test_phase7`).
 - Assign / return / retire / mark-lost workflows.
 - Bulk create/update/assign/delete, serial uniqueness rules.
 - Asset visibility and history permissions.
+- Warranty start + expiry dates, purchase date, purchase cost (API + UI).
 
 ## Phase 4 — Maintenance, Disposal, Reporting, SLA
 
@@ -122,9 +124,12 @@ Verification: `manage.py check` clean; focused backend suites
 - [x] Scheduled maintenance reminders – `Maintenance.recurrence` field,
   `MaintenanceReminder` model, periodic `check_maintenance_reminders` Celery task,
   before‑due and overdue notifications, and dashboard indicators.
-- [ ] Knowledge Base – create/edit/publish/archive articles, categories & tags,
-  employee browsing & search, view tracking, "solved?" feedback, and integration into
-  ticket creation.
+- [x] Knowledge Base – full CRUD for articles (draft/published/archived),
+  categories & tags, employee browsing & search, view tracking, plus the
+  `#/kb` management page for IT staff (create/edit/publish/archive). Backend
+  models/serializers/viewset/URLs already existed; frontend page added at
+  `frontend/src/kb.jsx` with route `#/kb` and detail route `#/kb/<id>`.
+  Article usefulness feedback still pending.
 - [x] Self‑service portal improvements – employee ticket/asset history, knowledge-base
   browsing, notification preferences, and isolation from other employees' private records.
   (Component added at `#/self-service`; tickets, assets, and KB list rendered; API wiring
@@ -168,18 +173,92 @@ Verification: `manage.py check` clean; focused backend suites
 - [ ] Scheduled report generation. (Still open — Phase 6 saved-report
   delivery already exists via beat.)
 
-## Phase 8 — Production readiness (partial)
+## Phase 8 — Production readiness (complete)
 
 - [x] Environment configuration for SMTP, S3, hosts, CORS.
 - [x] S3-compatible object storage switch via `STORAGE_BACKEND`.
 - [x] Deployment-oriented README section.
-- [ ] CI/CD pipeline (lint, tests, build).
+- [x] CI/CD pipeline (`.github/workflows/backend.yml`, `frontend.yml`: Django
+  checks, migration consistency, backend tests, frontend lint/tests/build).
 - [x] Scheduled tasks deployment (Celery worker + beat; see
   `backend/docs/EMAIL_OPS.md` for run/deploy instructions).
-- [ ] Production SMTP + object storage smoke tests.
-- [ ] Backup/restore runbook.
+- [x] Production SMTP + object storage smoke tests (documented in
+  `backend/docs/DEPLOYMENT.md`).
+- [x] Backup/restore runbook (`backend/docs/BACKUP.md`).
+- [x] Security: Asset IDOR fixed (employees scoped to assigned + home-dept
+  assets), logout endpoint blacklists refresh tokens, throttling on
+  token/refresh/password-reset/verify endpoints, secure cookie defaults,
+  DB indexes on frequently filtered fields, N+1 fix in dashboard reports,
+  auth-failure logging middleware.
+- [x] Docs: `backend/docs/DEPLOYMENT.md` (production deployment guide),
+  `backend/docs/BACKUP.md` (backup/restore runbook),
+  `backend/docs/ARCHITECTURE.md` (system architecture),
+  `backend/docs/KNOWN_LIMITATIONS.md` (known limitations).
+
+## Phase 11 — Workflow completion and operational intelligence (complete)
+
+### 11A. Knowledge Base article feedback (complete)
+- `assets.KnowledgeBaseFeedback` model — one row per (article, user),
+  helpful/not_helpful flag, optional comment; unique_together prevents
+  duplicate inflation.
+- `KnowledgeBaseFeedbackViewSet` + serializer — employees create/update
+  their own vote; IT staff see all votes for stats.
+- Frontend: helpful/not-helpful buttons on `KnowledgeBaseDetail` page,
+  vote state persisted, staff sees aggregate.
+
+### 11B. Knowledge Base ↔ Ticket integration (complete)
+- `tickets.TicketKbArticle` model — links tickets to KB articles,
+  `helpful` vote from requester, staff-curated links.
+- `TicketKbArticleViewSet` — staff create/update/delete links; employees
+  only PATCH `helpful` on their own ticket links.
+- Frontend: KB article suggestions while typing in Ticket Form (opens
+  article in new tab without losing form input); related KB articles
+  displayed on Ticket Detail with staff link/unlink and employee helpful
+  vote.
+
+### 11C. Saved reports (complete)
+- `common.SavedReport` model — report type, name, description, JSON
+  filters, ownership + sharing; `SavedReportViewSet` CRUD.
+- Frontend: `#/reports/saved` page — create/edit/delete/duplicate saved
+  reports, run via existing report endpoints with persisted filters.
+
+### 11D. Scheduled report delivery (complete)
+- `common.ScheduledReport` + `common.ScheduledReportRun` models — daily/
+  weekly/monthly cadence, recipients, format, enable/disable,
+  execution history.
+- Celery task `common.tasks.run_scheduled_reports` (beat every 5 min) —
+  renders saved report, exports CSV/JSON, emails recipients, records
+  success/failure, advances next run. Idempotent per run row.
+- Frontend: schedule management available on saved reports.
+
+### 11E. Email-to-ticket (already implemented — Phase 5b/7)
+- IMAP polling via `common.tasks.process_inbound_mailbox`, parser in
+  `common/inbound.py`, idempotency via `EmailProcessing`, attachment
+  policy reuse, ops status endpoint. Configuration via environment
+  variables (`INBOUND_MAILBOX_*`).
+
+## Phase 9 — Final integration and release readiness (complete)
+
+- [x] serial_number API-level validation (serializer + DB trigger backstop
+  with concurrent-write IntegrityError handling → HTTP 400 field errors).
+- [x] End-to-end integration tests (`common/integration_tests.py`):
+  employee lifecycle, ticket lifecycle, asset lifecycle, KB + self-service,
+  email/password-reset flow, background task execution.
+- [x] Role-based security tests (`common/role_security_tests.py`): all 4
+  roles across list/detail/update/delete/attachments/department/notifications.
+- [x] CI/CD workflows verified (`.github/workflows/backend.yml`,
+  `frontend.yml`).
+- [x] Production deployment rehearsal (health endpoints, migration
+  consistency, deploy-check warnings resolved via env vars).
+- [x] Pre-existing bugs fixed: `AssetSerializer.cost` → `purchase_cost`,
+  `AssignmentSerializer` field names, `AssetAssignSerializer` contract,
+  `DisposalSerializer.completed` → `is_completed`, `User.is_employee_or_similar()`
+  method, frontend `components.jsx` missing exports.
+
+## Phase 9 — Final integration and release readiness (complete)
 
 ## Known blockers / decisions
+
 
 - SQLite in development; report averages are computed in Python to stay
   DB-agnostic.
@@ -189,3 +268,48 @@ Verification: `manage.py check` clean; focused backend suites
   "deferred until core workflows are done" note is superseded — scheduled
   tasks run independently of API requests via Celery beat + worker.
 - Existing uncommitted Department/Employee fixes must be preserved.
+
+## Phase 12 — Product maturity and operational reliability (complete)
+
+### 12A. Scheduled report enhancements (complete)
+- Scheduled reports now support all four export formats (CSV, XLSX, PDF,
+  DOCX) via the existing `common/exports.py` engine — no separate
+  implementation.
+- Scheduled report emails attach the generated file (CSV/XLSX/PDF/DOCX)
+  instead of a text-only body.
+- `ScheduledReportRunViewSet.retry` action lets IT staff re-run a failed
+  delivery; old run is marked "skipped" to avoid duplicate delivery.
+- Celery beat schedule includes `run-scheduled-reports` every 5 minutes.
+
+### 12B. KB usefulness dashboard (complete)
+- `KnowledgeBaseViewSet.usefulness` action — IT staff only. Returns:
+  total published articles, helpful/not-helpful vote counts, overall
+  helpful rate, and per-article feedback rates sorted to surface
+  ineffective articles first (low rate → no feedback → most feedback).
+- Filters: `q` (title/content search), `category`, `date_from`.
+
+### 12C. Notification preferences (complete)
+- `common.UserNotificationPreference` model — per-user email master switch
+  + per-category opt-in map (ticket assignment, status change, reply, SLA
+  escalation, maintenance reminder, asset assignment, system alert).
+- `UserNotificationPreferenceViewSet` — users own their preferences;
+  IT staff can view all for auditing.
+- Frontend: preferences page at `#/settings/notifications`.
+
+### 12D. Asset vendor management (complete)
+- `assets.Vendor` model — name, contact person, email, phone, address,
+  notes; soft-delete; IT staff manage, employees read.
+- `Asset.vendor` FK + `vendor_name` read-only on AssetSerializer.
+- `VendorViewSet` at `/api/assets/vendors/`.
+- Frontend: vendor field on AssetForm (create/edit), vendor display on
+  AssetDetail, vendors list route `#/vendors`.
+
+### 12E. Performance & reliability (complete)
+- Fixed N+1: `AssetViewSet.select_related("vendor")` for
+  `AssetSerializer.vendor_name`.
+- New DB indexes: `ticket.created_at`, `ticket.priority`,
+  `asset.vendor` (migrations `tickets.0007`, `assets.0014`).
+- Scheduled report task uses `EmailMessage` with file attachment (was
+  `send_mail` text-only).
+
+## Known blockers / decisions

@@ -58,8 +58,11 @@ export function AssetForm({ id }) {
   const [form, setForm] = useState({
     asset_tag: '', name: '', category: '', status: 'available',
     serial_number: '', description: '', location: '', department: '',
-    purchase_date: '', warranty_expiry: '', purchase_cost: '',
+    purchase_date: '', warranty_start: '', warranty_expiry: '',
+    purchase_cost: '', vendor: '',
   });
+  const [vendors, setVendors] = useState([]);
+  const [vendorsLoading, setVendorsLoading] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
   const [globalError, setGlobalError] = useState('');
   const [okMsg, setOkMsg] = useState('');
@@ -93,8 +96,10 @@ export function AssetForm({ id }) {
           description: a.description ?? '', location: a.location ?? '',
           department: a.department ?? '',
           purchase_date: a.purchase_date ?? '',
+          warranty_start: a.warranty_start ?? '',
           warranty_expiry: a.warranty_expiry ?? '',
           purchase_cost: a.purchase_cost ?? '',
+          vendor: a.vendor ?? '',
         });
       } catch (e) {
         setLoadError(parseApiError(e).global || 'Could not load asset.');
@@ -103,6 +108,21 @@ export function AssetForm({ id }) {
       }
     })();
   }, [id, isEdit]);
+
+  // Load vendors for the vendor dropdown.
+  useEffect(() => {
+    (async () => {
+      setVendorsLoading(true);
+      try {
+        const r = await api.get('/assets/vendors/');
+        setVendors(r.data.results ?? r.data ?? []);
+      } catch {
+        setVendors([]);
+      } finally {
+        setVendorsLoading(false);
+      }
+    })();
+  }, []);
 
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -140,7 +160,9 @@ export function AssetForm({ id }) {
       description: form.description.trim(),
       location: form.location.trim(),
       department: form.department === '' ? null : Number(form.department),
+      vendor: form.vendor === '' ? null : Number(form.vendor),
       purchase_date: form.purchase_date || null,
+      warranty_start: form.warranty_start || null,
       warranty_expiry: form.warranty_expiry || null,
     };
     if (form.purchase_cost !== '') payload.purchase_cost = form.purchase_cost;
@@ -302,6 +324,15 @@ export function AssetForm({ id }) {
             <Field label="Department (optional)" error={fieldMsg(fieldErrors, 'department')}>
               <DepartmentSelect value={form.department} onChange={set('department')} disabled={submitting} />
             </Field>
+            <Field label="Vendor (optional)" error={fieldMsg(fieldErrors, 'vendor')}>
+              <select className="input" value={form.vendor} onChange={(e) => set('vendor')(e.target.value)} disabled={submitting || vendorsLoading}>
+                <option value="">None</option>
+                {vendors.map((v) => (
+                  <option key={v.id} value={v.id}>{v.name}</option>
+                ))}
+              </select>
+              {vendorsLoading && <span className="muted small">Loading…</span>}
+            </Field>
           </div>
         </div>
         <div className="form-section">
@@ -315,6 +346,9 @@ export function AssetForm({ id }) {
           <div className="form-grid">
             <Field label="Purchase date" error={fieldMsg(fieldErrors, 'purchase_date')}>
               <input className="input" type="date" value={form.purchase_date} onChange={(e) => set('purchase_date')(e.target.value)} disabled={submitting} />
+            </Field>
+            <Field label="Warranty start" error={fieldMsg(fieldErrors, 'warranty_start')}>
+              <input className="input" type="date" value={form.warranty_start} onChange={(e) => set('warranty_start')(e.target.value)} disabled={submitting} />
             </Field>
             <Field label="Warranty expiry" error={fieldMsg(fieldErrors, 'warranty_expiry')}>
               <input className="input" type="date" value={form.warranty_expiry} onChange={(e) => set('warranty_expiry')(e.target.value)} disabled={submitting} />
@@ -656,6 +690,7 @@ export function AssetDetail({ id }) {
         <dt>Assigned to</dt><dd>{a.assigned_to_email ?? (a.assigned_to ? `#${a.assigned_to}` : '—')}</dd>
         <dt>Serial</dt><dd>{a.serial_number || '—'}</dd>
         <dt>Department</dt><dd>{a.department_name || '-'}</dd>
+        <dt>Vendor</dt><dd>{a.vendor_name || '-'}</dd>
         <dt>Location</dt><dd>{a.location || '-'}</dd>
         <dt>Purchased</dt><dd>{a.purchase_date ?? '—'}</dd>
         <dt>Warranty until</dt><dd>

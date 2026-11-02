@@ -130,6 +130,15 @@ class Ticket(SoftDeleteModel):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status"], name="ticket_status_idx"),
+            models.Index(fields=["assignee"], name="ticket_assignee_idx"),
+            models.Index(fields=["requester"], name="ticket_requester_idx"),
+            models.Index(fields=["sla_due_at"], name="ticket_sla_due_idx"),
+            models.Index(fields=["department"], name="ticket_department_idx"),
+            models.Index(fields=["created_at"], name="ticket_created_at_idx"),
+            models.Index(fields=["priority"], name="ticket_priority_idx"),
+        ]
         permissions = [
             ("hard_delete_ticket", "Can permanently delete tickets"),
             ("restore_ticket", "Can restore soft-deleted tickets"),
@@ -339,3 +348,40 @@ class TicketAttachment(SoftDeleteModel):
 
     def __str__(self):
         return f"Attachment {self.original_filename or self.pk} on #{self.ticket_id}"
+
+
+class TicketKbArticle(SoftDeleteModel):
+    """Links a KB article to a ticket, for staff-curated associations and
+    employee-marked "solved by article" feedback.
+
+    A ticket can reference many KB articles; an article can be referenced by
+    many tickets. The `helpful` flag records whether the requester said the
+    article solved their issue (set by the requester, updated by them only).
+    """
+    ticket = models.ForeignKey(
+        Ticket, on_delete=models.CASCADE, related_name="kb_articles")
+    article = models.ForeignKey(
+        "assets.KnowledgeBaseArticle", on_delete=models.CASCADE,
+        related_name="linked_tickets")
+    helpful = models.BooleanField(null=True, blank=True,
+                                  help_text="Requester's 'solved by article' "
+                                            "vote; null = not yet voted.")
+    linked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ticket_kb_links",
+    )
+    linked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-linked_at"]
+        unique_together = [("ticket", "article")]
+        indexes = [
+            models.Index(fields=["ticket"], name="ticket_kb_ticket_idx"),
+            models.Index(fields=["article"], name="ticket_kb_article_idx"),
+            models.Index(fields=["helpful"], name="ticket_kb_helpful_idx"),
+        ]
+
+    def __str__(self):
+        return f"#{self.ticket_id} <-> KB#{self.article_id}"

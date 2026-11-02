@@ -1,0 +1,57 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Django system checks
+        run: |
+          cd backend
+          python manage.py check
+
+      - name: Check migration consistency
+        run: |
+          cd backend
+          python manage.py makemigrations --check --dry-run
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          python manage.py test
+        env:
+          DEBUG: "false"
+          SECRET_KEY: "ci-test-secret-key-do-not-use-in-production"
+          CELERY_BROKER_URL: "redis://localhost:6379/0"
+          CELERY_RESULT_BACKEND: "redis://localhost:6379/0"
+          CACHE_LOCATION: "redis://localhost:6379/1"
+          EMAIL_BACKEND: "django.core.mail.backends.locmem.EmailBackend"
