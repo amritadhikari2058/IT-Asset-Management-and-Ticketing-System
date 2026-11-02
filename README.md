@@ -45,6 +45,39 @@ Copy nothing — local dev works with defaults. For production set:
 | `AWS_QUERYSTRING_EXPIRE` | 3600 | Signed-URL TTL (unused: downloads are proxied) |
 | `ATTACHMENT_ALLOWED_EXTENSIONS` | pdf,png,jpg,jpeg,txt,csv,log,docx,xlsx | Upload whitelist |
 | `ATTACHMENT_MAX_SIZE_MB` | 10 | Upload size cap |
+| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | redis://localhost:6379/0 | Celery broker / result backend (Redis) |
+| `CELERY_TASK_MAX_RETRIES` / `CELERY_TASK_RETRY_BACKOFF` / `CELERY_TASK_TIME_LIMIT` / `CELERY_CONCURRENCY` | 3 / 60 / 300 / 4 | Task retry, backoff, time limit, worker concurrency |
+| `CACHE_LOCATION` | *(empty)* | Redis URL for the cache (outbound email dedup) in multi-process setups |
+| `INBOUND_MAILBOX_ENABLED` | true | Support-mailbox IMAP intake switch |
+| `INBOUND_MAILBOX_HOST` / `INBOUND_MAILBOX_PORT` / `INBOUND_MAILBOX_USER` / `INBOUND_MAILBOX_PASSWORD` / `INBOUND_MAILBOX_USE_TLS` / `INBOUND_MAILBOX_NAME` / `INBOUND_SUPPORT_MAILBOX` / `INBOUND_ALLOWED_SENDER_DOMAINS` / `INBOUND_MAILBOX_POLL_SECONDS` | — / 993 / — / — / true / INBOX / support@example.com / *(empty)* / 60 | Support mailbox (IMAP) intake settings |
+| `EMAIL_DEDUP_TTL_SECONDS` | 3600 | Outbound ticket-email dedup window (seconds) |
+
+## Background processing (Celery + Redis)
+
+- Email intake polls the support mailbox over IMAP via
+  `common.tasks.process_inbound_mailbox` (beat every 60s; `\Seen` only set
+  after successful processing, so failures are safely retried).
+- Scheduled SLA escalations (`tickets.tasks.check_sla_escalations`, every
+  5 min) and maintenance reminders (`assets.tasks.check_maintenance_reminders`,
+  hourly) run as periodic Celery tasks and record outcomes in
+  `common.BackgroundTaskRun`.
+- Ops visibility: `GET /api/common/operations/status/` (IT staff/admin) for
+  inbound email + task health.
+- Full details: `backend/docs/EMAIL_OPS.md`.
+
+Local development:
+
+```bash
+# terminal 1 — worker
+celery -A config.celery worker --loglevel=info --concurrency=4
+
+# terminal 2 — beat scheduler
+celery -A config.celery beat --loglevel=info
+```
+
+Redis must be running locally (or set `CELERY_BROKER_URL`,
+`CELERY_RESULT_BACKEND`, `CACHE_LOCATION` to a managed Redis). See
+`backend/docs/EMAIL_OPS.md` for production deployment notes.
 
 ## Email
 

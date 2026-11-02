@@ -6,6 +6,7 @@ ticket-driven, so Asset imports are kept intentionally."""
 from unittest.mock import patch
 
 from django.core import mail
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -218,6 +219,7 @@ class TicketNotificationTests(TestCase):
     """In-app notifications for ticket events: right recipient, no leaks."""
 
     def setUp(self):
+        cache.clear()
         self.dep, self.admin, self.mgr, self.emp = make_users()
         self.c = APIClient()
         self.tcat = TicketCategory.objects.create(name="Hardware")
@@ -788,6 +790,7 @@ class TicketUpdateAtomicityTests(TestCase):
     together; email never rolls back (or ghosts) the update."""
 
     def setUp(self):
+        cache.clear()
         self.dep, self.admin, self.mgr, self.emp = make_users()
         self.c = APIClient()
         self.tcat = TicketCategory.objects.create(name="Hardware")
@@ -885,6 +888,7 @@ class TicketCreateAtomicityTests(TestCase):
     email goes out only after commit and never rolls anything back."""
 
     def setUp(self):
+        cache.clear()
         self.dep, self.admin, self.mgr, self.emp = make_users()
         self.c = APIClient()
         self.tcat = TicketCategory.objects.create(name="Hardware")
@@ -1022,6 +1026,7 @@ class TicketBulkCreateTests(TestCase):
     """POST /api/tickets/bulk_create/: per-row single-create semantics."""
 
     def setUp(self):
+        cache.clear()
         self.dep, self.admin, self.mgr, self.emp = make_users()
         self.c = APIClient()
         self.tcat = TicketCategory.objects.create(name="Hardware")

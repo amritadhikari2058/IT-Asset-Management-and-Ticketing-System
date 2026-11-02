@@ -273,3 +273,38 @@ class EmailProcessing(models.Model):
 
     def __str__(self):
         return f"Email {self.message_id[:20]}… → {self.status}"
+
+
+class BackgroundTaskRun(models.Model):
+    """Operational health trail for background tasks (Celery beat/workers).
+
+    One row per task execution attempt: started, finished, success/failure
+    and a non-sensitive error summary (exception type only — never message
+    bodies or credentials). Lets the operations status endpoint and simple
+    logs answer "did the last SLA check run OK?" without a monitoring stack.
+    """
+
+    STATUS_CHOICES = (
+        ("running", "Running"),
+        ("succeeded", "Succeeded"),
+        ("failed", "Failed"),
+        ("skipped", "Skipped"),
+    )
+
+    task_name = models.CharField(max_length=200, db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES,
+                              default="running")
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    success = models.BooleanField(default=False)
+    error_summary = models.TextField(blank=True, default="")
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [
+            models.Index(fields=["task_name", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.task_name} {self.status}"

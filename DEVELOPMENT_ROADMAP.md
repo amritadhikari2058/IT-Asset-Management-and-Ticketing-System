@@ -3,8 +3,9 @@
 Single source of truth for feature status. Update it whenever a feature is
 completed or its scope changes.
 
-Last reviewed: Phase 4 complete (maintenance, disposal, dashboard,
-department reports, SLA integration) with focused backend/frontend tests.
+Last reviewed: Phase 8 in progress — email-to-ticket intake, outbound
+notifications, Celery/Redis background processing, and ops status endpoint
+shipped with focused backend tests (`common.test_phase7`).
 
 ## How to read this document
 
@@ -130,10 +131,14 @@ Verification: `manage.py check` clean; focused backend suites
    complete; build and lint pass.)
 - [ ] Email‑to‑ticket infrastructure investigation – evaluate existing mail integration,
   design creation‑from‑email schema, duplicate‑prevention, attachment handling, and clear
-  failure logging.
-- [ ] Celery + Redis infrastructure – beat schedule for SLA & maintenance tasks, retry
+  failure logging. **(Phase 7 complete — IMAP polling via
+  `common.tasks.process_inbound_mailbox`, `common/inbound.py` parser, `EmailProcessing`
+  dedup, attachment policy reuse, ops status; see `backend/docs/EMAIL_OPS.md`.)**
+- [x] Celery + Redis infrastructure – beat schedule for SLA & maintenance tasks, retry
   policies, idempotency for scheduled jobs, environment variables, and local development
-  instructions.
+  instructions. (Phase 7 complete: `backend/config/celery.py`, beat schedule in
+  `config/settings.py`, retry/time-limit policy, task run recording via
+  `common.BackgroundTaskRun`; run instructions in `backend/docs/EMAIL_OPS.md`.)
 
 ## Phase 6 — Reporting and analytics (partial)
 
@@ -146,13 +151,22 @@ Verification: `manage.py check` clean; focused backend suites
    * cost field nullable; report shows values where present).
 - [x] Saved report views / scheduled report delivery (Celery beat every Monday 08:00).
 
-## Phase 7 — Background processing (not started)
+## Phase 7 — Background processing (in progress → complete for intake/notifications)
 
-- [ ] Celery + Redis worker setup.
-- [ ] Async email sending.
-- [ ] Scheduled maintenance reminders.
-- [ ] SLA breach notifications/escalations.
-- [ ] Scheduled report generation.
+- [x] Celery + Redis worker setup. (`backend/config/celery.py`, broker/result
+  backend from `CELERY_*` env, retry policy, time limits, worker concurrency;
+  deps `celery`, `redis`.)
+- [x] Async email sending + inbound mailbox polling. (Creation/assignment/
+  status/reply emails via `accounts.email_utils` with dedup cache
+  `email_sent:*`; support mailbox IMAP polled by
+  `common.tasks.process_inbound_mailbox`.)
+- [x] Scheduled maintenance reminders. (`assets.tasks.check_maintenance_reminders`,
+  hourly beat, before/overdue levels, `MaintenanceReminder` guards.)
+- [x] SLA breach notifications/escalations. (`tickets.tasks.check_sla_escalations`,
+  every 5 min, approach/breach levels, `SLAEscalation` guards, deadline-relative
+  `TicketSLA` methods, `Ticket.priority_sla`.)
+- [ ] Scheduled report generation. (Still open — Phase 6 saved-report
+  delivery already exists via beat.)
 
 ## Phase 8 — Production readiness (partial)
 
@@ -160,7 +174,8 @@ Verification: `manage.py check` clean; focused backend suites
 - [x] S3-compatible object storage switch via `STORAGE_BACKEND`.
 - [x] Deployment-oriented README section.
 - [ ] CI/CD pipeline (lint, tests, build).
-- [ ] Scheduled tasks deployment (Celery beat / cron).
+- [x] Scheduled tasks deployment (Celery worker + beat; see
+  `backend/docs/EMAIL_OPS.md` for run/deploy instructions).
 - [ ] Production SMTP + object storage smoke tests.
 - [ ] Backup/restore runbook.
 
@@ -170,5 +185,7 @@ Verification: `manage.py check` clean; focused backend suites
   DB-agnostic.
 - `Ticket.sla_breached` is stored but overdue is computed dynamically from
   `sla_due_at`; dashboards use the dynamic definition.
-- Background processing intentionally deferred until core workflows are done.
+- Background processing (Phase 7) is now implemented; the old
+  "deferred until core workflows are done" note is superseded — scheduled
+  tasks run independently of API requests via Celery beat + worker.
 - Existing uncommitted Department/Employee fixes must be preserved.
