@@ -153,9 +153,12 @@ def run_scheduled_reports(self):
 
     Idempotent per (scheduled_report, run window): a ScheduledReportRun row
     is created before delivery so a retried task does not double-send.
+
+    Recipient policy: deliveries go to the explicit recipient list configured
+    on the schedule (IT / staff authored) and do not inherit per-user
+    notification categories (see ``common.notifications``).
     """
     from django.db import transaction
-    from django.core.mail import EmailMessage
     from common.models import ScheduledReport, ScheduledReportRun
 
     now = timezone.now()
@@ -176,6 +179,7 @@ def run_scheduled_reports(self):
             # logic directly (no HTTP round-trip needed).
             from tickets.views import category_report, sla_report
             from rest_framework.test import APIRequestFactory
+            from accounts import email_utils as _email_utils
 
             factory = APIRequestFactory()
             req = factory.get("/api/tickets/reports/by-category/",
@@ -200,25 +204,17 @@ def run_scheduled_reports(self):
                 "pdf": "application/pdf",
                 "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             }.get(fmt, "application/octet-stream")
+            subject = f"Scheduled report: {sr.saved_report.name}"
+            body = "Please find the attached scheduled report."
 
+            # Explicit recipient policy: report deliveries go to the
+            # schedule's recipient list without per-user notification filters.
             recipients = sr.recipients or []
             sent_count = 0
             for to_email in recipients:
-                try:
-                    email = EmailMessage(
-                        subject=f"Scheduled report: {sr.saved_report.name}",
-                        body="Please find the attached scheduled report.",
-                        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-                        to=[to_email],
-                    )
-                    email.attach(filename, content, content_type)
-                    email.send(fail_silently=False)
+                if _email_utils.send_scheduled_report_email(
+                        to_email, subject, body, filename, content, content_type):
                     sent_count += 1
-                except Exception as exc:  # one bad recipient must not abort
-                    logger.warning(
-                        "Scheduled report email failed to %s: %s",
-                        to_email.split("@")[-1] if to_email else "?",
-                        type(exc).__name__)
 
             with transaction.atomic():
                 run.status = "succeeded"

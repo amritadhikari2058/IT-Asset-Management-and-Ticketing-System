@@ -1150,6 +1150,10 @@ export function Profile() {
           Applies to assignment and status-change emails only. In-app notifications,
           password resets, and email verification are always sent.
         </p>
+        <p className="muted small" style={{ marginTop: 'var(--sp-2)' }}>
+          Want per-category controls (ticket replies, SLA, maintenance, assets,
+          system alerts)? <a href="#/settings/notifications">Open notification settings</a>.
+        </p>
         {saving && <p className="muted small"><span className="spinner" /> Saving…</p>}
         {msg && <div className="success-summary" role="status">{msg}</div>}
         {err && <div className="error-summary" role="alert">{err}</div>}

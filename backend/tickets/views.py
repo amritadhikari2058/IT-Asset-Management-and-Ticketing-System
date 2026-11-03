@@ -15,6 +15,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from common.audit import log_action
+from common.notifications import (
+    TICKET_ASSIGNMENT_CATEGORY, TICKET_STATUS_CATEGORY, email_enabled_for,
+)
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from tickets.models import (
     Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketKbArticle,
@@ -142,13 +145,21 @@ def _notify_user(recipient, actor, title, body, ticket):
         entity_type="tickets.Ticket", object_id=str(ticket.pk))
 
 
-def _wants_ticket_email(person):
+def _wants_ticket_email(person, category=None):
     """Ticket-event email opt-out check for one recipient object.
 
-    Missing flag defaults to True so a lookup can never silently break
-    ticket flows. Verification / password-reset mail never consults this.
+    Delegates to the centralized preference check in
+    ``common.notifications.email_enabled_for`` so the global email master
+    switch and the per-category opt-ins are applied in exactly one place.
+
+    - ``category`` selects the notification category being delivered
+      (``ticket_assignment`` / ``ticket_status_change`` / ``ticket_reply``);
+      ``None`` applies the global master switch only (ticket creation
+      acknowledgements).
+    - Missing preference records default to enabled; essential transactional
+      emails (verification / password reset) never consult this.
     """
-    return bool(getattr(person, "receive_ticket_emails", True))
+    return email_enabled_for(person, category=category)
 
 
 class TicketCategoryViewSet(viewsets.ModelViewSet):
@@ -374,7 +385,8 @@ class TicketViewSet(viewsets.ModelViewSet):
                 if maint:
                     _notify_maintenance_reminder(maint)
             if (obj.assignee and obj.assignee.email
-                    and _wants_ticket_email(obj.assignee)):
+                    and _wants_ticket_email(obj.assignee,
+                                           category=TICKET_ASSIGNMENT_CATEGORY)):
                 send_ticket_notification(
                     obj.assignee.email,
                     f"Ticket #{obj.pk} assigned to you",
@@ -460,7 +472,9 @@ class TicketViewSet(viewsets.ModelViewSet):
             try:
                 fe, _ = ticket_links(updated.pk)
                 if (updated.requester and updated.requester.email
-                        and _wants_ticket_email(updated.requester)):
+                        and _wants_ticket_email(
+                            updated.requester,
+                            category=TICKET_STATUS_CATEGORY)):
                     send_ticket_notification(
                         updated.requester.email,
                         f"Ticket #{updated.pk} status: {new_status}",
@@ -797,7 +811,9 @@ class TicketViewSet(viewsets.ModelViewSet):
                             f"Your ticket was created.\nStatus: {obj.status}\n"
                             f"View: {fe}")
                     if (obj.assignee and obj.assignee.email
-                            and _wants_ticket_email(obj.assignee)):
+                            and _wants_ticket_email(
+                                obj.assignee,
+                                category=TICKET_ASSIGNMENT_CATEGORY)):
                         send_ticket_notification(
                             obj.assignee.email,
                             f"Ticket #{obj.pk} assigned to you",

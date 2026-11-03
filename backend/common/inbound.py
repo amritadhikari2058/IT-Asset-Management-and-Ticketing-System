@@ -25,6 +25,7 @@ from django.utils import timezone
 
 from accounts.models import User
 from common.models import EmailProcessing
+from common.notifications import TICKET_REPLY_CATEGORY
 from tickets.models import Ticket, TicketCategory, TicketNote
 
 logger = logging.getLogger(__name__)
@@ -179,8 +180,15 @@ def _allowed_sender_domain(sender_email):
     return domain in domains
 
 
-def _wants_ticket_email(user):
-    return bool(getattr(user, "receive_ticket_emails", True))
+def _wants_ticket_email(user, category=None):
+    """Centralized ticket-email preference gate (see common.notifications).
+
+    - ``category`` selects the notification category (``ticket_reply`` for
+      inbound replies); ``None`` applies the global master switch.
+    - Missing preference records default to enabled.
+    """
+    from common.notifications import email_enabled_for
+    return email_enabled_for(user, category=category)
 
 
 def _ensure_requester_account(sender_email):
@@ -367,12 +375,15 @@ def _process_message(msg_dict, mailbox):
 
     if ticket is not None and not created and not is_internal:
         # Requester-visible reply: notify them (deduped outbound send).
+        # Preference gate is centralized + category-scoped (ticket_reply).
         from accounts import email_utils as _eu
         _eu.send_ticket_notification(
             ticket.requester.email if ticket.requester else None,
             f"Re: {(subject or '')[:80]}",
             f"Reply received on ticket #{ticket.pk}: {(body or '')[:500]}",
-            ticket_id=ticket.pk)
+            ticket_id=ticket.pk,
+            user=ticket.requester,
+            category=TICKET_REPLY_CATEGORY)
 
     return ticket, created, None
 

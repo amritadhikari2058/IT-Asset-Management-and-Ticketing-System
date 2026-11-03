@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from './api';
 import { PageHeader, EmptyState, Panel, PanelHeader, PanelPad, Link } from './components';
-import { Notifications } from './notifications';
 import { NotifBadge } from './notifications';
 import { useAuth } from './auth';
 
@@ -19,7 +18,7 @@ export function SelfService() {
     setTicketLoading(true);
     setTicketError('');
     try {
-      const r = await api.get('/api/tickets/');
+      const r = await api.get('/tickets/');
       setTickets(r.data.results ?? r.data ?? []);
     } catch (e) {
       setTicketError('Could not load your tickets.');
@@ -37,7 +36,7 @@ export function SelfService() {
     setAssetLoading(true);
     setAssetError('');
     try {
-      const r = await api.get('/api/assets/');
+      const r = await api.get('/assets/');
       const myAssets = (r.data.results ?? r.data ?? []).filter(
         (a) => a.assigned_to_id === user.id || a.created_by_id === user.id
       );
@@ -63,7 +62,7 @@ export function SelfService() {
     setKbLoading(true);
     setKbError('');
     try {
-      const r = await api.get('/api/common/knowledge-base/', {
+      const r = await api.get('/common/knowledge-base/', {
         params: { q: kbQuery },
       });
       setKbResults(r.data.results ?? r.data ?? []);
@@ -85,7 +84,7 @@ export function SelfService() {
       return <EmptyState title="Loading tickets..." hint="Please wait…" />;
     }
     if (ticketError) {
-      return <EmptyState title="Error" hint={ticketError} variant="error" />;
+      return <EmptyState title="Error" hint={ticketError} />;
     }
     if (tickets.length === 0) {
       return <EmptyState
@@ -122,7 +121,7 @@ export function SelfService() {
       return <EmptyState title="Loading assets..." hint="Please wait…" />;
     }
     if (assetError) {
-      return <EmptyState title="Error" hint={assetError} variant="error" />;
+      return <EmptyState title="Error" hint={assetError} />;
     }
     if (assets.length === 0) {
       return <EmptyState
@@ -152,7 +151,7 @@ export function SelfService() {
       return <EmptyState title="Loading articles..." hint="Please wait…" />;
     }
     if (kbError) {
-      return <EmptyState title="Error" hint={kbError} variant="error" />;
+      return <EmptyState title="Error" hint={kbError} />;
     }
     if (kbResults.length === 0) {
       return <EmptyState

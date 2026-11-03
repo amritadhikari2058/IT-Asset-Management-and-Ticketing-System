@@ -682,3 +682,176 @@ class ExportDatasetTests(TestCase):
         self.assertEqual(res.status_code, 200)
         after = AuditLog.objects.filter(action="export").count()
         self.assertEqual(after, before + 1)
+
+
+class UserNotificationPreferenceTests(TestCase):
+    """Notification preference API permissions + centralized enforcement."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="AT")
+
+    # ---------- API: own-only access ----------
+
+    def test_employee_creates_own_preference_record(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/common/notification-preferences/",
+                          {"email_enabled": True,
+                           "categories": {"ticket_assignment": False}},
+                          format="json")
+        self.assertEqual(res.status_code, 201)
+        from common.models import UserNotificationPreference
+        self.assertTrue(UserNotificationPreference.objects.filter(
+            user=self.emp).exists())
+
+    def test_employee_cannot_read_others_preferences(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o@x", email="o@example.com", employee_id="O1",
+            password="pw12345678")
+        prefs = UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.get(
+            f"/api/common/notification-preferences/{prefs.pk}/")
+        self.assertEqual(res.status_code, 404)
+
+    def test_employee_cannot_update_others_preferences(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o2@x", email="o2@example.com", employee_id="O2",
+            password="pw12345678")
+        prefs = UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.patch(
+            f"/api/common/notification-preferences/{prefs.pk}/",
+            {"email_enabled": True}, format="json")
+        self.assertEqual(res.status_code, 404)
+        prefs.refresh_from_db()
+        self.assertFalse(prefs.email_enabled)
+
+    def test_it_staff_can_view_all_preferences_for_auditing(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o3@x", email="o3@example.com", employee_id="O3",
+            password="pw12345678")
+        UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=True, categories={})
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/notification-preferences/")
+        self.assertEqual(res.status_code, 200)
+        rows = res.data["results"] if isinstance(res.data, dict) else res.data
+        self.assertEqual(len(rows), 2)
+
+    def test_invalid_category_value_rejected(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/common/notification-preferences/",
+                          {"email_enabled": True, "categories": {"bogus": True}},
+                          format="json")
+        self.assertEqual(res.status_code, 400)
+
+    # ---------- Enforcement: enabled / disabled / missing / category ----------
+
+    def _create_ticket(self, requester=None, assignee=None):
+        return Ticket.objects.create(
+            title="t", description="d", category=self.tcat,
+            requester=requester or self.emp, department=self.dep,
+            assignee=assignee)
+
+    def test_missing_preference_record_defaults_to_enabled(self):
+        # No UserNotificationPreference row exists for emp -> default opt-in.
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/tickets/",
+                          {"title": "t", "description": "d",
+                           "category": self.tcat.pk,
+                           "department": self.dep.pk,
+                           "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 2)  # requester + assignee
+
+    def test_global_master_switch_off_suppresses_ticket_emails(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/tickets/",
+                          {"title": "t", "description": "d",
+                           "category": self.tcat.pk,
+                           "department": self.dep.pk,
+                           "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        # Creation mail goes to the requester (master on); the opted-out
+        # assignee (emp) receives nothing.
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.mgr.email])
+
+    def test_category_opt_out_only_affects_that_category(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=True,
+            categories={"ticket_status_change": False})
+        # emp creates a ticket -> creation email (master switch) flows.
+        auth(self.c, self.emp)
+        res = self.c.post("/api/tickets/",
+                          {"title": "t", "description": "d",
+                           "category": self.tcat.pk,
+                           "department": self.dep.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 1)  # creation to emp (master) flows
+        t = Ticket.objects.get(title="t")
+        # Status change -> requester (emp) opted out of ticket_status_change
+        # -> suppressed, while creation (master) still delivered.
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/tickets/{t.pk}/",
+                           {"status": "in_progress"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)  # no status email
+
+        # The opt-out did not block the unrelated ticket_assignment category:
+        # a staff-created ticket assigned to emp still delivers the assignee.
+        before = len(mail.outbox)
+        res = self.c.post("/api/tickets/",
+                          {"title": "t2", "description": "d",
+                           "category": self.tcat.pk,
+                           "department": self.dep.pk,
+                           "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), before + 2)  # creation + assignment
+
+    def test_essential_security_emails_not_suppressed(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.post("/api/accounts/verify-email/request/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        mail.outbox.clear()
+        res = self.c.post("/api/accounts/password-reset/request/",
+                          {"email": "e@x"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_in_app_notification_independent_of_email_preferences(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/tickets/",
+                          {"title": "t", "description": "d",
+                           "category": self.tcat.pk,
+                           "department": self.dep.pk,
+                           "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        # Creation mail to the requester (staff) still goes out; the opted-out
+        # assignee (emp) is email-suppressed ...
+        self.assertEqual(len(mail.outbox), 1)
+        # ... but the in-app notification for the assignee is unaffected.
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp).exists())
+

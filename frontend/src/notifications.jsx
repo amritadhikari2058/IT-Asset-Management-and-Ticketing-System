@@ -22,7 +22,7 @@ export function Notifications() {
       const p = new URLSearchParams();
       if (filter !== 'all') p.set('is_read', filter === 'unread' ? 'false' : 'true');
       if (entity) p.set('entity_type', entity);
-      const r = await api.get(`/api/common/notifications/?${p.toString()}`);
+      const r = await api.get(`/common/notifications/?${p.toString()}`);
       const list = r.data.results ?? r.data ?? [];
       setItems(Array.isArray(list) ? list : []);
       window.dispatchEvent(new Event('notif-change'));
@@ -52,7 +52,7 @@ export function Notifications() {
     setAllMsg('');
     setError('');
     try {
-      const r = await api.post('/api/common/notifications/mark_all_read/', {});
+      const r = await api.post('/common/notifications/mark_all_read/', {});
       setAllMsg(`Marked ${r.data.updated ?? 0} notification(s) as read.`);
       await load();
     } catch {
@@ -66,7 +66,7 @@ export function Notifications() {
     if (!dismissTarget || dismissBusy) return;
     setDismissBusy(true);
     try {
-      await api.delete(`/api/common/notifications/${dismissTarget.id}/`);
+      await api.delete(`/common/notifications/${dismissTarget.id}/`);
       setItems((xs) => xs.filter((x) => x.id !== dismissTarget.id));
       setDismissTarget(null);
       window.dispatchEvent(new Event('notif-change'));
@@ -177,7 +177,7 @@ export function NotifBadge() {
     let cancelled = false;
     const fetchCount = async () => {
       try {
-        const r = await api.get('/api/common/notifications/unread_count/');
+        const r = await api.get('/common/notifications/unread_count/');
         const data = r.data || r;
         if (!cancelled) setUnread(data.count ?? data ?? 0);
       } catch {

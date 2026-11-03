@@ -11,6 +11,10 @@ import { Disposals } from './disposals';
 import { Dashboard, DepartmentReports } from './dashboard';
 import { SelfService } from "./self-service";
 import { SavedReports } from './saved-reports';
+import { NotificationSettings } from './settings';
+import { ServicesCatalogue, MyServiceRequests, ServiceRequestDetail } from './services';
+import Inventory from './inventory';
+import Workflow from './workflow';
 
 const NAV = [
   { section: 'Work' },
@@ -26,11 +30,13 @@ const NAV = [
   { hash: '#/reports/sla', label: 'SLA report', staffOnly: true },
   { hash: '#/reports/departments', label: 'Department reports', staffOnly: true },
   { hash: '#/reports/saved', label: 'Saved reports', staffOnly: false },
+  { hash: '#/reports/schedules', label: 'Scheduled reports', staffOnly: true },
   { section: 'Organize' },
   { hash: '#/categories', label: 'Categories' },
   { hash: '#/departments', label: 'Departments' },
   { hash: '#/notifications', label: 'Notifications', badge: true },
-  { hash: '#users', label: 'Employees' },
+  { hash: '#/settings/notifications', label: 'Notification settings', staffOnly: false },
+  { hash: '#/users', label: 'Employees' },
 ];
 
 /** Drop staff-only entries and any section left with no visible items. */
@@ -56,12 +62,14 @@ const TITLES = {
   '#/reports/sla': 'SLA report',
   '#/reports/departments': 'Department reports',
   '#/reports/saved': 'Saved reports',
+  '#/reports/schedules': 'Scheduled reports',
   '#/assets': 'Assets',
   '#/maintenance': 'Maintenance',
   '#/disposals': 'Disposals',
   '#/categories': 'Categories',
   '#/departments': 'Departments',
   '#/notifications': 'Notifications',
+  '#/settings/notifications': 'Notification settings',
   '#/recycle': 'Recycle Bin',
   '#/audit': 'Audit Log',
   '#/sla-config': 'SLA config',
@@ -84,6 +92,7 @@ function crumbs(hash) {
   if (h === '#/assets/new') return ['Assets', 'New'];
   if (h === '#/recycle' || h === '#/audit') return ['Administration', TITLES[h]];
   if (h.startsWith('#/reports/')) return ['Reports', TITLES[h]];
+  if (h.startsWith('#/settings/')) return ['Settings', TITLES[h]];
   if ((m = h.match(/^#\/users\/(\d+)$/))) return ['Employees', `Employee #${m[1]}`];
   return [TITLES[h] ?? 'Tickets'];
 }
@@ -98,20 +107,29 @@ function matchRoute(hash) {
   if (route === '#/assets/new') return <AssetForm />;
   if ((m = route.match(/^#\/assets\/(\d+)$/))) return <AssetDetail id={m[1]} />;
   if ((m = route.match(/^#\/users\/(\d+)\/?$/))) return <EmployeeDetail id={m[1]} />;
-  if ((m = route.match(/^#\/kb\/(\d+)$/))) return <KnowledgeBaseDetail id={m[1]} />;
-  const routes = {
+  if ((m = route.match(/^#\/kb\/(\d+)$/))) return <KnowledgeBase />;
+   if ((m = route.match(/^#\/service-requests\/(\d+)$/))) return <ServiceRequestDetail id={m[1]} />;
+   const routes = {
+
     '#/dashboard': <Dashboard />,
     '#/tickets': <Tickets />,
-    '#/kb': <KnowledgeBase />,
+     '#/kb': <KnowledgeBase />,
+     '#/services': <ServicesCatalogue />,
+     '#/inventory': <Inventory />,
+     '#/workflow': <Workflow />,
+     '#/service-requests': <MyServiceRequests />,
+
     '#/reports/sla': <SLAReport />,
     '#/reports/departments': <DepartmentReports />,
     '#/reports/saved': <SavedReports />,
+    '#/reports/schedules': <SavedReports />,
 '#/assets': <Assets />,
     '#/maintenance': <Maintenance />,
     '#/disposals': <Disposals />,
     '#/categories': <Categories />,
     '#/departments': <Departments />,
     '#/notifications': <Notifications />,
+    '#/settings/notifications': <NotificationSettings />,
     '#/recycle': <RecycleBin />,
     '#/audit': <AuditLogPage />,
     '#/sla-config': <SLAConfig />,
@@ -119,7 +137,7 @@ function matchRoute(hash) {
     '#/profile': <Profile />,
     '#verify-email': <VerifyEmail />,
     '#reset-password': <ResetPassword />,
-    '#self-service': <SelfService />,
+    '#/self-service': <SelfService />,
   };
   return routes[route] ?? <Tickets />;
 }
