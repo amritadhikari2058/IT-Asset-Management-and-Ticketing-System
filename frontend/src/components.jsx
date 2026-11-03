@@ -10,6 +10,7 @@ const STATUS_TONE = {
   lost: 'red', overdue: 'red', active: 'green', inactive: 'gray',
   disposed: 'purple', scheduled: 'blue', completed: 'green', cancelled: 'gray',
   pending: 'amber', approved: 'green', rejected: 'red',
+  pending_review: 'amber',
 };
 const PRIORITY_TONE = { low: 'gray', medium: 'blue', high: 'amber', critical: 'red' };
 
@@ -19,6 +20,7 @@ const STATUS_LABELS = {
   in_repair: 'In repair', retired: 'Retired', lost: 'Lost', active: 'Active', inactive: 'Inactive',
   disposed: 'Disposed', scheduled: 'Scheduled', completed: 'Completed', cancelled: 'Cancelled',
   pending: 'Pending approval', approved: 'Approved', rejected: 'Rejected',
+  pending_review: 'Pending review',
 };
 const PRIORITY_LABELS = { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' };
 

@@ -17,6 +17,7 @@ from assets.models import (
     Maintenance,
     MaintenanceReminder,
     KnowledgeBaseArticle,
+    KnowledgeBaseArticleRevision,
     KnowledgeBaseCategory,
     KnowledgeBaseTag,
     KnowledgeBaseFeedback,
@@ -176,7 +177,11 @@ class KnowledgeBaseCategorySerializer(serializers.ModelSerializer):
 class KnowledgeBaseArticleSerializer(serializers.ModelSerializer):
     tags = KnowledgeBaseTagSerializer(many=True, read_only=True)
     category = KnowledgeBaseCategorySerializer(read_only=True)
+    category_name = serializers.CharField(
+        source="category.name", read_only=True, default=None)
     author_name = serializers.CharField(source="author.get_full_name", read_only=True)
+    reviewed_by_name = serializers.CharField(
+        source="reviewed_by.get_full_name", read_only=True, default=None)
 
     class Meta:
         model = KnowledgeBaseArticle
@@ -184,36 +189,134 @@ class KnowledgeBaseArticleSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "slug",
+            "summary",
+            "content",
             "category",
+            "category_name",
             "tags",
+            "author",
             "author_name",
             "status",
+            "version",
+            "revision_number",
+            "submitted_at",
+            "reviewed_by",
+            "reviewed_by_name",
+            "reviewed_at",
+            "review_decision",
+            "review_comment",
             "view_count",
             "created_at",
             "updated_at",
         ]
+        read_only_fields = fields
 
 
 class KnowledgeBaseArticleCreateUpdateSerializer(serializers.ModelSerializer):
-    """Serializer for creating/updating articles (includes tag/category IDs)."""
+    """Serializer for creating/updating articles (includes tag/category IDs).
+
+    ``version`` is the client's optimistic-concurrency token and
+    ``change_note`` is stored on the resulting revision; both are handled by
+    the view and never written directly to the article row.
+    """
 
     tags = serializers.SlugRelatedField(
         many=True, slug_field="slug", queryset=KnowledgeBaseTag.objects.all(), required=False
     )
     category = serializers.SlugRelatedField(
-        slug_field="code", queryset=KnowledgeBaseCategory.objects.all(), required=False
+        slug_field="code", queryset=KnowledgeBaseCategory.objects.all(),
+        required=False, allow_null=True,
     )
+    version = serializers.IntegerField(
+        required=False, min_value=1, write_only=True)
+    change_note = serializers.CharField(
+        required=False, allow_blank=True, max_length=500, write_only=True)
 
     class Meta:
         model = KnowledgeBaseArticle
         fields = [
             "title",
             "slug",
+            "summary",
             "category",
             "tags",
             "content",
             "status",
+            "version",
+            "change_note",
         ]
+
+    def _strip_write_only(self, validated_data):
+        validated_data.pop("version", None)
+        validated_data.pop("change_note", None)
+        return validated_data
+
+    def create(self, validated_data):
+        return super().create(self._strip_write_only(validated_data))
+
+    def update(self, instance, validated_data):
+        return super().update(instance, self._strip_write_only(validated_data))
+
+
+class KnowledgeBaseArticleRevisionSerializer(serializers.ModelSerializer):
+    """Read-only immutable revision snapshot."""
+
+    editor_name = serializers.CharField(read_only=True)
+    author_name = serializers.CharField(
+        source="author.get_full_name", read_only=True, default=None)
+    category_name = serializers.CharField(read_only=True)
+    is_current = serializers.BooleanField(read_only=True)
+    is_current_published = serializers.SerializerMethodField()
+
+    class Meta:
+        model = KnowledgeBaseArticleRevision
+        fields = [
+            "id",
+            "article",
+            "revision_number",
+            "title",
+            "slug",
+            "summary",
+            "content",
+            "category",
+            "category_name",
+            "tags",
+            "status",
+            "author",
+            "author_name",
+            "editor",
+            "editor_name",
+            "change_note",
+            "restored_from_revision",
+            "is_current",
+            "is_current_published",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_is_current_published(self, obj):
+        article = obj.article
+        return bool(obj.is_current and article.status == "published")
+
+
+class KnowledgeBaseSubmitReviewSerializer(serializers.Serializer):
+    version = serializers.IntegerField(required=False, min_value=1)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+
+class KnowledgeBaseReviewDecisionSerializer(serializers.Serializer):
+    version = serializers.IntegerField(required=False, min_value=1)
+    comment = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+
+
+class KnowledgeBaseRejectSerializer(serializers.Serializer):
+    version = serializers.IntegerField(required=False, min_value=1)
+    comment = serializers.CharField(required=True, allow_blank=False, max_length=2000)
+
+
+class KnowledgeBaseRestoreSerializer(serializers.Serializer):
+    revision_number = serializers.IntegerField(min_value=1)
+    version = serializers.IntegerField(required=False, min_value=1)
 
 
 class KnowledgeBaseCategoryCreateUpdateSerializer(serializers.ModelSerializer):

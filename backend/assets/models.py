@@ -351,15 +351,38 @@ class KnowledgeBaseTag(models.Model):
 
 
 class KnowledgeBaseArticle(models.Model):
-    """A knowledge‑base article that employees can browse and search."""
+    """A knowledge‑base article that employees can browse and search.
+
+    Versioning / governance (Phase 20):
+    - ``version`` is the optimistic-concurrency token. It is incremented on
+      every persisted change (content edits and workflow transitions).
+    - ``revision_number`` is the latest *content* revision number. Revisions
+      are immutable snapshots and use their own contiguous sequence, so a
+      status-only transition does not leave a gap in revision history.
+    - Status lifecycle: draft → pending_review → approved → published, with
+      ``draft`` again after rejection and ``archived`` as a terminal shelf.
+      Existing rows keep ``published`` and receive revision 1 in the data
+      migration.
+    """
     STATUS_CHOICES = (
         ("draft", "Draft"),
+        ("pending_review", "Pending review"),
+        ("approved", "Approved"),
         ("published", "Published"),
         ("archived", "Archived"),
+    )
+    REVIEW_DECISION_CHOICES = (
+        ("", "Not reviewed"),
+        ("pending", "Pending review"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
     )
 
     title = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True)
+    summary = models.TextField(
+        blank=True, default="",
+        help_text="Short description shown in lists and search results.")
     category = models.ForeignKey(
         KnowledgeBaseCategory,
         null=True,
@@ -378,6 +401,22 @@ class KnowledgeBaseArticle(models.Model):
         help_text="Rich but controlled article content (markdown‑style, no HTML).")
     status = models.CharField(
         max_length=20, choices=STATUS_CHOICES, default="published")
+    version = models.PositiveIntegerField(
+        default=1, help_text="Optimistic-concurrency token; incremented on save.")
+    revision_number = models.PositiveIntegerField(
+        default=0, help_text="Latest immutable content revision number.")
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="kb_articles_reviewed")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_decision = models.CharField(
+        max_length=20, choices=REVIEW_DECISION_CHOICES,
+        blank=True, default="")
+    review_comment = models.TextField(blank=True, default="")
     view_count = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -391,6 +430,69 @@ class KnowledgeBaseArticle(models.Model):
     def increment_view(self):
         """Atomically increment the view counter."""
         KnowledgeBaseArticle.objects.filter(pk=self.pk).update(view_count=F("view_count") + 1)
+
+
+class KnowledgeBaseArticleRevision(models.Model):
+    """Immutable snapshot of an article at a saved revision.
+
+    Written only by ``assets.kb_services`` (inside the article update
+    transaction). There is intentionally no API path that edits or deletes
+    an existing revision, so history cannot be overwritten. Tags and the
+    category name are denormalised into the snapshot so a later category or
+    tag deletion cannot erase what the revision contained.
+    """
+
+    article = models.ForeignKey(
+        KnowledgeBaseArticle,
+        on_delete=models.CASCADE,
+        related_name="revisions")
+    revision_number = models.PositiveIntegerField()
+    title = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255)
+    summary = models.TextField(blank=True, default="")
+    content = models.TextField(blank=True, default="")
+    category = models.ForeignKey(
+        KnowledgeBaseCategory,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="article_revisions")
+    category_name = models.CharField(max_length=100, blank=True, default="")
+    tags = models.JSONField(
+        default=list, blank=True,
+        help_text="Snapshot: [{\"name\": ..., \"slug\": ...}, ...].")
+    status = models.CharField(max_length=20, blank=True, default="")
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="kb_revisions_authored")
+    editor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="kb_revisions_edited")
+    editor_name = models.CharField(max_length=255, blank=True, default="")
+    change_note = models.TextField(blank=True, default="")
+    restored_from_revision = models.PositiveIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-revision_number"]
+        unique_together = ("article", "revision_number")
+        indexes = [
+            models.Index(fields=["article", "-revision_number"],
+                         name="kb_rev_article_number_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.article_id} r{self.revision_number}"
+
+    @property
+    def is_current(self):
+        return self.revision_number == self.article.revision_number
 
 
 class KnowledgeBaseFeedback(SoftDeleteModel):

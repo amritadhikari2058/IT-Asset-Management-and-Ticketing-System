@@ -232,6 +232,19 @@ p { margin: 0 0 var(--sp-2); }
   font-size: var(--font-body-lg); font-weight: 550;
 }
 .back-link:hover { color: var(--main-text); text-decoration: none; }
+/* Section tabs (hash links) for pages that host several related lists. */
+.tabs {
+  display: flex; gap: var(--sp-1); margin-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--borders); overflow-x: auto;
+}
+.tabs a {
+  padding: var(--sp-2) var(--sp-3); font-weight: 550; color: var(--muted-text);
+  border-bottom: 2px solid transparent; white-space: nowrap;
+}
+.tabs a:hover { color: var(--main-text); text-decoration: none; }
+.tabs a.active {
+  color: var(--primary); border-bottom-color: var(--primary); font-weight: 650;
+}
 .toolbar { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; margin-bottom: var(--sp-3); }
 .filter-bar {
   display: flex; gap: var(--sp-2); align-items: flex-end; flex-wrap: wrap;
@@ -654,3 +667,23 @@ table.grid th:last-child, table.grid td:last-child { padding-right: var(--sp-4);
   .dist-row { grid-template-columns: 1fr 36px; }
   .dist-bar { display: none; }
 }
+
+/* ---- Knowledge Base revision history / comparison ---- */
+.rev-list { list-style: none; margin: 0; padding: 0; }
+.rev-list li { padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--borders); }
+.rev-list li:last-child { border-bottom: 0; }
+.rev-list .row-gap { align-items: center; flex-wrap: wrap; }
+.rev-selector { display: inline-flex; align-items: center; gap: 4px; font-size: var(--font-sm); }
+.diff-block {
+  border: 1px solid var(--borders); border-radius: var(--radius);
+  overflow-x: auto; font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: var(--font-sm); line-height: 1.55; background: var(--surface-background);
+}
+.diff-line { display: flex; white-space: pre-wrap; word-break: break-word; padding: 0 var(--sp-2); }
+.diff-gutter { flex: 0 0 1.4em; color: var(--muted-text); user-select: none; }
+.diff-text { flex: 1; min-width: 0; }
+.diff-line-added { background: var(--success-bg); color: var(--success); }
+.diff-line-removed { background: var(--danger-bg); color: var(--danger); }
+.diff-line-same { color: var(--main-text); }
+.diff-add { background: var(--success-bg); color: var(--success); border-radius: 2px; }
+.diff-remove { background: var(--danger-bg); color: var(--danger); text-decoration: line-through; border-radius: 2px; }

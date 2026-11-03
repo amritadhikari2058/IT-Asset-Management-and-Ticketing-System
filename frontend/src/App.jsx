@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useAuth, AuthProvider } from './auth';
 import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, SLAConfig, SLAReport, Tickets, Users, VerifyEmail } from './pages';
-import { KnowledgeBase } from './kb';
+import {
+  KnowledgeBase, KnowledgeBaseCompare, KnowledgeBaseDetail,
+  KnowledgeBaseReviewQueue, KnowledgeBaseRevisionDetail,
+  KnowledgeBaseRevisions,
+} from './kb';
 import { AssetForm, AssetDetail } from './assets';
 import { AuditLogPage } from './audit';
 import { TicketForm, TicketDetail } from './tickets';
@@ -24,6 +28,7 @@ const NAV = [
   { hash: '#/self-service', label: 'Self-Service', staffOnly: false },
   { hash: '#/assets', label: 'Assets' },
   { section: 'Operations', staffOnly: true },
+  { hash: '#/workflow', label: 'Workflow', staffOnly: true },
   { hash: '#/maintenance', label: 'Maintenance', staffOnly: true },
   { hash: '#/disposals', label: 'Disposals', staffOnly: true },
   { section: 'Reports' },
@@ -64,6 +69,7 @@ const TITLES = {
   '#/reports/saved': 'Saved reports',
   '#/reports/schedules': 'Scheduled reports',
   '#/assets': 'Assets',
+  '#/workflow': 'Workflow',
   '#/maintenance': 'Maintenance',
   '#/disposals': 'Disposals',
   '#/categories': 'Categories',
@@ -91,9 +97,12 @@ function crumbs(hash) {
   if (h === '#/tickets/new') return ['Tickets', 'New'];
   if (h === '#/assets/new') return ['Assets', 'New'];
   if (h === '#/recycle' || h === '#/audit') return ['Administration', TITLES[h]];
+  if (h.startsWith('#/workflow')) return ['Workflow'];
   if (h.startsWith('#/reports/')) return ['Reports', TITLES[h]];
   if (h.startsWith('#/settings/')) return ['Settings', TITLES[h]];
   if ((m = h.match(/^#\/users\/(\d+)$/))) return ['Employees', `Employee #${m[1]}`];
+  if (h === '#/kb/pending') return ['Knowledge Base', 'Pending review'];
+  if (h.startsWith('#/kb/')) return ['Knowledge Base', 'Article'];
   return [TITLES[h] ?? 'Tickets'];
 }
 
@@ -107,7 +116,18 @@ function matchRoute(hash) {
   if (route === '#/assets/new') return <AssetForm />;
   if ((m = route.match(/^#\/assets\/(\d+)$/))) return <AssetDetail id={m[1]} />;
   if ((m = route.match(/^#\/users\/(\d+)\/?$/))) return <EmployeeDetail id={m[1]} />;
-  if ((m = route.match(/^#\/kb\/(\d+)$/))) return <KnowledgeBase />;
+  if (route === '#/kb/pending') return <KnowledgeBaseReviewQueue />;
+  if ((m = route.match(/^#\/kb\/(\d+)\/revisions\/(\d+)$/))) return <KnowledgeBaseRevisionDetail id={m[1]} number={m[2]} />;
+  if ((m = route.match(/^#\/kb\/(\d+)\/revisions$/))) return <KnowledgeBaseRevisions id={m[1]} />;
+  if ((m = route.match(/^#\/kb\/(\d+)\/compare$/))) return <KnowledgeBaseCompare id={m[1]} />;
+  if ((m = route.match(/^#\/kb\/(\d+)$/))) return <KnowledgeBaseDetail id={m[1]} />;
+  if ((m = route.match(/^#\/workflow\/rules\/(\d+)\/edit$/))) return <Workflow ruleId={m[1]} ruleEdit />;
+  if ((m = route.match(/^#\/workflow\/rules\/(\d+)$/))) return <Workflow ruleId={m[1]} />;
+  if ((m = route.match(/^#\/workflow\/approvals\/(\d+)$/))) return <Workflow approvalId={m[1]} />;
+  if ((m = route.match(/^#\/workflow\/executions\/(\d+)$/))) return <Workflow executionId={m[1]} />;
+  if (route === '#/workflow/rules') return <Workflow tab="rules" />;
+  if (route === '#/workflow/approvals') return <Workflow tab="approvals" />;
+  if (route === '#/workflow/executions') return <Workflow tab="executions" />;
    if ((m = route.match(/^#\/service-requests\/(\d+)$/))) return <ServiceRequestDetail id={m[1]} />;
    const routes = {
 

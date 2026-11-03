@@ -2,9 +2,8 @@ from django.urls import path
 from rest_framework import routers
 
 from tickets.views import (
-    AutomationRuleViewSet, TicketApprovalViewSet, TicketAttachmentViewSet,
-    TicketCategoryViewSet, TicketHistoryViewSet, TicketKbArticleViewSet,
-    TicketSLAViewSet, TicketViewSet, WorkflowExecutionViewSet,
+    TicketAttachmentViewSet, TicketCategoryViewSet, TicketHistoryViewSet,
+    TicketKbArticleViewSet, TicketSLAViewSet, TicketViewSet,
     category_report, sla_report,
 )
 
@@ -17,11 +16,6 @@ router.register("histories", TicketHistoryViewSet, basename="tickethistory")
 router.register("sla", TicketSLAViewSet, basename="ticketsla")
 router.register("kb-articles", TicketKbArticleViewSet,
                 basename="ticketkbarticle")
-router.register("automation-rules", AutomationRuleViewSet,
-                basename="automationrule")
-router.register("approvals", TicketApprovalViewSet, basename="ticketapproval")
-router.register("workflow-executions", WorkflowExecutionViewSet,
-                basename="workflowexecution")
 router.register("", TicketViewSet, basename="ticket")
 
 urlpatterns = router.urls + [

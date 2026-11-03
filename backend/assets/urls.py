@@ -2,8 +2,10 @@ from rest_framework import routers
 
 from assets.views import (
     AssetAttachmentViewSet, AssetCategoryViewSet, AssetHistoryViewSet,
-    AssetViewSet, AssignmentViewSet, DisposalViewSet, KnowledgeBaseViewSet,
-    KnowledgeBaseFeedbackViewSet, MaintenanceViewSet, VendorViewSet,
+    AssetViewSet, AssignmentViewSet, DisposalViewSet,
+    KnowledgeBaseCategoryViewSet, KnowledgeBaseFeedbackViewSet,
+    KnowledgeBaseTagViewSet, KnowledgeBaseViewSet, MaintenanceViewSet,
+    VendorViewSet,
 )
 
 router = routers.DefaultRouter()
@@ -21,6 +23,10 @@ router.register("knowledge-base", KnowledgeBaseViewSet,
                 basename="knowledgebase")
 router.register("knowledge-base-feedback", KnowledgeBaseFeedbackViewSet,
                 basename="knowledgebasefeedback")
+router.register("knowledge-base-categories", KnowledgeBaseCategoryViewSet,
+                basename="knowledgebasecategory")
+router.register("knowledge-base-tags", KnowledgeBaseTagViewSet,
+                basename="knowledgebasetag")
 router.register("vendors", VendorViewSet, basename="vendor")
 # "" MUST stay last: its detail route would otherwise shadow /histories/.
 router.register("", AssetViewSet, basename="asset")

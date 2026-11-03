@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
@@ -34,7 +34,7 @@ export function TicketForm({ id }) {
     resolution_notes: '',
   });
   const [kbSuggestions, setKbSuggestions] = useState([]);
-  const [kbSearchTimer, setKbSearchTimer] = useState(null);
+  const kbSearchTimer = useRef(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const [globalError, setGlobalError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -75,8 +75,8 @@ export function TicketForm({ id }) {
   // Debounced KB article search while typing title/description.
   useEffect(() => {
     if (!isEdit) {
-      clearTimeout(kbSearchTimer);
-      const timer = setTimeout(async () => {
+      clearTimeout(kbSearchTimer.current);
+      kbSearchTimer.current = setTimeout(async () => {
         const query = (form.title.trim() + ' ' + form.description.trim()).trim();
         if (query.length < 3) {
           setKbSuggestions([]);
@@ -91,10 +91,9 @@ export function TicketForm({ id }) {
           setKbSuggestions([]);
         }
       }, 300);
-      setKbSearchTimer(timer);
     }
-    return () => clearTimeout(kbSearchTimer);
-  }, [form.title, form.description, isEdit, kbSearchTimer]);
+    return () => clearTimeout(kbSearchTimer.current);
+  }, [form.title, form.description, isEdit]);
 
   const submit = async (ev) => {
     ev.preventDefault();
@@ -296,6 +295,8 @@ export function TicketDetail({ id }) {
   const [notes, setNotes] = useState([]);
   const [history, setHistory] = useState(null); // null = not permitted / not loaded
   const [kbArticles, setKbArticles] = useState([]); // linked KB articles
+  const [approvals, setApprovals] = useState([]); // workflow approvals for this ticket
+  const [executions, setExecutions] = useState(isStaff ? [] : null); // staff-only automation history
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [noteBody, setNoteBody] = useState('');
@@ -314,6 +315,7 @@ export function TicketDetail({ id }) {
   const [attToDelete, setAttToDelete] = useState(null);
   const [attBusy, setAttBusy] = useState(false);
   const [newKbSlug, setNewKbSlug] = useState('');
+  const [kbLinkBusy, setKbLinkBusy] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -341,6 +343,24 @@ export function TicketDetail({ id }) {
         const k = await api.get('/tickets/kb-articles/', { params: { ticket: id } });
         setKbArticles(k.data.results ?? k.data ?? []);
       } catch { setKbArticles([]); }
+      // Related workflow approvals. The approval API applies ticket visibility
+      // itself, so employees only receive approvals for tickets they can see.
+      try {
+        const ap = await api.get('/workflow/approval-requests/', { params: { ticket: id } });
+        setApprovals(ap.data.results ?? ap.data ?? []);
+      } catch { setApprovals([]); }
+      // Execution history is IT-staff-only server-side: never request it for
+      // employees, so the section cannot leak or add a guaranteed 403.
+      if (isStaff) {
+        try {
+          const ex = await api.get('/workflow/rule-executions/', {
+            params: { ticket: id, page_size: 10 },
+          });
+          setExecutions(ex.data.results ?? ex.data ?? []);
+        } catch { setExecutions([]); }
+      } else {
+        setExecutions(null);
+      }
     } catch (e) {
       setError(parseApiError(e).global || 'Could not load ticket.');
     } finally {
@@ -479,8 +499,9 @@ export function TicketDetail({ id }) {
 
   const linkKb = async (ev) => {
     ev.preventDefault();
-    if (submitting || !newKbSlug.trim()) return;
-    setSubmitting(true);
+    if (kbLinkBusy || !newKbSlug.trim()) return;
+    setKbLinkBusy(true);
+    setError('');
     try {
       await api.post('/tickets/kb-articles/', { article: newKbSlug.trim(), ticket: id });
       setNewKbSlug('');
@@ -489,9 +510,9 @@ export function TicketDetail({ id }) {
       setKbArticles(k.data.results ?? k.data ?? []);
     } catch (e) {
       const p = parseApiError(e);
-      setGlobalError(p.global || 'Could not link article.');
+      setError(p.global || 'Could not link article.');
     } finally {
-      setSubmitting(false);
+      setKbLinkBusy(false);
     }
   };
 
@@ -674,6 +695,71 @@ export function TicketDetail({ id }) {
         </section>
       )}
 
+      <section className="section">
+        <h4>Approvals</h4>
+        {approvals.length === 0 ? (
+          <p className="muted">No approval requests for this ticket.</p>
+        ) : (
+          <ul className="timeline">
+            {approvals.map((a) => (
+              <li key={a.id}>
+                <div className="row-gap" style={{ alignItems: 'center' }}>
+                  <Badge kind="status" value={a.status} />
+                  <a className="row-title" href={`#/workflow/approvals/${a.id}`}>
+                    Approval #{a.id}: {a.operation_display ?? a.operation}
+                  </a>
+                </div>
+                <div className="muted small">
+                  Requested by {a.requested_by_email ?? `#${a.requested_by}`}
+                  {a.created_at ? ` · ${new Date(a.created_at).toLocaleString()}` : ''}
+                  {a.decided_at ? ` · decided ${new Date(a.decided_at).toLocaleString()}` : ''}
+                </div>
+                {a.reason && <div className="pre-wrap t-note">Reason: {a.reason}</div>}
+                {a.status !== 'pending' && (
+                  <div className="pre-wrap t-note">
+                    {a.decision_comment || 'No decision comment.'}
+                    {a.decided_by_email ? ` — ${a.decided_by_email}` : ''}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {isStaff && executions !== null && (
+        <section className="section">
+          <h4>Automation activity</h4>
+          {executions.length === 0 ? (
+            <p className="muted">No automation rules have run for this ticket.</p>
+          ) : (
+            <ul className="file-list">
+              {executions.map((ex) => (
+                <li key={ex.id} className="file-row">
+                  <div className="file-main">
+                    <div className="file-name">
+                      {ex.rule_name ?? `Rule #${ex.rule}`}{' '}
+                      <Badge
+                        kind="status"
+                        value={ex.success ? 'completed' : 'rejected'}
+                        label={ex.success ? 'Success' : 'Failed'}
+                      />
+                    </div>
+                    <div className="file-meta">
+                      {ex.created_at ? new Date(ex.created_at).toLocaleString() : ''}
+                      {ex.detail ? ` · ${ex.detail}` : ''}
+                    </div>
+                  </div>
+                  <div className="file-actions">
+                    <a className="btn-small" href={`#/workflow/executions/${ex.id}`}>View run</a>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
       {kbArticles.length > 0 && (
         <section className="section">
           <h4>Related knowledge-base articles</h4>
@@ -716,9 +802,9 @@ export function TicketDetail({ id }) {
           {isStaff && (
             <form onSubmit={linkKb} className="form-grid" style={{ marginTop: 'var(--sp-2)' }}>
               <Field label="Link KB article">
-                <input className="input" type="text" value={form.newKbSlug} onChange={(e) => set('newKbSlug')(e.target.value)} placeholder="Article slug (e.g. vpn-reset)" disabled={submitting} />
+                <input className="input" type="text" value={newKbSlug} onChange={(e) => setNewKbSlug(e.target.value)} placeholder="Article slug (e.g. vpn-reset)" disabled={kbLinkBusy} />
               </Field>
-              <button type="submit" className="btn-secondary" disabled={submitting || !form.newKbSlug.trim()}>Link article</button>
+              <button type="submit" className="btn-secondary" disabled={kbLinkBusy || !newKbSlug.trim()}>Link article</button>
             </form>
           )}
         </section>
