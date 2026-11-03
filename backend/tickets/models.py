@@ -385,3 +385,164 @@ class TicketKbArticle(SoftDeleteModel):
 
     def __str__(self):
         return f"#{self.ticket_id} <-> KB#{self.article_id}"
+
+
+class AutomationRule(SoftDeleteModel):
+    """Ticket automation rule (workflows, Phase 19).
+
+    A rule bundles a trigger (an event that starts evaluation), optional
+    conditions (all must match for the ticket at that moment) and an
+    ordered list of actions. Rules are evaluated when the trigger fires
+    (see ``tickets.automation``); every evaluation that reaches the
+    action list records a ``WorkflowExecution`` row.
+
+    Structures are validated at the API layer (serializer); the model
+    keeps plain JSON so managers/admin can inspect without parsing.
+    """
+
+    TRIGGER_CHOICES = [
+        ("ticket_created", "Ticket created"),
+        ("status_changed", "Status changed"),
+        ("priority_changed", "Priority changed"),
+        ("assignment_changed", "Assignee changed"),
+        ("sla_breached", "SLA breached"),
+    ]
+
+    name = models.CharField(max_length=100, unique=True)
+    description = models.TextField(blank=True, default="")
+    trigger = models.CharField(
+        max_length=30, choices=TRIGGER_CHOICES, db_index=True)
+    # [{"field": "priority", "operator": "equals", "value": "critical"}, ...]
+    conditions = models.JSONField(default=list, blank=True)
+    # [{"type": "add_note", "params": {"body": "...", "is_internal": True}}, ...]
+    actions = models.JSONField(default=list, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="automation_rules",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        permissions = [
+            ("manage_automationrule", "Can manage ticket automation rules"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_trigger_display()})"
+
+
+class TicketApproval(SoftDeleteModel):
+    """Approval request for a sensitive ticket operation (Phase 19).
+
+    Lifecycle: ``pending`` -> ``approved``/``rejected`` (terminal). The
+    deciding user must differ from the requester, and a decision applies
+    the requested operation to the ticket (approved) or leaves the ticket
+    untouched (rejected). Approvals respect ticket visibility: employees
+    see approvals on tickets they can already see.
+    """
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+    OPERATION_CHOICES = [
+        ("change_priority", "Change priority"),
+        ("change_status", "Change status"),
+        ("reassign", "Reassign"),
+    ]
+
+    ticket = models.ForeignKey(
+        Ticket, on_delete=models.PROTECT, related_name="approvals")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approvals_requested",
+    )
+    operation = models.CharField(max_length=30, choices=OPERATION_CHOICES)
+    # Shape depends on operation: {"priority": ...} / {"status": ...} /
+    # {"user_id": ...}. Validated at the API layer.
+    context = models.JSONField(default=dict, blank=True)
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default="pending",
+        db_index=True)
+    approver = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approvals_decided",
+    )
+    decision_comment = models.TextField(blank=True, default="")
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["ticket"], name="approval_ticket_idx"),
+            models.Index(fields=["requested_by"],
+                         name="approval_requester_idx"),
+        ]
+        permissions = [
+            ("decide_ticketapproval", "Can approve or reject ticket approvals"),
+        ]
+
+    def __str__(self):
+        return (
+            f"Approval #{self.pk} ticket #{self.ticket_id} "
+            f"{self.operation} ({self.status})")
+
+    @property
+    def is_decided(self):
+        return self.status != "pending"
+
+
+class WorkflowExecution(SoftDeleteModel):
+    """Record of one automation rule evaluation (execution history).
+
+    One row per (rule, event) pair that reached the action list. Reads
+    only, append via ``tickets.automation``.
+    """
+
+    STATUS_CHOICES = [
+        ("success", "Success"),
+        ("failure", "Failure"),
+    ]
+
+    rule = models.ForeignKey(
+        AutomationRule, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="executions")
+    ticket = models.ForeignKey(
+        Ticket, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="workflow_executions")
+    trigger = models.CharField(max_length=30, blank=True, default="")
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default="success")
+    # [{"field": ..., "operator": ..., "value": ...}, ...] as evaluated.
+    matched_conditions = models.JSONField(default=list, blank=True)
+    # Action outcome list eventually surfaced in detail views:
+    # [{"type": ..., "result": ...}, ...]
+    results = models.JSONField(default=list, blank=True)
+    error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["rule"], name="wexec_rule_idx"),
+            models.Index(fields=["ticket"], name="wexec_ticket_idx"),
+            models.Index(fields=["status"], name="wexec_status_idx"),
+            models.Index(fields=["created_at"], name="wexec_created_idx"),
+        ]
+
+    def __str__(self):
+        return (
+            f"Execution #{self.pk} rule={self.rule_id} "
+            f"ticket={self.ticket_id} ({self.status})")

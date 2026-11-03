@@ -17,13 +17,15 @@ from rest_framework.response import Response
 from common.audit import log_action
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from tickets.models import (
-    Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketKbArticle,
-    TicketNote, TicketSLA,
+    AutomationRule, Ticket, TicketApproval, TicketAttachment,
+    TicketCategory, TicketHistory, TicketKbArticle, TicketNote, TicketSLA,
+    WorkflowExecution,
 )
 from tickets.serializers import (
+    AutomationRuleSerializer, TicketApprovalSerializer,
     TicketAttachmentSerializer, TicketCategorySerializer,
     TicketHistorySerializer, TicketKbArticleSerializer, TicketNoteSerializer,
-    TicketSerializer, TicketSLASerializer,
+    TicketSerializer, TicketSLASerializer, WorkflowExecutionSerializer,
 )
 
 
@@ -344,6 +346,12 @@ class TicketViewSet(viewsets.ModelViewSet):
                 obj.save(update_fields=["sla_due_at"])
             _write_history(obj, user, "created", new={"status": "open"})
             log_action(actor=user, action="create", instance=obj)
+            # Automation rules (workflows): run 'ticket_created' rules
+            # inline, inside the transaction, so a rule's own ticket
+            # mutations and its WorkflowExecution rows share this row's
+            # fate.
+            from tickets.automation import run_rules_for_ticket
+            run_rules_for_ticket(obj, "ticket_created")
             # In-app: the assignee learns they own it (the requester is the
             # actor, so they are never notified of their own action).
             _notify_user(obj.assignee, user,
@@ -445,6 +453,16 @@ class TicketViewSet(viewsets.ModelViewSet):
                              f"Ticket #{updated.pk} status: {new_status}",
                              f"{updated.title}\nChanged {old['status']} -> "
                              f"{new_status}", updated)
+            # Automation rules (workflows): fire the trigger matching the
+            # real change(s) made in this update. Executions are recorded
+            # inside the transaction, same fate as the ticket itself.
+            from tickets.automation import run_rules_for_ticket
+            if updated.assignee_id != old["assignee"]:
+                run_rules_for_ticket(updated, "assignment_changed")
+            if updated.priority != old["priority"]:
+                run_rules_for_ticket(updated, "priority_changed")
+            if status_changed:
+                run_rules_for_ticket(updated, "status_changed")
             log_action(actor=self.request.user, action="update",
                        instance=updated, details={"changes": str(changes)})
         # Email AFTER the transaction commits: failures stay swallowed (they
@@ -1091,6 +1109,303 @@ class TicketSLAViewSet(viewsets.ModelViewSet):
         log_action(actor=request.user, action="update", instance=obj,
                    details={"deactivated": True})
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Workflows (Phase 19): automation rules, ticket approvals, executions
+# ---------------------------------------------------------------------------
+
+
+class AutomationRuleViewSet(viewsets.ModelViewSet):
+    """Ticket automation rules.
+
+    IT staff view/run; only System Admins create/edit/delete rules
+    (matches the SLA-config policy). Editing supports every field the
+    engine consumes: trigger, conditions and actions (validated deep in
+    the serializer). Deletion is a soft delete.
+    """
+
+    queryset = AutomationRule.objects.order_by("name")
+    serializer_class = AutomationRuleSerializer
+
+    def get_permissions(self):
+        if self.action in ("create", "update", "partial_update", "destroy"):
+            return [IsSystemAdmin()]
+        return [IsITStaff()]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        p = self.request.query_params
+        if p.get("trigger"):
+            qs = qs.filter(trigger=p["trigger"])
+        if p.get("is_active") in ("true", "1"):
+            qs = qs.filter(is_active=True)
+        elif p.get("is_active") in ("false", "0"):
+            qs = qs.filter(is_active=False)
+        return qs
+
+    def perform_create(self, serializer):
+        obj = serializer.save(created_by=self.request.user)
+        log_action(actor=self.request.user, action="create", instance=obj)
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        log_action(actor=self.request.user, action="update", instance=obj)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        obj.soft_delete(by_user=request.user, reason="rule removed")
+        log_action(actor=request.user, action="soft_delete", instance=obj)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TicketApprovalViewSet(viewsets.ModelViewSet):
+    """Approval requests for sensitive ticket operations.
+
+    Visibility mirrors ticket visibility: staff see all approvals;
+    employees only see approvals on tickets they can already see.
+    Requests are created via POST with {ticket, operation, context};
+    decisions happen only through the approve/reject actions, are
+    performed by IT staff who must not approve their own request, and a
+    decided request can never be decided again (409 on repeats/stale
+    clients).
+    """
+
+    queryset = TicketApproval.objects.select_related(
+        "ticket", "requested_by", "approver").all()
+    serializer_class = TicketApprovalSerializer
+    http_method_names = ["get", "post", "head", "options", "delete"]
+
+    def get_permissions(self):
+        if self.action in ("approve", "reject", "destroy"):
+            return [IsITStaff()]
+        return super().get_permissions()
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = super().get_queryset()
+        is_staff = _is_ticket_staff(user)
+        if not is_staff:
+            qs = qs.filter(
+                ticket__in=_ticket_visible_qs(user).values("id"))
+        p = self.request.query_params
+        if p.get("status"):
+            qs = qs.filter(status=p["status"])
+        if p.get("ticket"):
+            qs = qs.filter(ticket_id=p["ticket"])
+        if p.get("operation"):
+            qs = qs.filter(operation=p["operation"])
+        q = (p.get("q") or "").strip()
+        if q:
+            filt = Q(ticket__title__icontains=q)
+            if q.isdigit():
+                filt |= Q(ticket_id=int(q)) | Q(pk=int(q))
+            qs = qs.filter(filt)
+        if p.get("requested_by"):
+            qs = qs.filter(requested_by_id=p["requested_by"])
+        return qs.order_by("-created_at", "-id")
+
+    def perform_create(self, serializer):
+        obj = serializer.save(requested_by=self.request.user,
+                              status="pending")
+        _write_history(obj.ticket, self.request.user, "approval_requested",
+                       new={"approval_id": obj.pk,
+                            "operation": obj.operation,
+                            "context": obj.context})
+        log_action(actor=self.request.user, action="approval_requested",
+                   instance=obj)
+        # Queue visibility: IT managers / system admins learn there is a
+        # pending approval (the requester is the actor, so they are not
+        # self-notified). Inline with history/audit like other events.
+        approvers = set()
+        from accounts.models import User
+        for u in User.objects.filter(
+                role="it_manager", is_active=True,
+                is_deleted=False).exclude(pk=self.request.user.pk):
+            approvers.add(u.pk)
+        for u in User.objects.filter(is_superuser=True, is_active=True,
+                                     is_deleted=False):
+            approvers.add(u.pk)
+        for aid in approvers:
+            approver = User.objects.get(pk=aid)
+            _notify_user(
+                approver, self.request.user,
+                f"Approval requested for ticket #{obj.ticket_id}",
+                f"{obj.get_operation_display()}: {obj.ticket.title}",
+                obj.ticket)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        if obj.is_decided:
+            return Response(
+                {"detail": "Decided approvals cannot be deleted."},
+                status=409)
+        obj.soft_delete(by_user=request.user, reason="approval withdrawn")
+        _write_history(obj.ticket, request.user, "approval_withdrawn",
+                       old={"approval_id": obj.pk})
+        log_action(actor=request.user, action="approval_withdrawn",
+                   instance=obj)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _decide(self, request, approve):
+        if not _is_ticket_staff(request.user):
+            return Response(
+                {"detail": "Only IT staff can decide approvals."},
+                status=403)
+        obj = self.get_object()
+        comment = (request.data.get("comment") or "").strip()
+        if obj.requested_by_id == request.user.pk:
+            return Response(
+                {"detail": "You cannot decide your own approval request."},
+                status=403)
+        if obj.is_decided:
+            return Response(
+                {"detail": "This approval has already been decided."},
+                status=409)
+        ticket = obj.ticket
+        # Re-check under lock: another approver may have decided while the
+        # client was open (stale request detection).
+        from django.utils import timezone
+        try:
+            with transaction.atomic():
+                locked = (TicketApproval.objects.select_for_update()
+                          .get(pk=obj.pk))
+                if locked.is_decided:
+                    return Response(
+                        {"detail": "This approval has already been decided "
+                                   "by another user."},
+                        status=409)
+                if approve and locked.status == "pending":
+                    self._apply_operation(locked, ticket, request.user)
+                locked.status = "approved" if approve else "rejected"
+                locked.approver = request.user
+                locked.decided_at = timezone.now()
+                locked.decision_comment = comment
+                locked.save(update_fields=[
+                    "status", "approver", "decided_at",
+                    "decision_comment", "updated_at"])
+                _write_history(
+                    locked.ticket, request.user,
+                    "approval_" + ("approved" if approve else "rejected"),
+                    old={"approval_id": locked.pk},
+                    new={"operation": locked.operation,
+                         "approval_status": locked.status,
+                         "comment": comment[:200]})
+                log_action(
+                    actor=request.user,
+                    action="approve" if approve else "reject",
+                    instance=locked,
+                    details={"ticket": locked.ticket_id,
+                             "operation": locked.operation})
+        except TicketApproval.DoesNotExist:
+            from rest_framework.exceptions import NotFound
+            raise NotFound()
+        except ValidationError as exc:
+            return Response(exc.detail, status=400)
+        # Notify the requester about the decision (approver is the actor).
+        _notify_user(
+            locked.requested_by, request.user,
+            f"Approval {'approved' if approve else 'rejected'}: "
+            f"ticket #{locked.ticket_id}",
+            f"{locked.get_operation_display()}\n"
+            + (f"Comment: {comment}" if comment else ""),
+            locked.ticket)
+        return Response(TicketApprovalSerializer(locked).data)
+
+    def _apply_operation(self, approval, ticket, approver):
+        ctx = approval.context or {}
+        if approval.operation == "change_priority":
+            old = ticket.priority
+            ticket.priority = ctx.get("priority")
+            ticket.save(update_fields=["priority", "updated_at"])
+            _write_history(ticket, approver, "updated",
+                           old={"priority": old},
+                           new={"priority": ticket.priority},
+                           note=f"Applied from approval #{approval.pk}")
+            return
+        if approval.operation == "change_status":
+            target = ctx.get("status")
+            if not Ticket.can_transition(ticket.status, target):
+                raise ValidationError(
+                    {"detail": f"Cannot transition "
+                               f"{ticket.status} -> {target}."})
+            old = ticket.status
+            ticket.status = target
+            if target == "resolved":
+                ticket.resolved_at = timezone.now()
+            elif target == "closed":
+                ticket.closed_at = timezone.now()
+            elif target in ("reopened", "in_progress", "open"):
+                ticket.resolved_at = None
+                ticket.closed_at = None
+            ticket.save(update_fields=[
+                "status", "resolved_at", "closed_at", "updated_at"])
+            _write_history(ticket, approver, "updated",
+                           old={"status": old},
+                           new={"status": ticket.status},
+                           note=f"Applied from approval #{approval.pk}")
+            return
+        if approval.operation == "reassign":
+            from accounts.models import User
+            old = ticket.assignee_id
+            user = User.objects.filter(
+                pk=int(ctx.get("user_id")), is_active=True).first()
+            if user is None:
+                raise ValidationError(
+                    {"detail": "Assignee not found or inactive."})
+            ticket.assignee = user
+            ticket.save(update_fields=["assignee", "updated_at"])
+            _write_history(ticket, approver, "updated",
+                           old={"assignee": old},
+                           new={"assignee": user.pk},
+                           note=f"Applied from approval #{approval.pk}")
+            return
+        raise ValidationError({"detail": "Unsupported operation."})
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        return self._decide(request, approve=True)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        return self._decide(request, approve=False)
+
+
+class WorkflowExecutionViewSet(viewsets.ReadOnlyModelViewSet):
+    """Automation execution history (IT staff only).
+
+    Filters: ?rule= ?ticket= ?status=success|failure
+    ?trigger= ?date_from= ?date_to= ?q= (rule name or ticket title).
+    """
+
+    queryset = WorkflowExecution.objects.select_related(
+        "rule", "ticket").all()
+    serializer_class = WorkflowExecutionSerializer
+    permission_classes = [IsITStaff]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        p = self.request.query_params
+        if p.get("rule"):
+            qs = qs.filter(rule_id=p["rule"])
+        if p.get("ticket"):
+            qs = qs.filter(ticket_id=p["ticket"])
+        if p.get("status"):
+            qs = qs.filter(status=p["status"])
+        if p.get("trigger"):
+            qs = qs.filter(trigger=p["trigger"])
+        if p.get("date_from"):
+            qs = qs.filter(created_at__gte=p["date_from"])
+        if p.get("date_to"):
+            qs = qs.filter(created_at__lte=p["date_to"])
+        q = (p.get("q") or "").strip()
+        if q:
+            filt = Q(rule__name__icontains=q) | Q(
+                ticket__title__icontains=q)
+            if q.isdigit():
+                filt |= Q(ticket_id=int(q))
+            qs = qs.filter(filt)
+        return qs.order_by("-created_at", "-id")
 
 
 @api_view(["GET"])

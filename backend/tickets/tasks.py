@@ -67,15 +67,21 @@ def check_sla_escalations(self):
                     _email_utils.send_sla_approaching(ticket)
 
             if now >= sla_cfg.breach_deadline(ticket.sla_due_at):
-                if not ticket.sla_escalations.filter(level="breach").exists():
-                    _send_notification(ticket, "breach",
-                                       f"SLA breached ({ticket.priority})",
-                                       f"Ticket #{ticket.id} has exceeded its "
-                                       f"SLA deadline of {due:%Y-%m-%d %H:%M}. "
-                                       "Immediate action required.")
-                    SLAEscalation.objects.get_or_create(
-                        ticket=ticket, level="breach")
+                esc, created = SLAEscalation.objects.get_or_create(
+                    ticket=ticket, level="breach")
+                if created:
+                    _send_notification(
+                        ticket, "breach",
+                        f"SLA breached ({ticket.priority})",
+                        f"Ticket #{ticket.id} has exceeded its "
+                        f"SLA deadline of {due:%Y-%m-%d %H:%M}. "
+                        "Immediate action required.")
                     _email_utils.send_sla_breached(ticket)
+                    # Automation rules (workflows): fire SLA-breach rules
+                    # once per (ticket, level), guarded by the same row
+                    # that prevents duplicate breach notifications.
+                    from tickets.automation import run_rules_for_ticket
+                    run_rules_for_ticket(ticket, "sla_breached")
 
         run.status = "succeeded"
         run.success = True
