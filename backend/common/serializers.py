@@ -124,11 +124,15 @@ class UserNotificationPreferenceSerializer(serializers.ModelSerializer):
         ]
 
     def validate_categories(self, value):
-        """Ensure categories is a dict of str->bool."""
+        """Ensure categories is a dict of str->bool with known keys only."""
         if not isinstance(value, dict):
             raise serializers.ValidationError("Categories must be an object.")
+        allowed = {key for key, _label in UserNotificationPreference.EMAIL_CATEGORIES}
         for k, v in value.items():
             if not isinstance(k, str) or not isinstance(v, bool):
                 raise serializers.ValidationError(
                     "Each category must map to a boolean.")
+            if k not in allowed:
+                raise serializers.ValidationError(
+                    f"Unknown category '{k}'. Allowed: {sorted(allowed)}.")
         return value

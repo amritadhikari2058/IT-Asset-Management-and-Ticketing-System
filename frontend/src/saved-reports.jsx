@@ -111,7 +111,7 @@ export function SavedReports() {
   const [form, setForm] = useState({
     report_type: 'ticket_category', name: '', description: '', filters: '{}', is_shared: false,
   });
-  const setField = (k) => (v) => setForm((p) => ({ ...p, [k]: v }));
+  const setField = (k) => (e) => setForm((p) => ({ ...p, [k]: e?.target?.value ?? e }));
 
   const openForm = (report = null) => {
     setEditing(report ? { id: report.id } : null);

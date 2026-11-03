@@ -108,6 +108,9 @@ INSTALLED_APPS = [
     'accounts',
     'assets',
     'tickets',
+    'services',
+    'inventory',
+    'workflow',
 ]
 
 # Celery configuration

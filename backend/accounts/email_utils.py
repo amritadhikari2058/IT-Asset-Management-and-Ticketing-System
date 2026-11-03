@@ -13,12 +13,16 @@ import logging
 
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
-from django.core.mail import send_mail
+from django.core.mail import EmailMessage, send_mail
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from django.utils import timezone
 
 from common.models import Notification
+from common.notifications import (
+    MAINTENANCE_CATEGORY, SLA_CATEGORY, email_enabled_for,
+    scheduled_report_delivery_enabled,
+)
 from tickets.models import Ticket, TicketSLA
 
 logger = logging.getLogger(__name__)
@@ -56,13 +60,29 @@ def _cache():
     return cache
 
 
-def send_ticket_notification(to_email, subject, body, ticket_id=None):
+def send_ticket_notification(to_email, subject, body, ticket_id=None, user=None, category=None):
     """Send a ticket notification email (deduped, best-effort).
 
-    Returns True when the mail was handed to the backend, False when it
-    was skipped (duplicate) or failed. Failures never raise into callers.
+    The outbound decision is centralized in ``common.notifications`` so the
+    global + category preference switches are applied exactly once per send.
+
+    - ``user`` is the preference-aware recipient account (ticket events,
+      SLA, maintenance all pass it through here).
+    - ``category`` is the notification category being delivered (``None``
+      for global/master-only ticket acknowledgements).
+
+    Scheduled report deliveries do NOT go through this helper: they use the
+    explicit scheduled-report recipient policy instead.
+
+    Returns True when the mail was handed to the backend, False when it was
+    skipped (preferences / duplicate) or failed. Failures never raise into
+    callers.
     """
     if not to_email:
+        return False
+    if user is not None and not email_enabled_for(user, category=category):
+        # User opted out (master switch or this category): skip outbound
+        # email. In-app notifications are unaffected (see _notify_user).
         return False
     key = _dedup_key(ticket_id, subject, to_email)
     cache = _cache()
@@ -207,7 +227,11 @@ def check_token(user, token):
 
 
 def send_password_reset_email(user):
-    """Send a password-reset email (generic content, no account leak)."""
+    """Send a password-reset email (generic content, no account leak).
+
+    ESSENTIAL / security transactional email: never suppressed by user
+    notification preferences (central policy in ``common.notifications``).
+    """
     token = default_token_generator.make_token(user)
     uid = urlsafe_base64_encode(force_bytes(user.pk))
     link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
@@ -222,7 +246,11 @@ def send_password_reset_email(user):
 
 
 def send_verification_email(user):
-    """Send an email-verification email with uid/token link."""
+    """Send an email-verification email with uid/token link.
+
+    ESSENTIAL / security transactional email: never suppressed by user
+    notification preferences (central policy in ``common.notifications``).
+    """
     token = default_token_generator.make_token(user)
     uid = urlsafe_base64_encode(force_bytes(user.pk))
     link = f"{settings.FRONTEND_URL}/verify-email?uid={uid}&token={token}"
@@ -255,7 +283,8 @@ def send_sla_approaching(ticket):
         recipient = ticket.assignee if ticket.assignee_id else ticket.requester
         if recipient is None or not getattr(recipient, "email", None):
             return False
-        if not getattr(recipient, "receive_ticket_emails", True):
+        if not email_enabled_for(recipient, category=SLA_CATEGORY):
+            # Centralized preference check (master switch + sla_escalation).
             return False
         return send_ticket_notification(
             recipient.email, subject, body, ticket_id=ticket.pk)
@@ -281,7 +310,8 @@ def send_sla_breached(ticket):
         recipient = ticket.assignee if ticket.assignee_id else ticket.requester
         if recipient is None or not getattr(recipient, "email", None):
             return False
-        if not getattr(recipient, "receive_ticket_emails", True):
+        if not email_enabled_for(recipient, category=SLA_CATEGORY):
+            # Centralized preference check (master switch + sla_escalation).
             return False
         return send_ticket_notification(
             recipient.email, subject, body, ticket_id=ticket.pk)
@@ -310,7 +340,8 @@ def send_maintenance_reminder(maintenance):
             recipient = maintenance.created_by
         if recipient is None or not recipient.email:
             return False
-        if not getattr(recipient, "receive_ticket_emails", True):
+        if not email_enabled_for(recipient, category=MAINTENANCE_CATEGORY):
+            # Centralized preference check (master switch + maintenance).
             return False
         return send_ticket_notification(
             recipient.email, subject, body,
@@ -318,4 +349,31 @@ def send_maintenance_reminder(maintenance):
     except Exception as exc:
         logger.warning("Maintenance reminder notification failed: %s",
                       type(exc).__name__)
+        return False
+
+
+def send_scheduled_report_email(to_email, subject, body, filename, content, content_type):
+    """Send one scheduled-report delivery email with file attachment.
+
+    Best-effort: failures are logged (domain + exception type only) and never
+    raised into the delivery loop.
+
+    Recipient policy: scheduled reports are delivered to the explicit
+    recipient list configured on the schedule (IT / staff authored) and do
+    NOT inherit unrelated per-user notification categories. The decision is
+    centralized via ``common.notifications.scheduled_report_delivery_enabled``.
+    """
+    if not to_email or not scheduled_report_delivery_enabled():
+        return False
+    try:
+        email = EmailMessage(
+            subject, body, settings.DEFAULT_FROM_EMAIL, [to_email])
+        email.attach(filename, content, content_type)
+        email.send(fail_silently=False)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        domain = (to_email or "").split("@")[-1]
+        logger.warning(
+            "Scheduled report email failed to %s via %s: %s",
+            domain, settings.EMAIL_HOST or "(local)", type(exc).__name__)
         return False

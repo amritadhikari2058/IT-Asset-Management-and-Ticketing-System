@@ -156,6 +156,7 @@ celery -A config.celery beat --loglevel=info
 Run worker and beat as separate systemd services (or Kubernetes
 Deployments). Beat runs the periodic tasks:
 - `check_sla_escalations` every 5 minutes
+- `run_scheduled_reports` every 5 minutes
 - `check_maintenance_reminders` hourly
 - `process_inbound_mailbox` every minute (if `INBOUND_MAILBOX_ENABLED=true`)
 

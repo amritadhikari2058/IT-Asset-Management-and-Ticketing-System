@@ -80,6 +80,7 @@ notifications, and the Celery/Redis scheduled-task layer.
 |---|---|---|
 | `common.tasks.process_inbound_mailbox` | every 60 s | Poll support mailbox, ingest unseen mail |
 | `tickets.tasks.check_sla_escalations` | every 300 s | SLA approach/breach notifications |
+| `common.tasks.run_scheduled_reports` | every 300 s | Render and deliver scheduled reports |
 | `assets.tasks.check_maintenance_reminders` | hourly | Before-due / overdue maintenance reminders |
 
 ### Run locally (development)

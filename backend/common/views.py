@@ -23,7 +23,7 @@ from rest_framework.response import Response
 from common.audit import log_action
 from common.models import (AuditLog, BackgroundTaskRun, EmailProcessing,
                            Notification, SavedReport, ScheduledReport,
-                           ScheduledReportRun)
+                           ScheduledReportRun, UserNotificationPreference)
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from common.serializers import (
     AuditLogSerializer, NotificationSerializer, RecycleBinEntrySerializer,
@@ -32,6 +32,7 @@ from common.serializers import (
     UserNotificationPreferenceSerializer,
 )
 from common.exports import EXPORT_RENDERER_CLASSES
+from tickets.views import _is_ticket_staff
 
 logger = logging.getLogger(__name__)
 
@@ -741,9 +742,13 @@ class ScheduledReportRunViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 def _deliver_scheduled_report(sr):
-    """Deliver one scheduled report now (used by task + retry action)."""
+    """Deliver one scheduled report now (used by task + retry action).
+
+    Recipient policy: recipients are the explicit list configured on the
+    schedule (IT / staff authored) and do not inherit per-user notification
+    categories — see ``common.notifications.scheduled_report_delivery_enabled``.
+    """
     from django.db import transaction
-    from django.core.mail import EmailMessage
     from common.models import ScheduledReportRun
 
     now = timezone.now()
@@ -754,6 +759,8 @@ def _deliver_scheduled_report(sr):
 
     from tickets.views import category_report, sla_report
     from rest_framework.test import APIRequestFactory
+    from accounts import email_utils as _email_utils
+    from common.tasks import _advance_next_run, _render_report
 
     factory = APIRequestFactory()
     req = factory.get("/api/tickets/reports/by-category/",
@@ -777,25 +784,15 @@ def _deliver_scheduled_report(sr):
         "pdf": "application/pdf",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }.get(fmt, "application/octet-stream")
+    subject = f"Scheduled report: {sr.saved_report.name}"
+    body = "Please find the attached scheduled report."
 
     recipients = sr.recipients or []
     sent_count = 0
     for to_email in recipients:
-        try:
-            email = EmailMessage(
-                subject=f"Scheduled report: {sr.saved_report.name}",
-                body="Please find the attached scheduled report.",
-                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-                to=[to_email],
-            )
-            email.attach(filename, content, content_type)
-            email.send(fail_silently=False)
+        if _email_utils.send_scheduled_report_email(
+                to_email, subject, body, filename, content, content_type):
             sent_count += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Scheduled report email failed to %s: %s",
-                to_email.split("@")[-1] if to_email else "?",
-                type(exc).__name__)
 
     with transaction.atomic():
         run.status = "succeeded"

@@ -3,10 +3,11 @@
 Single source of truth for feature status. Update it whenever a feature is
 completed or its scope changes.
 
-Last reviewed: Phase 12 complete — KB usefulness dashboard, notification
-preferences, asset vendor management, scheduled report XLSX/PDF/DOCX +
-retry, performance indexes, N+1 fix. All core test suites pass; frontend
-build and lint clean.
+Last reviewed: Phase 14 complete — comprehensive product readiness assessment.
+Fixed critical frontend defects (unreachable Self-Service/Employees nav routes,
+double /api/ API prefix breaking calls, unsupported EmptyState prop), aligned
+beat schedule documentation with settings.py (added run-scheduled-reports),
+verified all backend and frontend tests pass. No deployment yet.
 
 ## How to read this document
 
@@ -111,10 +112,13 @@ Verification: `manage.py check` clean; focused backend suites
 - [x] In-app notifications for ticket and asset assignment/status events.
 - [x] Ticket event emails (creation, assignment, status change) honoring user preference.
 - [x] Console/locmem backend for development; SMTP settings via environment.
+- [x] Notification preferences beyond ticket email opt-out — full per-category
+  email preferences page at `#/settings/notifications`, backed by
+  `common.notifications` central enforcement (`UserNotificationPreference`).
 - [ ] Notification UI consistency pass (dedupe wording, entity links, filters).
 - [ ] Real SMTP delivery verification against a production-like provider.
-- [ ] Configurable email settings in-app (currently environment variables only).
-- [ ] Notification preferences beyond ticket email opt-out.
+- [ ] Configurable email settings in-app (currently environment variables only
+  for SMTP; per-user/category opt-out is configurable in-app).
 
 ## 5b. Operational automation (in progress)
 
@@ -229,7 +233,9 @@ Verification: `manage.py check` clean; focused backend suites
 - Celery task `common.tasks.run_scheduled_reports` (beat every 5 min) —
   renders saved report, exports CSV/JSON, emails recipients, records
   success/failure, advances next run. Idempotent per run row.
-- Frontend: schedule management available on saved reports.
+- Frontend: `#/reports/schedules` page — IT staff only. Create/edit/enable/
+  disable/delete schedules from saved reports, execution history per
+  schedule, retry failed runs, next-run display.
 
 ### 11E. Email-to-ticket (already implemented — Phase 5b/7)
 - IMAP polling via `common.tasks.process_inbound_mailbox`, parser in
@@ -292,9 +298,20 @@ Verification: `manage.py check` clean; focused backend suites
 - `common.UserNotificationPreference` model — per-user email master switch
   + per-category opt-in map (ticket assignment, status change, reply, SLA
   escalation, maintenance reminder, asset assignment, system alert).
+- `common/notifications.py` central enforcement module —
+  `email_enabled_for(user, category=None)`, `get_user_preferences(user)`,
+  `scheduled_report_delivery_enabled()`; essential categories
+  (verification/password-reset/security) never suppressed; missing prefs
+  default to enabled; category opt-out never blocks unrelated categories.
+- `accounts/email_utils.send_ticket_notification()` gated via central helper;
+  `send_scheduled_report_email()` for scheduled report delivery.
 - `UserNotificationPreferenceViewSet` — users own their preferences;
   IT staff can view all for auditing.
-- Frontend: preferences page at `#/settings/notifications`.
+- Serializer `validate_categories` rejects unknown category keys.
+- Frontend: preferences page at `#/settings/notifications` — load on open,
+  global + per-category toggles, save via PATCH/POST, loading/success/error
+  states, keeps unsaved changes on API failure; wired into App nav and
+  linked from Profile email preferences panel.
 
 ### 12D. Asset vendor management (complete)
 - `assets.Vendor` model — name, contact person, email, phone, address,
@@ -312,4 +329,109 @@ Verification: `manage.py check` clean; focused backend suites
 - Scheduled report task uses `EmailMessage` with file attachment (was
   `send_mail` text-only).
 
+## Phase 13 — Frontend completion and centralized preference enforcement (complete)
+
+### 13A. Notification preferences frontend (complete)
+- New page `frontend/src/settings.jsx` — `NotificationSettings` component at
+  `#/settings/notifications`, accessible from user account/settings area.
+- Loads `GET /api/common/notification-preferences/` on open, filters by
+  `user.id`, falls back to sensible defaults (all categories enabled) when no
+  preference record exists.
+- Global email master switch + per-category toggles for all 7 backend
+  categories (ticket_assignment, ticket_status_change, ticket_reply,
+  sla_escalation, maintenance_reminder, asset_assignment, system_alert).
+- Save via `PATCH /api/common/notification-preferences/<id>/` (existing record)
+  or `POST /api/common/notification-preferences/` (new record).
+- Loading/success/error states; keeps unsaved edits on API failure.
+- Users can only edit their own preferences (enforced by backend viewset).
+- Wired into `App.jsx` NAV (all users), TITLES, crumbs, and linked from the
+  Profile page email preferences panel.
+- Frontend tests: `frontend/src/settings.test.jsx` (6 tests).
+
+### 13B. Scheduled report management frontend (complete)
+- New page `frontend/src/scheduled-reports.jsx` — `ScheduledReports` component
+  at `#/reports/schedules` (IT staff only, matches backend `_is_ticket_staff`).
+- List via `GET /api/common/scheduled-reports/`; create from saved report
+  (daily/weekly/monthly, comma-separated recipients, CSV/XLSX/PDF/DOCX
+  format, enabled toggle).
+- Enable/disable via `PATCH`, edit via `PATCH`, delete via `DELETE`.
+- `next_run_at` display; filterable list (search, schedule, format, enabled).
+- Execution history via `GET /api/common/scheduled-report-runs/` filtered
+  client-side by schedule; status badge (succeeded/failed), error summary,
+  recipient count.
+- Retry failed via `POST /api/common/scheduled-report-runs/<id>/retry/`;
+  old run marked "skipped" to avoid duplicate delivery.
+- Consistent with Saved Reports page design system (PageHeader, DataTable,
+  Pager, Modal, ConfirmDialog, Badge, Field).
+- Frontend tests: `frontend/src/scheduled-reports.test.jsx` (5 tests).
+
+### 13C. Centralized backend preference enforcement (complete)
+- `backend/common/notifications.py` — `ESSENTIAL_EMAIL_CATEGORIES`
+  (email_verification, password_reset, security_alert); category constants;
+  `get_user_preferences(user)`; `email_enabled_for(user, category=None)`;
+  `scheduled_report_delivery_enabled()` → True.
+- Master switch = `UserNotificationPreference.email_enabled` OR legacy
+  `User.receive_ticket_emails`; missing prefs → enabled (defaults).
+- Essential categories always True (password reset/verification/security
+  emails not suppressed); category None → master switch only.
+- Ticket email mapping: creation → category None (master); assignee →
+  `ticket_assignment`; status change → `ticket_status_change`; SLA →
+  `sla_escalation`; maintenance → `maintenance_reminder`.
+- `accounts/email_utils.send_ticket_notification()` gated via central helper
+  before dedup; `send_scheduled_report_email()` uses
+  `scheduled_report_delivery_enabled` + `EmailMessage` attach.
+- Serializer `validate_categories` rejects unknown category keys.
+- `_wants_ticket_email` wrappers in `tickets/views.py` and `common/inbound.py`
+  delegate to central helper.
+- Backend tests: `UserNotificationPreferenceTests` (8 tests) and
+  `ScheduledReportTests` (9 tests) — all pass.
+
+### 13D. Verification
+- Backend: `manage.py check` clean; `UserNotificationPreferenceTests` +
+  `test_scheduled_reports` = 17 tests OK; `TicketNotificationTests` = 9 tests
+  OK; combined regression run = 92 tests OK.
+- Frontend: `lint` clean (warnings only, pre-existing); `build` succeeds;
+  `settings.test.jsx` (6) + `scheduled-reports.test.jsx` (5) + `profile.test.jsx` (6) = 18 tests OK.
+- No new migrations; no DB resets; no credentials invented; external email
+  delivery not claimed verified (locmem backend used in tests).
+
+## Phase 14 — Product readiness assessment and gap closure (complete)
+
+### 14A. Critical frontend defects fixed
+- `#/self-service` route unreachable from nav: NAV hash `#/self-service` did not
+  match routes map key `#self-service`. Unified to `#/self-service` so the
+  Self-Service page is reachable from the sidebar.
+- `#/users` (Employees) route unreachable from nav: NAV hash `#users` did not
+  match routes map key `#/users`. Unified to `#/users` so the Employees page
+  is reachable from the sidebar.
+- Double `/api/` prefix breaking API calls: `api.js` baseURL is already
+  `http://127.0.0.1:8000/api`, but several pages prefixed paths with `/api/`,
+  producing `/api/api/...` URLs that match no Django route. Fixed in:
+  `notifications.jsx` (notifications list/mark-all-read/unread-count/download),
+  `scheduled-reports.jsx` (saved-reports, scheduled-report-runs),
+  `settings.jsx` (notification-preferences GET/POST/PATCH),
+  `self-service.jsx` (tickets/assets/knowledge-base).
+- `EmptyState` called with unsupported `variant="error"` prop in
+  `self-service.jsx` (3 occurrences): prop removed; `EmptyState` only accepts
+  `title`/`hint`/`action`.
+- Removed unused `Notifications` import from `self-service.jsx`.
+
+### 14B. Documentation alignment
+- `backend/docs/DEPLOYMENT.md` §7 and `backend/docs/EMAIL_OPS.md` §4: added
+  `run_scheduled_reports` / `common.tasks.run_scheduled_reports` every 5 min
+  to the Celery beat task list, matching `settings.py` `CELERY_BEAT_SCHEDULE`
+  (previously documented only 3 of 4 tasks).
+
+### 14C. Verification
+- Backend: 40 tests OK
+  (`UserNotificationPreferenceTests` + `test_scheduled_reports` +
+  `TicketNotificationTests` + `role_security_tests`). `manage.py check` clean.
+- Frontend: 18 tests OK (settings 6 + scheduled-reports 5 + profile 6);
+  `lint` clean (warnings only, pre-existing); `build` succeeds.
+- All Phase 13 uncommitted changes preserved; no migrations added/deleted;
+  no DB resets; no credentials invented.
+
 ## Known blockers / decisions
+
+## Phase 16 � Advanced Asset Inventory and Stock Management
+Backend core implemented (inventory app). Frontend/tests pending.
