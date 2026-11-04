@@ -8,10 +8,13 @@ deletes an existing ``KnowledgeBaseArticleRevision`` row.
 import difflib
 import re
 
+from django.db import models
 from django.db.models import Max
 
+from accounts import email_utils
 from assets.models import KnowledgeBaseArticle, KnowledgeBaseArticleRevision
 from common.audit import log_action
+from common.models import Notification
 
 # Fields whose change creates a new content revision. Status-only workflow
 # transitions bump ``version`` but deliberately do not add revision noise.
@@ -252,3 +255,104 @@ def revision_changes(old_rev, new_rev):
             "new": new_rev.status or "",
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base workflow notifications (in-app + preference-gated email).
+#
+# In-app Notification rows are always delivered (project policy: in-app
+# notifications are independent of email preferences). Email is best-effort
+# and gated by the ``kb_review`` category preference via
+# ``accounts.email_utils.send_kb_notification``. All helpers are designed to
+# be called from ``transaction.on_commit()`` so a rolled-back transaction
+# never produces a notification.
+# ---------------------------------------------------------------------------
+
+def _active_it_staff():
+    """Active, non-deleted IT staff / admins eligible to review KB articles."""
+    from accounts.models import User
+    return User.objects.filter(
+        models.Q(role__in=("system_admin", "it_manager", "it_support"))
+        | models.Q(is_superuser=True),
+        is_active=True,
+        is_deleted=False,
+    )
+
+
+def _kb_notify(recipient, actor, title, body, article):
+    """Create an in-app KB notification.
+
+    Never notifies the actor of their own action, never inactive/deleted
+    recipients. Mirrors the ticket in-app notification convention.
+    """
+    if recipient is None or not getattr(recipient, "pk", None):
+        return None
+    actor_pk = getattr(actor, "pk", None)
+    if actor_pk is not None and recipient.pk == actor_pk:
+        return None
+    if not getattr(recipient, "is_active", True):
+        return None
+    if getattr(recipient, "is_deleted", False):
+        return None
+    return Notification.objects.create(
+        recipient=recipient, title=title[:255], body=body or "",
+        entity_type="assets.KnowledgeBaseArticle", object_id=str(article.pk))
+
+
+def notify_submitted_for_review(article, actor, note=""):
+    """Notify IT staff that an article was submitted for review.
+
+    Only fired on a real transition into ``pending_review`` (caller gates
+    on status change) so repeated submissions do not spam reviewers.
+    """
+    title = f"KB article submitted for review: {article.title}"
+    body = (
+        f"'{article.title}' (revision {article.revision_number}) was "
+        f"submitted for review by {user_label(actor)}. "
+        f"Review it in the Knowledge Base."
+    )
+    if note.strip():
+        body += f"\nNote: {note.strip()}"
+    for recipient in _active_it_staff():
+        _kb_notify(recipient, actor, title, body, article)
+
+
+def notify_article_approved(article, actor, reviewer, comment=""):
+    """Notify the article author that their article was approved."""
+    title = f"KB article approved: {article.title}"
+    body = f"'{article.title}' was approved by {user_label(reviewer)}."
+    if comment.strip():
+        body += f"\nComment: {comment.strip()}"
+    if article.author:
+        _kb_notify(article.author, actor, title, body, article)
+        if article.author.email:
+            email_utils.send_kb_notification(
+                article.author.email, title, body,
+                article=article, user=article.author)
+
+
+def notify_article_rejected(article, actor, reviewer, comment):
+    """Notify the article author that their article was rejected (with reason)."""
+    title = f"KB article rejected: {article.title}"
+    body = (
+        f"'{article.title}' was rejected by {user_label(reviewer)} and "
+        f"returned to draft.\nReason: {comment}"
+    )
+    if article.author:
+        _kb_notify(article.author, actor, title, body, article)
+        if article.author.email:
+            email_utils.send_kb_notification(
+                article.author.email, title, body,
+                article=article, user=article.author)
+
+
+def notify_article_published(article, actor):
+    """Notify the article author that their article was published."""
+    title = f"KB article published: {article.title}"
+    body = f"'{article.title}' (revision {article.revision_number}) is now published."
+    if article.author:
+        _kb_notify(article.author, actor, title, body, article)
+        if article.author.email:
+            email_utils.send_kb_notification(
+                article.author.email, title, body,
+                article=article, user=article.author)

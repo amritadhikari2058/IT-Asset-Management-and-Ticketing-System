@@ -20,8 +20,8 @@ from django.utils import timezone
 
 from common.models import Notification
 from common.notifications import (
-    MAINTENANCE_CATEGORY, SLA_CATEGORY, email_enabled_for,
-    scheduled_report_delivery_enabled,
+    KB_REVIEW_CATEGORY, MAINTENANCE_CATEGORY, SLA_CATEGORY,
+    email_enabled_for, scheduled_report_delivery_enabled,
 )
 from tickets.models import Ticket, TicketSLA
 
@@ -98,6 +98,41 @@ def send_ticket_notification(to_email, subject, body, ticket_id=None, user=None,
         ok = True
     except Exception as exc:
         logger.warning("Ticket email send failed: %s", type(exc).__name__)
+    try:
+        cache.set(key, True, int(getattr(
+            settings, "EMAIL_DEDUP_TTL_SECONDS", 3600)))
+    except Exception:
+        pass
+    return ok
+
+
+def send_kb_notification(to_email, subject, body, article=None, user=None):
+    """Send a Knowledge Base review/publication email (deduped, best-effort).
+
+    Mirrors ``send_ticket_notification``: the outbound decision is
+    centralized in ``common.notifications`` so the global + ``kb_review``
+    category preference switches are applied exactly once per send. Failures
+    are logged without secrets and never raise into callers.
+    """
+    if not to_email:
+        return False
+    if user is not None and not email_enabled_for(user, category=KB_REVIEW_CATEGORY):
+        return False
+    article_id = article.pk if article is not None else None
+    key = _dedup_key(article_id, subject, to_email)
+    cache = _cache()
+    try:
+        if cache.get(key):
+            logger.info("Duplicate KB email suppressed: %s", subject)
+            return False
+    except Exception:
+        pass  # cache unavailable -> fail open and send anyway
+    ok = False
+    try:
+        _send(subject, body, to_email)
+        ok = True
+    except Exception as exc:
+        logger.warning("KB email send failed: %s", type(exc).__name__)
     try:
         cache.set(key, True, int(getattr(
             settings, "EMAIL_DEDUP_TTL_SECONDS", 3600)))

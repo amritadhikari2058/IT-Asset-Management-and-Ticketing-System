@@ -35,6 +35,10 @@ action-level guards. Frontend hiding is UX only; backend enforces.
 | Recycle Bin: list / inspect / restore | yes | no | no | no |
 | Permanent (hard) delete — any entity, incl. recycle bin | yes (+confirm+reason+audit) | no | no | no |
 | Bulk hard delete | NOBODY (no such endpoint) | — | — | — |
+| Search / view published KB articles (`/api/common/knowledge-base/`) | yes | yes | yes | yes |
+| Export knowledge_base dataset (CSV/XLSX/PDF/DOCX) | yes | yes | yes | yes |
+| Submit article for review / approve / reject / publish / archive KB | yes | yes | yes | no (403) |
+| View KB revision history, compare, restore | yes | yes | yes | no (403) |
 
 \* IT Support creating a user with role admin/manager is silently downgraded
 to employee and audited.

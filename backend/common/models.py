@@ -192,19 +192,39 @@ class Notification(SoftDeleteModel):
 
 
 class PrivacyErasureRequest(models.Model):
-    """System-Admin-only privacy erasure workflow (initial version).
+    """Privacy erasure workflow with mandatory two-person approval.
 
-    Not a GDPR-compliance claim. Flow: create (reason + scope + confirm) ->
-    review dependencies/retention -> execute or reject. The audit log records
-    request + outcome WITHOUT the erased personal data (IDs + scope only).
-    ``reviewed_by``/approval fields exist so two-person approval can be added
-    later; they are not enforced yet.
+    Not a GDPR-compliance claim. Flow:
+
+        create (reason + scope + confirm)
+            -> pending_review
+            -> approve (reviewer != requester) -> approved
+            -> execute (confirmation) -> executing -> completed/failed
+            -> reject (reviewer != requester) -> rejected
+
+    Any state -> cancelled. Execution requires an *approved* decision.
+    The audit log records request + outcome WITHOUT the erased personal data
+    (IDs + scope only). Impact assessment is stored (IDs/counts only, no PII)
+    and is recalculated immediately before execution; a material change after
+    approval invalidates the approval.
+
+    Additive fields preserve the existing schema (pending/executed/rejected
+    keep working); new statuses are opt-in via the approve/execute actions.
     """
 
     STATUS_CHOICES = [
-        ("pending", "Pending"),
-        ("executed", "Executed"),
+        ("pending_review", "Pending review"),
+        ("approved", "Approved"),
         ("rejected", "Rejected"),
+        ("execution_pending", "Execution pending"),
+        ("executing", "Executing"),
+        ("completed", "Completed"),
+        ("failed", "Failed"),
+        ("cancelled", "Cancelled"),
+        # Legacy statuses retained for backward compatibility with existing
+        # requests created before dual approval was mandatory.
+        ("pending", "Pending (legacy)"),
+        ("executed", "Executed (legacy)"),
     ]
 
     entity_type = models.CharField(max_length=100)
@@ -212,16 +232,42 @@ class PrivacyErasureRequest(models.Model):
     scope = models.TextField()  # which data to erase, e.g. "email, name, phone"
     reason = models.TextField()
     status = models.CharField(
-        max_length=20, choices=STATUS_CHOICES, default="pending")
+        max_length=20, choices=STATUS_CHOICES, default="pending_review")
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="erasure_requests")
-    reviewed_by = models.ForeignKey(  # reserved for future approval step
+    reviewed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="erasure_reviews")
     created_at = models.DateTimeField(auto_now_add=True)
     decided_at = models.DateTimeField(null=True, blank=True)
     result = models.JSONField(default=dict, blank=True)
+
+    # ---- Dual approval fields ----
+    review_decision = models.CharField(
+        max_length=20, blank=True, default="",
+        help_text="approved | rejected | cancelled")
+    review_reason = models.TextField(blank=True, default="",
+                                     help_text="Reviewer's decision reason.")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    # Snapshot of the impact assessment taken at approval time. Used to
+    # detect material changes before execution so a stale approval can be
+    # invalidated.
+    impact_assessment = models.JSONField(default=dict, blank=True)
+    impact_assessed_at = models.DateTimeField(null=True, blank=True)
+
+    # ---- Safe execution fields ----
+    execution_started_at = models.DateTimeField(null=True, blank=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+    execution_outcome = models.CharField(
+        max_length=20, blank=True, default="",
+        help_text="completed | failed | cancelled")
+    execution_error = models.TextField(
+        blank=True, default="",
+        help_text="Sanitized failure details (no PII).")
+    execution_lock = models.BooleanField(
+        default=False,
+        help_text="Set while an execution is in flight to prevent concurrency.")
 
     class Meta:
         ordering = ["-created_at"]
@@ -442,6 +488,7 @@ class UserNotificationPreference(SoftDeleteModel):
         ("maintenance_reminder", "Maintenance reminder"),
         ("asset_assignment", "Asset assigned or returned"),
         ("system_alert", "System alerts"),
+        ("kb_review", "Knowledge Base review / publication"),
     ]
 
     user = models.OneToOneField(

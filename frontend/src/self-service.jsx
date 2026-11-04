@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from './api';
-import { PageHeader, EmptyState, Panel, PanelHeader, PanelPad, Link } from './components';
+import { PageHeader, EmptyState, Panel, PanelHeader, PanelPad, Link, ExportDialog } from './components';
 import { NotifBadge } from './notifications';
 import { useAuth } from './auth';
 
@@ -53,9 +53,10 @@ export function SelfService() {
   const [kbResults, setKbResults] = useState([]);
   const [kbLoading, setKbLoading] = useState(false);
   const [kbError, setKbError] = useState('');
+  const [exportOpen, setExportOpen] = useState(false);
 
-  const loadKb = async () => {
-    if (!kbQuery.trim()) {
+  const loadKb = async (query = kbQuery) => {
+    if (!query.trim()) {
       setKbResults([]);
       return;
     }
@@ -63,7 +64,7 @@ export function SelfService() {
     setKbError('');
     try {
       const r = await api.get('/common/knowledge-base/', {
-        params: { q: kbQuery },
+        params: { q: query },
       });
       setKbResults(r.data.results ?? r.data ?? []);
     } catch (e) {
@@ -180,11 +181,8 @@ export function SelfService() {
               Created {new Date(a.created_at).toLocaleDateString()}
             </div>
             <a
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                alert(`Article: ${a.title}\n\n${a.content?.slice(0, 200)}…`);
-              }}
+              href={`#/kb/${a.id}`}
+              className="row-title"
             >
               Read article
             </a>
@@ -267,15 +265,32 @@ export function SelfService() {
                 value={kbQuery}
                 onChange={(e) => {
                   setKbQuery(e.target.value);
-                  loadKb();
+                  loadKb(e.target.value);
                 }}
                 placeholder="Search articles…"
                 aria-label="Search knowledge base"
               />
             </div>
+            <div className="row-gap" style={{ marginTop: 'var(--sp-1)' }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setExportOpen(true)}
+                title="Export knowledge base articles"
+              >
+                Export
+              </button>
+            </div>
           </PanelHeader>
           {renderKb()}
         </Panel>
+        {exportOpen && (
+          <ExportDialog
+            dataset="knowledge_base"
+            open={exportOpen}
+            onClose={() => setExportOpen(false)}
+          />
+        )}
       </PanelPad>
     </Panel>
   );

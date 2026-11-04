@@ -17,7 +17,8 @@ import { SelfService } from "./self-service";
 import { SavedReports } from './saved-reports';
 import { NotificationSettings } from './settings';
 import { ServicesCatalogue, MyServiceRequests, ServiceRequestDetail } from './services';
-import Inventory from './inventory';
+import Inventory, { InventoryItems, StockItemDetail, StockItemForm } from './inventory';
+import { ReceiveStock, Reservations, TransactionHistory, FulfilServiceRequest } from './inventory-ops';
 import Workflow from './workflow';
 
 const NAV = [
@@ -31,8 +32,8 @@ const NAV = [
   { hash: '#/workflow', label: 'Workflow', staffOnly: true },
   { hash: '#/maintenance', label: 'Maintenance', staffOnly: true },
   { hash: '#/disposals', label: 'Disposals', staffOnly: true },
-  { section: 'Reports' },
-  { hash: '#/reports/sla', label: 'SLA report', staffOnly: true },
+  { hash: '#/inventory', label: 'Inventory', staffOnly: true },
+  { section: 'Reports' },  { hash: '#/reports/sla', label: 'SLA report', staffOnly: true },
   { hash: '#/reports/departments', label: 'Department reports', staffOnly: true },
   { hash: '#/reports/saved', label: 'Saved reports', staffOnly: false },
   { hash: '#/reports/schedules', label: 'Scheduled reports', staffOnly: true },
@@ -72,6 +73,7 @@ const TITLES = {
   '#/workflow': 'Workflow',
   '#/maintenance': 'Maintenance',
   '#/disposals': 'Disposals',
+  '#/inventory': 'Inventory',
   '#/categories': 'Categories',
   '#/departments': 'Departments',
   '#/notifications': 'Notifications',
@@ -101,6 +103,12 @@ function crumbs(hash) {
   if (h.startsWith('#/reports/')) return ['Reports', TITLES[h]];
   if (h.startsWith('#/settings/')) return ['Settings', TITLES[h]];
   if ((m = h.match(/^#\/users\/(\d+)$/))) return ['Employees', `Employee #${m[1]}`];
+  if (h === '#/inventory' || h === '#/inventory/items') return ['Inventory'];
+  if ((m = h.match(/^#\/inventory\/items\/(\d+)(?:\/(edit))?$/))) return ['Inventory', `Item #${m[1]}`, m[3] ? 'Edit' : null].filter(Boolean);
+  if (h.startsWith('#/inventory/receive')) return ['Inventory', 'Receive stock'];
+  if (h.startsWith('#/inventory/reservations')) return ['Inventory', 'Reservations'];
+  if (h.startsWith('#/inventory/transactions')) return ['Inventory', 'Transaction history'];
+  if (h.startsWith('#/inventory/fulfil')) return ['Inventory', 'Fulfil request'];
   if (h === '#/kb/pending') return ['Knowledge Base', 'Pending review'];
   if (h.startsWith('#/kb/')) return ['Knowledge Base', 'Article'];
   return [TITLES[h] ?? 'Tickets'];
@@ -129,7 +137,16 @@ function matchRoute(hash) {
   if (route === '#/workflow/approvals') return <Workflow tab="approvals" />;
   if (route === '#/workflow/executions') return <Workflow tab="executions" />;
    if ((m = route.match(/^#\/service-requests\/(\d+)$/))) return <ServiceRequestDetail id={m[1]} />;
-   const routes = {
+   if (route === '#/inventory') return <Inventory />;
+   if (route === '#/inventory/items') return <InventoryItems />;
+   if ((m = route.match(/^#\/inventory\/items\/(\d+)\/edit$/))) return <StockItemForm id={m[1]} />;
+   if (route === '#/inventory/items/new') return <StockItemForm />;
+   if ((m = route.match(/^#\/inventory\/items\/(\d+)$/))) return <StockItemDetail id={m[1]} />;
+   if (route === '#/inventory/receive') return <ReceiveStock />;
+   if (route === '#/inventory/reservations') return <Reservations />;
+   if (route === '#/inventory/transactions') return <TransactionHistory />;
+   if (route === '#/inventory/fulfil') return <FulfilServiceRequest />;
+    const routes = {
 
     '#/dashboard': <Dashboard />,
     '#/tickets': <Tickets />,

@@ -178,7 +178,13 @@ Trailing slashes required (DRF default).
   and average resolution hours. Optional `date_from`/`date_to` filter ticket
   metrics.
 - `exports/<dataset>/` supports the existing datasets plus `maintenance`,
-  `disposals`, and `department_report` (all IT staff).
+  `disposals`, `department_report`, and `knowledge_base` (authenticated; the
+  knowledge-base dataset only ever exports published articles).
+- `knowledge-base/` (GET, authenticated): employee-facing search over published
+  Knowledge Base articles. Returns paginated `{count, next, previous, results}`.
+  Query params: `q` (title/summary/content/tag/category search), `category`
+  (id or code), `tag` (slug). Employees never receive drafts, pending-review,
+  approved-but-unpublished, or archived articles.
 - `audit-logs/` (Admin read-only; filterable by `action` from the
   logged action set, exact `entity_type`, and ISO `date_from`/`date_to`;
   unknown actions and malformed dates → 400), `notifications/` (own only).

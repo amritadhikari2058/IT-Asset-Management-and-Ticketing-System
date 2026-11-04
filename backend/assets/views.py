@@ -1732,6 +1732,14 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
                                 "from": previous, "to": article.status,
                                 "note": input_serializer.validated_data.get(
                                     "note", "")})
+            # Notify IT staff only on a real transition into pending_review
+            # (not on a repeated/idempotent re-submission), after commit so a
+            # rollback never produces a notification.
+            note = input_serializer.validated_data.get("note", "")
+            if previous != "pending_review":
+                transaction.on_commit(
+                    lambda a=article, u=request.user, n=note:
+                    kb_services.notify_submitted_for_review(a, u, n))
         article.refresh_from_db()
         return Response(KnowledgeBaseArticleSerializer(article).data)
 
@@ -1767,6 +1775,12 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
                        details={"action": "approve",
                                 "to": article.status,
                                 "comment": article.review_comment})
+            # Notify the author after commit; self-approval is already
+            # rejected above, so reviewer != author here.
+            transaction.on_commit(
+                lambda a=article, u=request.user, r=request.user,
+                c=article.review_comment:
+                kb_services.notify_article_approved(a, u, r, c))
         article.refresh_from_db()
         return Response(KnowledgeBaseArticleSerializer(article).data)
 
@@ -1800,6 +1814,11 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
                        details={"action": "reject",
                                 "to": article.status,
                                 "comment": article.review_comment})
+            # Notify the author (with the rejection reason) after commit.
+            comment = article.review_comment
+            transaction.on_commit(
+                lambda a=article, u=request.user, r=request.user, c=comment:
+                kb_services.notify_article_rejected(a, u, r, c))
         article.refresh_from_db()
         return Response(KnowledgeBaseArticleSerializer(article).data)
 
@@ -1822,6 +1841,12 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
                        instance=article,
                        details={"action": "publish", "from": previous,
                                 "to": article.status})
+            # Notify the author on a real transition to published (not on the
+            # idempotent already-published case), after commit.
+            if previous != "published":
+                transaction.on_commit(
+                    lambda a=article, u=request.user:
+                    kb_services.notify_article_published(a, u))
         article.refresh_from_db()
         return Response(KnowledgeBaseArticleSerializer(article).data)
 

@@ -37,7 +37,7 @@ ESSENTIAL_EMAIL_CATEGORIES = frozenset({
     "security_alert",
 })
 
-#: Category keys used by the ticket / SLA / maintenance email paths.
+#: Category keys used by the email notification paths.
 TICKET_ASSIGNMENT_CATEGORY = "ticket_assignment"
 TICKET_STATUS_CATEGORY = "ticket_status_change"
 TICKET_REPLY_CATEGORY = "ticket_reply"
@@ -45,6 +45,10 @@ SLA_CATEGORY = "sla_escalation"
 MAINTENANCE_CATEGORY = "maintenance_reminder"
 ASSET_CATEGORY = "asset_assignment"
 SYSTEM_CATEGORY = "system_alert"
+#: Knowledge Base review / publication events (submission, approval,
+#: rejection, publication). In-app notifications are always delivered; email
+#: is gated by this category preference.
+KB_REVIEW_CATEGORY = "kb_review"
 
 
 def get_user_preferences(user):

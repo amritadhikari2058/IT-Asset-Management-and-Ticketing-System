@@ -431,7 +431,64 @@ Verification: `manage.py check` clean; focused backend suites
 - All Phase 13 uncommitted changes preserved; no migrations added/deleted;
   no DB resets; no credentials invented.
 
+## Phase 20 — Knowledge Base Versioning and Content Governance (complete)
+
+Backend + frontend + permissions implemented and tested.
+
+- `assets.models`: `KnowledgeBaseArticle` gained `version`, `revision_number`, review
+  fields and the 5-state lifecycle (`draft → pending_review → approved → published`,
+  `archived`); new `KnowledgeBaseArticleRevision` immutable snapshot model.
+- `assets.kb_services`: revision snapshotting, change detection, stdlib `difflib`
+  comparison, restore-as-new-revision, and KB workflow notification helpers.
+- `assets.views.KnowledgeBaseViewSet`: CRUD with optimistic-concurrency (HTTP 409 on
+  stale edits), revision history/detail/compare/restore actions, submit/approve/reject/
+  publish/archive review workflow, staff-only pending-review queue. All mutations
+  audited; employees see only published articles.
+- `assets/migrations/0015_phase20_kb_versioning.py` + `0016_phase20_kb_initial_revisions.py`
+  (backfills revision 1 for existing articles; idempotent + reversible).
+- `frontend/src/kb.jsx`: management list, detail, revision history, revision detail,
+  comparison, restore (confirm dialog), review queue, approve/reject/publish modals.
+- `frontend/src/kb-versioning.test.jsx` (14 tests) + `assets/test_knowledge_base_versioning.py`
+  (22 tests) all pass.
+
+## Phase 21 — Knowledge Base Integration and Operational Completion (complete)
+
+Backend + frontend integrated and tested.
+
+- `common.views.knowledge_base_search`: new `GET /api/common/knowledge-base/`
+  employee-facing published-only search endpoint (title/summary/content/tag/category
+  search, category/tag filtering, PageNumber pagination, authenticated only).
+- `common.exports`: new `knowledge_base` dataset (CSV / XLSX / PDF / DOCX) with fields
+  id, title, slug, summary, category, tags, status, author, created_at, updated_at,
+  revision_number; only published articles exported; permission `authenticated`.
+- KB workflow notifications: submit → IT staff; approve/reject/publish → article author,
+  via in-app `Notification` rows plus preference-gated email (`kb_review` category),
+  delivered through `transaction.on_commit()`, duplicate/no-op safe.
+- `frontend/src/self-service.jsx`: working KB search, article links to `#/kb/<id>`,
+  and a KB export option (CSV/XLSX/PDF/DOCX) via the existing `ExportDialog`.
+- `frontend/src/self-service.test.jsx` (3 tests) added; all existing KB versioning
+  tests still pass.
+
 ## Known blockers / decisions
 
-## Phase 16 � Advanced Asset Inventory and Stock Management
-Backend core implemented (inventory app). Frontend/tests pending.
+## Phase 16 — Advanced Asset Inventory and Stock Management (complete)
+
+Backend core implemented (inventory app: `StockItem`, `StockMovement`, `StockReservation`, `PurchaseReceipt`/`PurchaseReceiptLine`, viewsets, actions, permissions, service-request fulfilment integration). Frontend complete in Phase 22 below.
+
+## Phase 22 — Advanced Inventory Management UI and Operational Workflows (complete)
+
+Scope: close the frontend gap for the Phase 16 inventory backend — dashboard, stock-item listing/management, purchase receiving, reservations/releases, transaction history, and service-request fulfilment integration — respecting backend permissions (System Admin / IT Manager / IT Support / Employee).
+
+- Inventory dashboard (`#/inventory`): operational summaries from `GET /api/inventory/stock-items/dashboard/` (total items, on-hand units, available = units − reserved, reserved, low stock, out of stock) plus recent movements, recent purchase receipts (`GET /api/inventory/purchase-receipts/`) and pending fulfilment requests (`GET /api/services/requests/`), with cards navigating to the relevant filtered views; loading/empty/error states.
+- Stock item listing (`#/inventory/items`): search (`q`), category filter, low-stock filter, pagination, stock-status badges (in stock / low stock / out of stock), item detail, create/edit (IT staff), soft-delete (System Admin), built on the existing `DataTable` + `useTableColumns` column-visibility infrastructure.
+- Stock receiving (`#/inventory/receive`): purchase-receipt workflow — vendor, purchase reference/invoice/dates, multiple receipt lines (item + quantity + unit cost), pre-submit confirmation dialog, duplicate-submission guard, backend validation error display; refreshes quantities on success.
+- Reservations (`#/inventory/reservations`): list with quantity/status badge + service-request link, create (item + quantity + service request, backend enforces available stock), release and fulfil with confirmation dialogs; read-only for non-staff.
+- Transaction history (`#/inventory/transactions`): read-only stock-movement audit trail filtered by item/type/date client-side, paginated; no edit/delete (auditability preserved).
+- Service-request fulfilment (`#/inventory/fulfil`): list requests ready for fulfilment (excludes fulfilled/cancelled/rejected), fulfil from available stock with client-side availability preview, backend duplicate-following and insufficient-stock rejection handling, duplicate-submission guard.
+- Routes, NAV entry (IT staff), page titles, breadcrumbs; permissions enforced in UI (`isStaff`/`isAdmin` from `useAuth`) with the backend as the authority; 403/validation feedback via error summaries.
+- Frontend tests: `frontend/src/inventory.test.jsx` (32 tests) covering dashboard metrics, listing/filtering, create/edit, receiving, reservations, transaction history, fulfilment, loading/empty/error states, permission-based controls, duplicate-submission prevention, backend validation errors.
+- Smoke routes added to `frontend/src/zz-smoke.test.jsx`.
+
+No backend changes, no new migrations, no database reset. Badge statuses `in_stock`/`low_stock`/`out_of_stock` added to `frontend/src/components.jsx` (`STATUS_TONE`, `STATUS_LABELS`).
+
+Remaining limitations: backend stock-item list search supports `q`/`category`/`low_stock` but not server-side ordering (UI list has no sort controls); purchase-receipt endpoints are the only receiving path (stock-item `/receive/` action exists as a secondary quick action); movements history endpoint returns at most 200 rows; service requests have no dedicated inventory-requirements field (fulfilment is ad-hoc item + quantity).

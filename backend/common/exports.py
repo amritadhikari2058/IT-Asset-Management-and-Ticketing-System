@@ -159,6 +159,14 @@ DATASETS = {
         ],
         "permission": "it_staff",
     },
+    "knowledge_base": {
+        "title": "Knowledge Base",
+        "fields": [
+            "id", "title", "slug", "summary", "category", "tags", "status",
+            "author", "created_at", "updated_at", "revision_number",
+        ],
+        "permission": "authenticated",
+    },
 }
 
 
@@ -394,6 +402,63 @@ def ticket_history_rows(user=None, filters=None):
     ]
 
 
+def kb_rows(user=None, filters=None):
+    """Published Knowledge Base article rows for export.
+
+    Only published articles are exported, so employees (authenticated)
+    never receive drafts, pending-review, approved-but-unpublished, or
+    archived articles. Internal revision content, review comments, and
+    staff-only metadata are deliberately excluded.
+    """
+    from assets.models import KnowledgeBaseArticle
+
+    filters = filters or {}
+    #: Query params arrive as single values, but ``dict(QueryDict)`` can
+    #: yield lists; normalize scalars defensively.
+    def _scalar(value):
+        if isinstance(value, (list, tuple)):
+            return value[0] if value else ""
+        return value if value is not None else ""
+
+    qs = (KnowledgeBaseArticle.objects
+          .filter(status="published")
+          .select_related("category", "author")
+          .prefetch_related("tags"))
+    q = _scalar(filters.get("q")).strip()
+    if q:
+        qs = qs.filter(
+            Q(title__icontains=q) | Q(summary__icontains=q)
+            | Q(content__icontains=q)
+            | Q(tags__name__icontains=q) | Q(tags__slug__icontains=q)
+            | Q(category__name__icontains=q) | Q(category__code__icontains=q))
+    category = _scalar(filters.get("category"))
+    if category:
+        qs = qs.filter(
+            Q(category_id=category) if str(category).isdigit()
+            else Q(category__code=category))
+    tag = _scalar(filters.get("tag"))
+    if tag:
+        qs = qs.filter(tags__slug=tag)
+
+    rows = []
+    for a in qs.distinct().order_by("-updated_at", "-id"):
+        rows.append({
+            "id": a.pk,
+            "title": a.title,
+            "slug": a.slug,
+            "summary": a.summary or "",
+            "category": a.category.name if a.category_id else "",
+            "tags": ", ".join(t.name for t in a.tags.all()),
+            "status": a.status,
+            "author": (a.author.get_full_name() or a.author.email)
+            if a.author_id else "",
+            "created_at": a.created_at.isoformat() if a.created_at else "",
+            "updated_at": a.updated_at.isoformat() if a.updated_at else "",
+            "revision_number": a.revision_number,
+        })
+    return rows
+
+
 BUILDERS = {
     "employees": employee_rows,
     "departments": department_rows,
@@ -405,6 +470,7 @@ BUILDERS = {
     "asset_categories": lambda filters=None: category_rows(
         __import__("assets.models", fromlist=["AssetCategory"]).AssetCategory, filters),
     "ticket_history": ticket_history_rows,
+    "knowledge_base": kb_rows,
     "maintenance": lambda user=None, filters=None: __import__(
         "common.reports", fromlist=["maintenance_rows"]).maintenance_rows(
             user, filters),

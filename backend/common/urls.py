@@ -6,7 +6,8 @@ from common.views import (AuditLogViewSet, NotificationViewSet,  # noqa: F401
                           ScheduledReportRunViewSet,
                           UserNotificationPreferenceViewSet,
                           dashboard, data_integrity, department_report,
-                          export_dataset, operations_status)
+                          export_dataset, knowledge_base_search,
+                          operations_status)
 
 from rest_framework import routers
 
@@ -28,6 +29,8 @@ urlpatterns = [
     path("dashboard/", dashboard, name="dashboard"),
     path("reports/departments/", department_report, name="department-report"),
     path("exports/<str:dataset>/", export_dataset, name="export"),
+    path("knowledge-base/", knowledge_base_search,
+         name="knowledge-base-search"),
     path("operations/status/", operations_status,
          name="operations-status"),
     path("", include(router.urls)),

@@ -351,6 +351,76 @@ def export_dataset(request, dataset):
     return response
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def knowledge_base_search(request):
+    """Employee-facing search over published Knowledge Base articles.
+
+    Only ``status="published"`` articles are ever returned, so employees
+    can never reach drafts, pending-review, approved-but-unpublished, or
+    archived articles. Results are paginated with the project's default
+    ``PageNumberPagination`` (20/page) and shaped as
+    ``{count, next, previous, results}`` so the self-service portal can
+    consume them with ``r.data.results ?? r.data``.
+
+    Searchable: title, summary, content, tag name/slug, category name/code.
+    Filterable: ?category=<id|code>, ?tag=<slug>.
+    """
+    from assets.models import KnowledgeBaseArticle
+    from rest_framework.pagination import PageNumberPagination
+
+    qs = (KnowledgeBaseArticle.objects
+          .filter(status="published")
+          .select_related("category", "author")
+          .prefetch_related("tags"))
+
+    q = (request.query_params.get("q") or "").strip()
+    if q:
+        qs = qs.filter(
+            Q(title__icontains=q) | Q(summary__icontains=q)
+            | Q(content__icontains=q)
+            | Q(tags__name__icontains=q) | Q(tags__slug__icontains=q)
+            | Q(category__name__icontains=q) | Q(category__code__icontains=q))
+
+    category = request.query_params.get("category")
+    if category:
+        qs = qs.filter(
+            Q(category_id=category) if str(category).isdigit()
+            else Q(category__code=category))
+
+    tag = request.query_params.get("tag")
+    if tag:
+        qs = qs.filter(tags__slug=tag)
+
+    qs = qs.distinct().order_by("-updated_at", "-id")
+
+    paginator = PageNumberPagination()
+    page = paginator.paginate_queryset(qs, request)
+    results = []
+    for a in page:
+        results.append({
+            "id": a.pk,
+            "title": a.title,
+            "slug": a.slug,
+            "summary": a.summary or "",
+            "content": a.content or "",
+            "category": {
+                "id": a.category_id,
+                "name": a.category.name,
+                "code": a.category.code,
+            } if a.category_id else None,
+            "tags": [{"name": t.name, "slug": t.slug} for t in a.tags.all()],
+            "status": a.status,
+            "author": a.author_id,
+            "author_name": (a.author.get_full_name() or a.author.email)
+            if a.author_id else "",
+            "created_at": a.created_at.isoformat() if a.created_at else "",
+            "updated_at": a.updated_at.isoformat() if a.updated_at else "",
+            "revision_number": a.revision_number,
+        })
+    return paginator.get_paginated_response(results)
+
+
 def _report_date_range(request):
     """Parse ISO `date_from`/`date_to` into an inclusive aware datetime range.
 

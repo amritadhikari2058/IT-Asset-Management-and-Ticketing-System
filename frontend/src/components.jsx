@@ -11,6 +11,7 @@ const STATUS_TONE = {
   disposed: 'purple', scheduled: 'blue', completed: 'green', cancelled: 'gray',
   pending: 'amber', approved: 'green', rejected: 'red',
   pending_review: 'amber',
+  low_stock: 'amber', out_of_stock: 'red', in_stock: 'green',
 };
 const PRIORITY_TONE = { low: 'gray', medium: 'blue', high: 'amber', critical: 'red' };
 
@@ -21,6 +22,7 @@ const STATUS_LABELS = {
   disposed: 'Disposed', scheduled: 'Scheduled', completed: 'Completed', cancelled: 'Cancelled',
   pending: 'Pending approval', approved: 'Approved', rejected: 'Rejected',
   pending_review: 'Pending review',
+  low_stock: 'Low stock', out_of_stock: 'Out of stock', in_stock: 'In stock',
 };
 const PRIORITY_LABELS = { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' };
 

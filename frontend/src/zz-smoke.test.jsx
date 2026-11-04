@@ -62,6 +62,7 @@ function setupApi() {
     if (u === '/tickets/12/') return { data: TICKET };
     if (u === '/tickets/12/notes/') return { data: [{ id: 2, author_email: 'a@x.io', body: 'looking', is_internal: false, created_at: '2026-01-02T13:00:00Z' }] };
     if (u === '/assets/7/') return { data: ASSET };
+    if (u === '/inventory/stock-items/1/') return { data: { id: 1, sku: 'AA-001', name: 'AA batteries', description: 'Alkaline', category: 'Consumables', unit: 'pcs', quantity: 50, reserved: 5, available: 45, reorder_threshold: 10, unit_cost: '0.50', preferred_vendor: null, preferred_vendor_name: null, is_active: true, is_deleted: false } };
     if (u.startsWith('/tickets/')) return paginated([TICKET]);
     if (u.startsWith('/assets/')) return paginated([ASSET]);
     return paginated([]);
@@ -89,6 +90,9 @@ const ROUTES = [
   '#/assets', '#/assets/new', '#/assets/7', '#/assets/7/edit',
   '#/categories', '#/departments', '#/notifications', '#/users', '#/profile',
   '#/recycle', '#/audit',
+  '#/inventory', '#/inventory/items', '#/inventory/items/new', '#/inventory/items/1',
+  '#/inventory/items/1/edit', '#/inventory/receive', '#/inventory/reservations',
+  '#/inventory/transactions', '#/inventory/fulfil',
 ];
 
 describe('route smoke', () => {
