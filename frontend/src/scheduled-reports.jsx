@@ -107,7 +107,7 @@ export function ScheduledReports() {
     const ord = orderingParam(sortOverride);
     if (ord) p.set('ordering', ord);
     const qs = p.toString();
-    return `/api/common/scheduled-reports/${qs ? `?${qs}` : ''}`;
+    return `/common/scheduled-reports/${qs ? `?${qs}` : ''}`;
   };
 
   const loadUrl = async (url) => {
@@ -136,7 +136,7 @@ export function ScheduledReports() {
     const ord = orderingParam();
     if (ord) p.set('ordering', ord);
     const qs = p.toString();
-    loadUrl(`/api/common/scheduled-reports/${qs ? `?${qs}` : ''}`);
+    loadUrl(`/common/scheduled-reports/${qs ? `?${qs}` : ''}`);
   };
 
   const loadSavedReports = async () => {
@@ -181,7 +181,7 @@ export function ScheduledReports() {
       setFormBusy(false);
       return;
     }
-    const url = editing ? `/api/common/scheduled-reports/${editing.id}/` : '/api/common/scheduled-reports/';
+    const url = editing ? `/common/scheduled-reports/${editing.id}/` : '/common/scheduled-reports/';
     const method = editing ? 'patch' : 'post';
     try {
       const r = await api[method](url, {
@@ -206,7 +206,7 @@ export function ScheduledReports() {
     if (toggleBusy === r.id) return;
     setToggleBusy(r.id);
     try {
-      await api.patch(`/api/common/scheduled-reports/${r.id}/`, { enabled: !r.enabled });
+      await api.patch(`/common/scheduled-reports/${r.id}/`, { enabled: !r.enabled });
       setMsg(`Schedule "${r.saved_report_name || r.name}" ${r.enabled ? 'disabled' : 'enabled'}.`);
       await loadUrl(buildUrl());
     } catch (e) {
@@ -220,7 +220,7 @@ export function ScheduledReports() {
     setDelFor(report.id);
     setDelBusy(true);
     try {
-      await api.delete(`/api/common/scheduled-reports/${report.id}/`);
+      await api.delete(`/common/scheduled-reports/${report.id}/`);
       setItems(items.filter((r) => r.id !== report.id));
       setCount(Math.max(0, (count ?? 1) - 1));
       setMsg(`Schedule "${report.saved_report_name || report.name}" deleted.`);
@@ -259,7 +259,7 @@ export function ScheduledReports() {
     if (retryBusy === run.id) return;
     setRetryBusy(run.id);
     try {
-      const res = await api.post(`/api/common/scheduled-report-runs/${run.id}/retry/`, {}, { headers: { 'Content-Type': 'application/json' } });
+      const res = await api.post(`/common/scheduled-report-runs/${run.id}/retry/`, {}, { headers: { 'Content-Type': 'application/json' } });
       if (res.data.retried) {
         setMsg(`Retry dispatched for schedule "${run.scheduled_report}".`);
       } else {
@@ -284,7 +284,7 @@ export function ScheduledReports() {
     );
   };
 
-  useEffect(() => { loadUrl('/api/common/scheduled-reports/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadUrl('/common/scheduled-reports/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { loadSavedReports(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const restrictedView = (

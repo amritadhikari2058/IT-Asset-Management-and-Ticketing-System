@@ -230,13 +230,24 @@ def department_report_data(date_from=None, date_to=None,
         "employees": [], "assets": [], "tickets": [],
     }
 
-    def _populate_bucket(bucket, src_assets, src_tickets):
+    def _populate_buckets(bucket_map, src_assets, src_tickets):
+        """Distribute users/assets/tickets into per-department buckets.
+
+        Users/assets/tickets belong to a single department (via
+        ``home_department_id`` / ``department_id``). Rows with no
+        department (or a stale department id) fall into ``unassigned``.
+        """
+        def _target(dept_id):
+            if dept_id is not None and dept_id in bucket_map:
+                return bucket_map[dept_id]
+            return unassigned
+
         for u in users:
-            bucket["employees"].append(u)
+            _target(u.home_department_id)["employees"].append(u)
         for a in src_assets:
-            bucket["assets"].append(a)
+            _target(a.department_id)["assets"].append(a)
         for t in src_tickets:
-            bucket["tickets"].append(t)
+            _target(t.department_id)["tickets"].append(t)
 
     buckets = {}
     for d in departments:
@@ -244,7 +255,7 @@ def department_report_data(date_from=None, date_to=None,
             "id": d.pk, "name": d.name, "code": d.code,
             "employees": [], "assets": [], "tickets": [],
         }
-    _populate_bucket(buckets, assets, tickets)
+    _populate_buckets(buckets, assets, tickets)
 
     # previous-period buckets for the same departments
     buckets_prev = {}
@@ -255,7 +266,7 @@ def department_report_data(date_from=None, date_to=None,
                 "id": d.pk, "name": d.name, "code": d.code,
                 "employees": [], "assets": [], "tickets": [],
             }
-        _populate_bucket(buckets_prev, assets_prev, tickets_prev)
+        _populate_buckets(buckets_prev, assets_prev, tickets_prev)
 
     # ---- compute per-department results (current period) ----
     results = []

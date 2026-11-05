@@ -83,7 +83,7 @@ describe('Scheduled reports page', () => {
     fireEvent.change(screen.getByRole('textbox', { name: /Recipients/ }), { target: { value: 'ops@example.com' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }));
     await screen.findByText('Schedule "HW weekly" saved.');
-    expect(mockPost).toHaveBeenCalledWith('/api/common/scheduled-reports/', {
+    expect(mockPost).toHaveBeenCalledWith('/common/scheduled-reports/', {
       saved_report: 5, schedule: 'weekly', recipients: ['ops@example.com'], format: 'csv', enabled: true,
     });
   });
@@ -101,7 +101,7 @@ describe('Scheduled reports page', () => {
     await screen.findByText('HW weekly');
     fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
     await screen.findByText('Schedule "HW weekly" disabled.');
-    expect(mockPatch).toHaveBeenCalledWith('/api/common/scheduled-reports/1/', { enabled: false });
+    expect(mockPatch).toHaveBeenCalledWith('/common/scheduled-reports/1/', { enabled: false });
   });
 
   it('deletes a schedule', async () => {
@@ -119,7 +119,7 @@ describe('Scheduled reports page', () => {
     // Confirm in the dialog.
     fireEvent.click(screen.getByRole('button', { name: 'Delete schedule' }));
     await screen.findByText('Schedule "HW weekly" deleted.');
-    expect(mockDelete).toHaveBeenCalledWith('/api/common/scheduled-reports/1/');
+    expect(mockDelete).toHaveBeenCalledWith('/common/scheduled-reports/1/');
   });
 
   it('retries a failed run', async () => {
@@ -142,6 +142,6 @@ describe('Scheduled reports page', () => {
     await screen.findByText('Failed');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByText(/Retry dispatched/);
-    expect(mockPost).toHaveBeenCalledWith('/api/common/scheduled-report-runs/9/retry/', {}, { headers: { 'Content-Type': 'application/json' } });
+    expect(mockPost).toHaveBeenCalledWith('/common/scheduled-report-runs/9/retry/', {}, { headers: { 'Content-Type': 'application/json' } });
   });
 });

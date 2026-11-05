@@ -74,7 +74,7 @@ export function SavedReports() {
     const ord = orderingParam(sortOverride);
     if (ord) p.set('ordering', ord);
     const qs = p.toString();
-    return `/api/common/saved-reports/${qs ? `?${qs}` : ''}`;
+    return `/common/saved-reports/${qs ? `?${qs}` : ''}`;
   };
 
   const loadUrl = async (url) => {
@@ -103,7 +103,7 @@ export function SavedReports() {
     const ord = orderingParam();
     if (ord) p.set('ordering', ord);
     const qs = p.toString();
-    loadUrl(`/api/common/saved-reports/${qs ? `?${qs}` : ''}`);
+    loadUrl(`/common/saved-reports/${qs ? `?${qs}` : ''}`);
   };
 
   // ---- Saved report create/edit form ----
@@ -143,7 +143,7 @@ export function SavedReports() {
       setFormBusy(false);
       return;
     }
-    const url = editing ? `/api/common/saved-reports/${editing.id}/` : '/api/common/saved-reports/';
+    const url = editing ? `/common/saved-reports/${editing.id}/` : '/common/saved-reports/';
     const method = editing ? 'patch' : 'post';
     try {
       const r = await api[method](url, {
@@ -168,7 +168,7 @@ export function SavedReports() {
     setDelFor(report.id);
     setDelBusy(true);
     try {
-      await api.delete(`/api/common/saved-reports/${report.id}/`);
+      await api.delete(`/common/saved-reports/${report.id}/`);
       setItems(items.filter((r) => r.id !== report.id));
       setCount(Math.max(0, (count ?? 1) - 1));
     } catch (e) {
@@ -187,16 +187,29 @@ export function SavedReports() {
       const p = new URLSearchParams(filters);
       let url = '';
       if (report.report_type === 'ticket_category') {
-        url = `/api/tickets/reports/by-category/?${p.toString()}`;
+        url = `/tickets/reports/by-category/${p.toString() ? `?${p.toString()}` : ''}`;
       } else if (report.report_type === 'ticket_sla') {
-        url = `/api/tickets/reports/sla/?${p.toString()}`;
+        url = `/tickets/reports/sla/${p.toString() ? `?${p.toString()}` : ''}`;
       }
-      if (url) {
-        window.open(url, '_blank');
-        setFormMsg(`Running report "${report.name}"…`);
-      } else {
+      if (!url) {
         setFormError(`Unknown report type: ${report.report_type}`);
+        return;
       }
+      // Fetch through the axios client so the JWT (and its 401 refresh) is
+      // applied — window.open() would hit the protected endpoint without the
+      // Authorization header and always 401.
+      const r = await api.get(url);
+      const data = typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2);
+      const blob = new Blob([data], { type: 'application/json' });
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = `${report.name || report.report_type}-report.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+      setFormMsg(`Report "${report.name}" downloaded.`);
     } catch (e) {
       setFormError(parseApiError(e).global || 'Could not run report.');
     } finally {
@@ -212,7 +225,7 @@ export function SavedReports() {
     });
   };
 
-  useEffect(() => { loadUrl('/api/common/saved-reports/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadUrl('/common/saved-reports/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div>

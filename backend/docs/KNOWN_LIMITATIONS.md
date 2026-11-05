@@ -65,8 +65,46 @@ scope decisions that operators should be aware of before go-live.
 
 ## Reporting / exports
 
-- Reports are read-only aggregations. No scheduled report delivery or
-  report subscriptions.
+- Reports are read-only aggregations. Scheduled report delivery exists
+  (CSV/XLSX/PDF/DOCX, email attachments, retry, execution history) but
+  has not been tested against a real SMTP provider.
+- Report exports (12 datasets) are verified against the API in
+  `common.test_reports`.
+
+## External service live-status (not tested)
+
+The following external integrations are statically configured and
+mock-tested, but have **not** been validated against live services:
+
+- **PostgreSQL**: settings and migrations support PostgreSQL, but no live
+  PostgreSQL database was used locally. CI runs a PostgreSQL 16 service
+  job for migration consistency and targeted tests. Local live test was
+  not performed (no PostgreSQL server available).
+- **Redis / Celery**: broker and result backend are configured
+  (`redis://localhost:6379/0`). `check_redis`, `check_celery_config`, and
+  `check_celery_worker` commands are implemented and mock-tested. No live
+  Redis or Celery worker was available locally, so live connectivity was
+  not verified.
+- **SMTP**: outbound email is provider-agnostic SMTP. `test_email_delivery
+  --dry-run` is implemented and mock-tested. No real SMTP send was
+  performed (no safe recipient authorized).
+- **IMAP**: inbound intake is configured but not connected to a real
+  mailbox. `check_inbound_email --connect` is implemented for read-only
+  live checks. No IMAP `--connect` was performed (no credentials
+  configured).
+- **S3 / object storage**: `STORAGE_BACKEND=s3` is supported. No live S3
+  or compatible bucket was tested.
+
+## SMTP / IMAP / Redis / Celery (honest status)
+
+- **SMTP live**: No — dry-run only; real send requires explicit `--send`
+  and an authorized recipient.
+- **IMAP live**: No — configuration-only; `--connect` not run (no
+  credentials).
+- **Redis live**: No — `check_redis` mock-tested; live PING not run
+  (no local Redis).
+- **Celery worker live**: No — `check_celery_worker` mock-tested; no live
+  worker responded (expected in dev without Redis).
 
 ## Audit / compliance
 

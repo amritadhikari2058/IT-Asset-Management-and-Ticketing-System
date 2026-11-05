@@ -1,0 +1,633 @@
+================================================================================
+IT TICKETING & ASSET MANAGEMENT SYSTEM — PROJECT PROGRESS MAP
+================================================================================
+Scan date        : 2026-11-05 (UTC) — verified against live repo files, routes,
+                   models, migrations, and git history. No assumptions.
+Repo root        : E:\OneDrive\Desktop\Ticket and Asset Management System
+Branch           : main (remotes/origin/main). Last commit: 01a7fc5 "sfsd"
+Git status       : 9 modified files, 2 untracked files (all working-tree WIP, NOT committed)
+  Modified:
+    backend/common/reports.py        (department_report bucket fix — PRESERVED)
+    backend/services/tests.py        (18 service-request API tests — was empty stub)
+    frontend/src/App.jsx             (schedules route -> ScheduledReports; + NAV/title/crumbs for #/services, #/service-requests)
+    frontend/src/saved-reports.jsx   (double-/api/ prefix fix + token-aware authenticated download — PRESERVED)
+    frontend/src/scheduled-reports.jsx (5× /api/common/ paths stripped — P0 fix)
+    frontend/src/scheduled-reports.test.jsx (regression assertions on stripped paths)
+    frontend/src/services.jsx        (full Service Request UI: catalogue, dynamic form, request list/detail, approve/reject/assign/comment/cancel, catalogue admin builder)
+  Untracked:
+    frontend/src/services.test.jsx   (20 frontend tests for Service Request module)
+    progress.txt                     (this file — regenerated)
+                   Do NOT lose these two diffs; they are not committed yet.
+Roadmap doc      : DEVELOPMENT_ROADMAP.md is the phase ledger (last review:
+                   Phase 14 / 20 / 21 / 16 / 22 complete). It is out of order
+                   (Phase 20/21/16/22 appended after Phase 14) — read the whole
+                   file, not just the top.
+Other docs       : backend/docs/{API_OVERVIEW,PERMISSIONS,ARCHITECTURE,
+                   DEPLOYMENT,BACKUP,EMAIL_OPS,KNOWN_LIMITATIONS}.md
+                   PHASE13_COMPLETION_REPORT.md, PHASE14_ASSESSMENT_REPORT.md,
+                   PHASE16_COMPLETION_REPORT.md at repo root.
+
+NOTE ON PHASE NUMBERS: The prompt's "Phase 31: Reporting..." does NOT exist
+in this repo. Reporting is Phase 4D + Phase 6 + Phase 11C/11D + Phase 12A and
+is COMPLETE (saved + scheduled reports). The highest documented phases are 20,
+21, 22. Do not start a "Phase 31" — it would repeat finished work.
+================================================================================
+
+1. PROJECT IDENTITY & TECH STACK
+--------------------------------------------------------------------------------
+Product    : On-prem IT Service Desk — tickets, serialized assets, consumable
+             stock, service requests, KB, workflow automation, reporting.
+             No cloud/S3/SMTP required for local dev (all env-swappable).
+Backend    : Django 6.0 + Django REST Framework 3.16.1
+             djangorestframework-simplejwt 5.5.1 (JWT, 60-min access /
+             1-day refresh, blacklist on logout), django-cors-headers 4.9
+             Celery 5.6.3 + redis 8.1.0, openpyxl 3.1.5, reportlab 5.1.0,
+             python-docx 1.2.0  (backend/requirements.txt)
+Frontend   : React 19.2.8 + Vite 8.3.0, axios 1.20, react-router-dom 7.18
+             (installed but routing is hash-based in App.jsx, not react-router),
+             oxlint 1.81, vitest 5.0 + jsdom + @testing-library/react.
+             (frontend/package.json)  No build step beyond `vite build`.
+DB         : SQLite db.sqlite3 in dev (backend/db.sqlite3, git-ignored).
+             Production requires PostgreSQL (KNOWN_LIMITATIONS.md).
+Auth       : Custom User model (email login), 4 roles: system_admin,
+             it_manager, it_support, employee; + is_superuser check.
+             EmailBackend + ModelBackend. JWT via /api/token/ + /token/refresh/.
+             Tokens in localStorage; axios interceptor refreshes on 401.
+API base   : http://127.0.0.1:8000/api (api.js baseURL — paths must NOT
+             include the /api prefix again; that bug bit Phases 13/14).
+UI base    : http://localhost:5173 (Vite dev). Hash routing: #/tickets etc.
+Demo users : admin@local / manager@local / support@local / employee@local
+             (passwords in accounts/management/commands/seed_defaults.py;
+             seed: 7 ticket cats, 6 asset cats, 3 depts, 4 demo users).
+Celery     : celery -A config.celery worker / beat (Redis localhost:6379).
+             Beat schedule (settings.py CELERY_BEAT_SCHEDULE), 4 entries:
+               check-sla-escalations        tickets.tasks  every 300s
+               check-maintenance-reminders  assets.tasks   every 3600s
+               process-inbound-emails       common.tasks   every 60s
+               run-scheduled-reports        common.tasks   every 300s
+Env        : Root .env (git-ignored), loaded by settings.py _load_root_env().
+             .env.example at root documents every var (SECRET_KEY, DEBUG,
+             ALLOWED_HOSTS, CORS, SMTP, S3, IMAP intake, Celery, attachments).
+
+2. REPOSITORY LAYOUT
+--------------------------------------------------------------------------------
+backend/
+  config/{settings,urls,celery,wsgi,asgi}.py   project config
+  accounts/   User, Department (+email utils, auth views, seed command)
+  assets/     Asset, Maintenance, Disposal, KB, Vendor, assignments/history
+  tickets/    Ticket, SLA, notes, attachments, history, TicketKbArticle
+  services/   ServiceCatalogueItem, ServiceRequest (+comments/history/files)
+  inventory/  StockItem, StockMovement, StockReservation, PurchaseReceipt(+Line)
+  workflow/   AutomationRule, RuleExecution, ApprovalRequest
+  common/     SoftDeleteModel, AuditLog, Notification, PrivacyErasureRequest,
+              EmailProcessing, BackgroundTaskRun, Saved/ScheduledReport(+Run),
+              UserNotificationPreference, exports, reports, inbound, privacy
+  docs/       7 markdown docs (see header)
+  media/      local uploads (git-ignored), db.sqlite3 (git-ignored)
+  zz_*.py     97 scratch/patch/debug scripts in backend root — NOT app code.
+              Plus add_health.py, apply_throttle.py. Cleanup candidate;
+              never import them.
+frontend/
+  src/
+    App.jsx        hash router + NAV (sections Work / Operations / Reports /
+                   Organize / Administration) + Shell layout + breadcrumbs
+    api.js         axios instance (baseURL http://127.0.0.1:8000/api)
+    api-utils.js   fetchPage, parseApiError, orderingParam helpers
+    auth.jsx       AuthProvider, useAuth (isStaff/isAdmin/canCreateTickets)
+    components.jsx shared UI: Badge, PageHeader, DataTable, Pager, Modal,
+                   ConfirmDialog, ExportDialog, EmptyState, Field, selects,
+                   useTableColumns (column-visibility persistence)
+    pages.jsx      Login, Tickets(list), Assets(list), Categories, Departments,
+                   Users, EmployeeDetail, SLAConfig, SLAReport, RecycleBin,
+                   VerifyEmail, ResetPassword, Profile   (~120KB — largest file)
+    tickets.jsx    TicketForm, TicketDetail
+    assets.jsx     AssetForm, AssetDetail
+    maintenance.jsx, disposals.jsx
+    dashboard.jsx  Dashboard, DepartmentReports
+    kb.jsx         KnowledgeBase, Detail, Revisions, Compare, ReviewQueue
+    audit.jsx      AuditLogPage
+    notifications.jsx  Notifications, NotifBadge
+    settings.jsx   NotificationSettings (#/settings/notifications)
+    saved-reports.jsx, scheduled-reports.jsx
+    services.jsx   ServicesCatalogue, MyServiceRequests, ServiceRequestDetail
+                   NOTE: small stub (~2.3KB) — catalogue list, request list,
+                   detail-with-JSON-dump only. No create/approve UI.
+    inventory.jsx  Inventory (dashboard), InventoryItems, StockItemDetail/Form
+    inventory-ops.jsx ReceiveStock, Reservations, TransactionHistory,
+                   FulfilServiceRequest
+    workflow.jsx   Workflow (tabs: rules/approvals/executions) (~53KB)
+    self-service.jsx SelfService (employee portal: tickets/assets/KB search)
+    bulk.jsx       bulk-create/import modals + ReportTable
+  Tests (*.test.jsx/js, ~28 files): api, assets-workflow, audit, categories,
+    departments, employee-detail, inventory (32 tests), kb-versioning (14),
+    profile, report-dates, scheduled-reports (5), self-service (3), settings
+    (6), sorting, table-prefs, tickets-* (5 files), users-actions,
+    workflow-{rules,approvals,executions,controls} (4 files), zz-smoke,
+    zz-debug. Run: npm test (vitest run) in frontend/.
+.github/workflows/ backend.yml, frontend.yml (checks, migrations, tests, build)
+Root files: README.md (quick start + env + Celery + email + attachments +
+  privacy), DEVELOPMENT_ROADMAP.md, PHASE{13,14,16}_*.md, package.json.
+  Route files named monitoring.jsx / privacy.jsx / retention.jsx /
+  security.jsx DO NOT EXIST — privacy lives in common/privacy_views.py +
+  RecycleBin; there is no monitoring page (ops status is API-only:
+  GET /api/common/operations/status/).
+
+3. BACKEND APPS — MODELS, MIGRATIONS, API NAMESPACES
+--------------------------------------------------------------------------------
+Installed apps (settings.py): accounts, assets, tickets, services, inventory,
+workflow, common (+ django.contrib.*, rest_framework, simplejwt blacklist,
+corsheaders).
+
+(a) accounts  (/api/accounts/) — migrations 0001..0005
+    Models: Department(soft-delete, name/code/head), User(custom, email login,
+      employee_id, role[system_admin|it_manager|it_support|employee],
+      home_department, can_create_tickets, receive_ticket_emails,
+      email_verified, photo) with DepartmentManager/UserManager + indexes.
+    Files: models.py(211L), views.py(784L), serializers.py, auth_views.py
+      (110L: login/logout/verify/reset/change-password), email_utils.py
+      (356L: ticket/SLA/report emails + dedup), backends.py, tests.py(689L).
+    Router: departments, users.
+    Custom paths: me/ (GET+PATCH receive_ticket_emails), change-password/,
+      logout/ (blacklists refresh), password-reset/{request,confirm}/,
+      verify-email/{request,confirm}/.
+    UserViewSet actions: deactivate/, reactivate/, change_role/ (admin),
+      reset_password/ (admin), employee_detail/ (staff), photo/ (GET/POST),
+      hard_delete/ (admin), bulk_import/ (GET template + POST preview/confirm,
+      CSV report), bulk_update/, bulk_activate/, bulk_delete/ (soft only).
+    DepartmentViewSet: hard_delete/ (admin, 409 if referenced).
+    Seed: accounts/management/commands/seed_defaults.py.
+
+(b) assets  (/api/assets/) — migrations 0001..0016 (incl. 0015/0016 Phase 20)
+    Models: AssetCategory, Asset(serial optional-unique incl. soft-deleted,
+      status, assigned_to, department, vendor, warranty_start/expiry,
+      purchase_date/cost, location), AssetAttachment, Assignment,
+      AssetAssignment, AssetHistory, Maintenance(+recurrence),
+      MaintenanceReminder, Disposal, Vendor, KnowledgeBaseCategory/Tag,
+      KnowledgeBaseArticle(version, revision_number, status lifecycle
+      draft->pending_review->approved->published/archived), 
+      KnowledgeBaseArticleRevision(immutable snapshot), KnowledgeBaseFeedback.
+    Files: models.py(704L), views.py(1998L — largest backend file),
+      serializers.py(288L), kb_services.py(313L: snapshotting, difflib compare,
+      restore-as-new-revision, workflow notifications), tasks.py (maintenance
+      reminders), tests.py(1155L), test_knowledge_base_versioning.py(417L),
+      test_operations.py.
+    Router: categories, attachments, assignments/history, histories,
+      maintenance, disposals, knowledge-base, knowledge-base-feedback,
+      knowledge-base-categories, knowledge-base-tags, vendors, "" (Asset).
+    AssetViewSet actions: assign/, return_asset/, retire/, mark_lost/
+      (reason required), bulk_assign/ (preview/confirm), bulk_create/,
+      bulk_update/ (rejects assignment keys), bulk_delete/, hard_delete/.
+    MaintenanceViewSet: mark_overdue/. DisposalViewSet: approve/reject/complete/.
+    KnowledgeBaseViewSet: revisions/, revision_detail/, compare/, restore/,
+      submit_review/, approve/, reject/, publish/, archive/, pending_review/,
+      usefulness/ (staff: helpful-rate dashboard). Optimistic concurrency
+      (HTTP 409 on stale version).
+
+(c) tickets  (/api/tickets/) — migrations 0001..0009
+    Models: TicketCategory, Ticket(status/priority/department/assignee/asset/
+      sla_due_at/sla_breached/resolved_at), TicketSLA(priority targets +
+      escalation_hours/breach_hours), SLAEscalation, TicketNote(internal vs
+      requester-visible), TicketHistory, TicketAttachment, TicketKbArticle
+      (ticket<->KB link + helpful vote).
+    Files: models.py(329L), views.py(1129L), serializers.py, tasks.py (SLA
+      escalation scanner), tests.py(1278L), test_sla_access.py.
+    Router: categories, attachments (download/ via checked endpoint),
+      histories, sla (config), kb-articles, "" (Ticket).
+    TicketViewSet actions: notes/ (GET/POST), bulk_create/, bulk_update/,
+      bulk_delete/, hard_delete/. TicketHistoryViewSet (read-only,
+      staff-gated). Attachment download: GET /api/tickets/attachments/<id>/
+      download/ (no public URLs; proxied with visibility checks).
+    Function views: reports/by-category/, reports/sla/ (date_from/date_to).
+    NOTE: tickets/automation.py was DELETED (git log HEAD~3) — automation now
+      lives in workflow/ app (see (g)).
+
+(d) services  (/api/services/) — migrations 0001 only
+    Models: ServiceCatalogueItem(name, category[hardware|software|account|
+      access|network|email|onboarding|other], requires_approval,
+      creates_ticket, form_fields JSON, soft-delete), ServiceRequest
+      (SR-YYYYMMDD-NNNN number, answers JSON, status[submitted|
+      pending_approval|approved|rejected|in_progress|pending_employee|
+      fulfilled|cancelled], approver, fulfilment_ticket FK->Ticket),
+      ServiceRequestComment, ServiceRequestHistory, ServiceRequestAttachment.
+    Files: models.py(111L), views.py(128L), serializers.py, tests.py (63B —
+      effectively EMPTY; no real tests).
+    Router: catalogue, requests.
+    Catalogue: staff write, employees see is_active only. Requests: staff see
+      all, employees own only. Actions on ServiceRequestViewSet: cancel/,
+      approve/, reject/ (not own, must be pending_approval), assign/,
+      comment/ (internal forced false for non-staff). Creation auto-sets
+      requester=self, department=home_department, status=pending_approval iff
+      catalogue item requires_approval; writes 1-2 history rows.
+    NO ticket-creation link for creates_ticket=true implemented server-side
+    (field exists, no fulfilment-ticket creation path in views.py).
+
+(e) inventory  (/api/inventory/) — migrations 0001 only
+    Models: StockItem(name, sku unique, category, unit[pcs|box|set|unit|
+      meter|other], quantity, reserved, reorder_threshold, preferred_vendor
+      FK->assets.Vendor, unit_cost; available = quantity - reserved),
+      StockMovement(immutable audit: type[receive|issue|return|adjustment|
+      damage|lost|correction|reservation|release], prev/new balance,
+      source_request FK->services.ServiceRequest), StockReservation
+      (active|released|fulfilled, service_request FK), PurchaseReceipt(+total
+      computed) + PurchaseReceiptLine.
+    Files: models.py(99L), views.py(315L), serializers.py, tests.py(41L).
+    Router: stock-items, purchase-receipts, reservations + fulfil-service-
+      request/ (ServiceRequestFulfilView, POST create).
+    StockItemViewSet actions: receive/, issue/, return/, adjust/, damage/,
+      low-stock/, dashboard/, movements/ (capped ~200 rows). Uses
+      select_for_update; prevents negatives; duplicate fulfilment blocked via
+      source_request check. PurchaseReceipt create increments stock.
+    Phase 16 backend + Phase 22 frontend are COMPLETE (see §4). Known gaps:
+      stock list has q/category/low_stock but no server ordering; movements
+      capped at 200; no dedicated inventory-requirements field on requests
+      (fulfilment is ad-hoc item+qty).
+
+(f) workflow  (/api/workflow/) — migrations 0001..0002
+    Models (docstring says "Phase 19"): AutomationRule(name unique, trigger
+      [ticket_created|ticket_updated|status_changed], conditions JSON
+      equality-only: category_id/department_id/priority/status/assignee_id,
+      actions JSON: assign/priority/status/note/notify, created_by PROTECT),
+      RuleExecution(per rule×ticket run: success + detail), ApprovalRequest
+      (ticket op approvals: operation[change_priority|change_status|
+      reassign|other], context JSON, pending->approved/rejected terminal,
+      requester cannot decide own, approved decision applies op).
+    Files: models.py(99L), views.py(311L), serializers.py(240L),
+      services.py(181L: inline rule engine, MAX_DEPTH=3 loop guard,
+      _check_conditions, _exec_action; runs in request transaction),
+      test_workflow.py(620L), tests.py(22L stub).
+    Router: automation-rules, rule-executions, approval-requests.
+    Actions: ApprovalRequestViewSet approve//reject/ -> _decide + 
+      _apply_operation. Rules/executions CRUD/read-only (staff writes).
+
+(g) common  (/api/common/) — migrations 0001..0009
+    Models: SoftDeleteModel base (is_deleted/deleted_at/deleted_by),
+      AuditLog(actor/action/entity_type/object_id/repr; IDs only, never
+      personal data), Notification(soft-delete), PrivacyErasureRequest
+      (entity_type/object_id/scope/reason; reviewed_by NOT enforced yet;
+      executed_at added in 0009), EmailProcessing(Message-ID dedup),
+      BackgroundTaskRun(task_name/status/success/error_summary/payload/
+      finished_at), SavedReport(report_type/name/description/filters JSON/
+      owner+is_shared), ScheduledReport(report FK + daily/weekly/monthly +
+      recipients + format[csv|xlsx|pdf|docx] + enabled + next_run_at) +
+      ScheduledReportRun(success/failed/skipped, retry), 
+      UserNotificationPreference(email_enabled master + categories JSON:
+      ticket_assignment, ticket_status_change, ticket_reply, sla_escalation,
+      maintenance_reminder, asset_assignment, system_alert; ESSENTIAL_* =
+      email_verification/password_reset/security_alert always sent).
+    Files: models.py(432L), views.py(818L), reports.py(516L incl. uncommitted
+      bucket fix), exports.py(587L), inbound.py(368L IMAP parser), tasks.py
+      (251L: process_inbound_mailbox + run_scheduled_reports),
+      privacy_views.py(438L), notifications.py(94L central enforcement),
+      permissions.py (IsITStaff/IsSystemAdmin), serializers.py, health.py
+      (/health/ /ready/), middleware.py (SecurityAuditMiddleware),
+      throttling.py (AuthRateThrottle), tests.py(981L),
+      integration_tests.py, role_security_tests.py, test_phase7.py,
+      test_reports.py, test_scheduled_reports.py, test_kb_integration.py.
+    Router: audit-logs (SystemAdmin), notifications, privacy-erasures,
+      saved-reports, scheduled-reports, scheduled-report-runs (+retry/),
+      notification-preferences.
+    Function views: data-integrity/, dashboard/ (IT staff aggregate: 
+      employees/assets/tickets/SLA/maintenance/disposals), reports/departments/
+      (date range + previous-period side-by-side), exports/<dataset>/ 
+      (CSV/XLSX/PDF/DOCX; 12 datasets: employees, departments, assets,
+      assignments, tickets, ticket_categories, asset_categories,
+      ticket_history, maintenance, disposals, department_report,
+      knowledge_base), knowledge-base/ (published-only employee search),
+      operations/status/ (IT staff: inbound email + task health).
+    Recycle bin (/api/recycle-bin/ in config/urls.py, not common/):
+      common/views.py recycle_bin_{list,detail,restore,hard_delete} across
+      9 entity types; hard delete = SystemAdmin + confirm + reason + audit,
+      409 when history references the row.
+
+4. PHASE LEDGER (COMPLETED vs CURRENT) — FROM DEVELOPMENT_ROADMAP.md
+--------------------------------------------------------------------------------
+Phase 1 — Foundations (complete): custom User, JWT auth + email verification
+  + password reset + change password, Departments + employees CRUD
+  (deactivate/reactivate/role change), managed categories, audit log,
+  recycle bin, privacy erasure, bulk employee import/update/activate/delete,
+  CSV/XLSX/PDF/DOCX export infrastructure (common/exports.py).
+Phase 2 — Tickets (complete): CRUD, internal vs visible notes, attachments,
+  history, assignment/status/priority/department/related-asset, bulk
+  create/update/delete, in-app notifications + event emails, ordering/filtering.
+Phase 3 — Assets (complete): CRUD, categories/departments/attachments/history,
+  assign/return/retire/mark-lost, bulk create/update/assign/delete, serial
+  uniqueness (serializer + DB trigger), visibility + history permissions,
+  warranty start/expiry, purchase date/cost.
+Phase 4 — Maintenance/Disposal/Reporting/SLA (complete 4A–4E): Maintenance +
+  Disposal models/viewsets + full frontend (list/filter/schedule/status/
+  per-asset history/assignment-blocked-while-open/export); GET
+  /api/common/dashboard/ + Dashboard UI (KPI cards); GET
+  /api/common/reports/departments/ + UI + department_report export; SLA admin
+  config UI (#/sla-config, SystemAdmin), overdue/breach badges, SLA report
+  page (IT staff). Verified: check clean, focused suites pass, 142 frontend
+  tests pass at that point.
+Phase 5 — Notifications & email (partial): in-app + ticket event emails done;
+  per-category preferences page done (#/settings/notifications, Phase 12C/13);
+  OPEN: notification UI consistency pass, real-SMTP verification, in-app SMTP
+  config (env-only today).
+Phase 5b — Operational automation (done except noted): SLA escalation
+  (TicketSLA.escalation_hours/breach_hours + SLAEscalation + periodic task +
+  /unread_count badge), maintenance reminders (recurrence +
+  MaintenanceReminder + hourly task), Knowledge Base CRUD (draft/published/
+  archived, categories/tags, view tracking, #/kb staff page), self-service
+  portal (#/self-service). Email-to-ticket + Celery/Redis deferred to Phase 7.
+Phase 6 — Reporting & analytics (complete): category/SLA/department reports
+  with date range, 4-format exports, period-over-period comparison,
+  operational reports (asset lifecycle, assignment ageing, maintenance cost*),
+  saved + scheduled delivery (beat every Monday 08:00 claim in roadmap; actual
+  beat is every 5 min polling with daily/weekly/monthly cadence — see 11D).
+Phase 7 — Background processing (complete for intake/notifications):
+  Celery+Redis setup (celery.py, retry/time limits, concurrency), async
+  email (accounts/email_utils + dedup cache email_sent:*), IMAP inbound
+  polling (common/tasks.process_inbound_mailbox, common/inbound.py,
+  EmailProcessing dedup, attachment policy, ops status), SLA + maintenance
+  tasks, BackgroundTaskRun recording.
+Phase 8 — Production readiness (complete): env config, S3 switch
+  (STORAGE_BACKEND), README deploy section, CI/CD (.github/workflows),
+  Celery deploy docs, SMTP/storage smoke tests, BACKUP.md, IDOR fix
+  (employees scoped), logout blacklist, auth throttling, secure cookies,
+  DB indexes, dashboard N+1 fix, auth-failure logging middleware,
+  ARCHITECTURE/KNOWN_LIMITATIONS docs.
+Phase 9 — Final integration (complete, listed twice in roadmap — dedupe):
+  serial_number API+trigger validation, integration_tests.py (employee/ticket/
+  asset lifecycle, KB+self-service, email/reset, background tasks),
+  role_security_tests.py (4 roles × list/detail/update/delete/attachments/
+  dept/notifications), CI verified, deploy rehearsal, bug fixes (Asset
+  purchase_cost, AssignmentSerializer, AssetAssignSerializer, Disposal
+  is_completed, User.is_employee_or_similar, components.jsx exports).
+Phase 10 — (no heading in roadmap; numbering jumps 9 -> 11. Treat as
+  unnumbered/absent, not missing work.)
+Phase 11 — Workflow & operational intelligence (complete 11A–11E):
+  KB feedback (KnowledgeBaseFeedback, helpful vote, stats); TicketKbArticle
+  link (staff links, employee helpful vote, KB suggestions in Ticket Form);
+  SavedReport CRUD (#/reports/saved, shared); ScheduledReport + Run + Celery
+  run_scheduled_reports (beat 5 min, CSV/JSON render, email, history,
+  idempotent per run); email-to-ticket already done (Phase 7).
+Phase 12 — Product maturity (complete 12A–12E): scheduled reports in all 4
+  formats with file attachments + retry action; KB usefulness dashboard
+  (GET .../usefulness, q/category/date_from filters); notification
+  preferences backend (UserNotificationPreference + common/notifications.py
+  central enforcement + email_utils gating); Vendor model + Asset.vendor FK
+  + /api/assets/vendors/ + #/vendors (see §7 gap: page NOT in App.jsx);
+  performance (select_related vendor, tickets/assets indexes, EmailMessage
+  attachments).
+Phase 13 — Frontend completion + preference enforcement (complete 13A–13D):
+  settings.jsx (#/settings/notifications, 6 tests), scheduled-reports.jsx
+  (#/reports/schedules, 5 tests), common/notifications.py enforcement
+  (ESSENTIAL categories, master switch, category gating), 92 backend +
+  18 frontend tests.
+Phase 14 — Readiness assessment + gap closure (complete 14A–14C): fixed
+  unreachable #/self-service + #/users (hash mismatch), double-/api/ prefix
+  in notifications/scheduled-reports/settings/self-service, EmptyState
+  variant prop; aligned DEPLOYMENT/EMAIL_OPS beat docs (added
+  run-scheduled-reports); 40 backend + 18 frontend tests.
+Phase 15 — (no heading in roadmap or code; absent.)
+Phase 16 — Advanced inventory backend (complete, PHASE16_COMPLETION_REPORT.md):
+  inventory app (5 models, migration 0001, viewsets/actions/permissions,
+  fulfilment integration). Frontend DEFERRED to Phase 22.
+Phase 17 / 18 — (no headings; absent. Workflow is labelled Phase 19 in code.)
+Phase 19 — Workflow automation (labelled in workflow/models.py docstring;
+  roadmap never gives it a numbered heading, but code+git prove it shipped):
+  AutomationRule/RuleExecution/ApprovalRequest, services engine (inline,
+  MAX_DEPTH=3), /api/workflow/ (automation-rules, rule-executions,
+  approval-requests), workflow.jsx UI, 4 frontend test files + 620-line
+  test_workflow.py. NOTE: tickets/automation.py was removed (superseded).
+Phase 20 — KB versioning & governance (complete): version/revision_number/
+  review fields, 5-state lifecycle, KnowledgeBaseArticleRevision immutable
+  snapshots, kb_services (snapshotting, difflib compare, restore), optimistic
+  concurrency 409, staff pending-review queue, frontend (revisions/
+  compare/restore/approve/reject/publish), 14+22 tests, migrations
+  assets.0015/0016 (backfills revision 1).
+Phase 21 — KB integration (complete): GET /api/common/knowledge-base/
+  published-only search, knowledge_base export dataset, kb_review email
+  category (on_commit, dedup-safe), self-service KB search + export dialog,
+  self-service.test.jsx (3 tests).
+Phase 22 — Inventory UI (complete): Inventory dashboard (#/inventory),
+  items list (#/inventory/items), receiving (#/inventory/receive),
+  reservations (#/inventory/reservations), transactions
+  (#/inventory/transactions), fulfilment (#/inventory/fulfil); NAV (staff),
+  titles/crumbs, isStaff/isAdmin UI gating; inventory.test.jsx (32 tests);
+  smoke routes added; no backend/migration changes. Limitations: no server
+  ordering, /receive/ quick-action secondary, movements ≤200, ad-hoc
+  fulfilment (no requirements field).
+Phases 23–30 — NOT FOUND in roadmap, docs, or code labels. The prompt's
+  "Phases 23 through 31" reference does not match this repo. Do not invent
+  them; ask the owner what they mean before planning.
+Phase 31 ("Reporting, Analytics, Saved & Scheduled Reports, Exports") as
+  described in the prompt does NOT exist as a phase here — all four are DONE
+  under Phases 4D/6/11C/11D/12A. The only reporting work in flight is the
+  uncommitted department_report bucket fix (backend/common/reports.py).
+
+DIMENSION GAP (report it, do not backfill blindly): Phase 16's completion
+report says "Frontend: Not implemented in this pass" — roadmap Phase 22
+closes it. The service-request + workflow frontend in git history
+(07a6b2a "feat: implement service catalogue, inventory management, and
+workflow automation") landed as backend-heavy commits; the UI half is thin
+(services.jsx stub) or missing data wiring (see §7).
+
+5. CURRENT PHASE STATUS (VERIFIED 2026-11-04)
+--------------------------------------------------------------------------------
+There is no active numbered phase in code or roadmap beyond 22. State:
+  - Backend: 7 apps, 32 migration files (accounts 5, assets 16, common 9,
+    tickets 9, services 1, inventory 1, workflow 2). No pending migrations
+    were verified by running makemigrations — treat task as "unknown,
+    run manage.py makemigrations --check" first.
+  - Frontend: 26 feature JSX files + 5 shared (App/auth/api/api-utils/
+    components/theme). Hash router in App.jsx with NAV sections.
+  - Uncommitted WIP (must be committed or reverted deliberately):
+      backend/common/reports.py — _populate_bucket -> _populate_buckets
+        (per-department bucketing of users/assets/tickets; previously one
+        bucket got everything; unassigned rows without a department now
+        land in "Unassigned"). Affects department_report_data + department
+        export rows.
+      frontend/src/saved-reports.jsx — 5× "/api/common/saved-reports/" ->
+        "/common/saved-reports/" (correct: api.js baseURL already has /api).
+        NOTE: scheduled-reports.jsx STILL has 5× "/api/common/..." paths
+        (see §7 bug) and saved-reports.jsx doRun still builds
+        "/api/tickets/reports/..." window.open URLs (browser URL, correct).
+        The saved-reports fix alone does not finish the Phase-14 bug class.
+  - KNOWN BUG (active): App.jsx routes #/reports/schedules to <SavedReports />
+    instead of <ScheduledReports /> — the scheduled-reports page exists but is
+    unreachable from the router (NAV links there, route shows wrong component).
+  - Git: single branch main, recent history is terse sync commits (01a7fc5,
+    aecd98d today update, 4c88368/c2e861a syncing, 07a6b2a service catalogue +
+    inventory + workflow automation...). Treat git log as data, not docs.
+
+6. ACTIVE COMPONENTS, API NAMESPACES, PERMISSIONS
+--------------------------------------------------------------------------------
+Namespaces (all under /api/, JWT required except where throttled auth views):
+  /api/token/, /api/token/refresh/     (AuthRateThrottle 20/min)
+  /api/accounts/   departments, users, me/, change-password/, logout/,
+                   password-reset/{request,confirm}/, verify-email/{...}/
+  /api/assets/     categories, attachments, assignments/history, histories,
+                   maintenance, disposals, knowledge-base (+feedback,
+                   -categories, -tags), vendors, "" (assets) + assign/
+                   return_asset/ retire/ mark_lost/ bulk_*/ hard_delete/
+  /api/tickets/    categories, attachments (+download/), histories, sla,
+                   kb-articles, "" (tickets) + notes/ bulk_*/ hard_delete/;
+                   reports/by-category/, reports/sla/
+  /api/services/   catalogue, requests (+cancel/ approve/ reject/ assign/
+                   comment/)
+  /api/inventory/  stock-items (+receive/ issue/ return/ adjust/ damage/
+                   low-stock/ dashboard/ movements/), purchase-receipts,
+                   reservations (+release/ fulfil/), fulfil-service-request/
+  /api/workflow/   automation-rules, rule-executions, approval-requests
+                   (+approve/ reject/)
+  /api/common/     audit-logs (SysAdmin), notifications, privacy-erasures,
+                   saved-reports, scheduled-reports, scheduled-report-runs
+                   (+retry/), notification-preferences, dashboard/,
+                   reports/departments/, exports/<dataset>/, knowledge-base/,
+                   operations/status/, data-integrity/
+  /api/recycle-bin/  <entity_type>/<pk>/ (+restore/ +permanent/)
+  /health/, /ready/  (project, not /api/)
+
+Roles: system_admin > it_manager = it_support (identical today, KNOWN
+LIMITATIONS) > employee. isStaff = first three. Backend enforces; frontend
+hides only (isStaff/isAdmin from useAuth). Key rules: SLA config = SysAdmin
+only; audit/logs + recycle permanent delete + hard_delete = SysAdmin only;
+dashboard/department reports = IT staff; employees see own + home-dept
+tickets, assigned + home-dept assets, own service requests. Export datasets
+have per-dataset permission (it_staff vs authenticated) in exports.py DATASETS.
+Throttling: default 200/min user, 100/min anon, 20/min auth.
+
+Frontend routes (hash, from App.jsx matchRoute):
+  /dashboard, /tickets (+/new, /:id, /:id/edit), /kb (+/pending, /:id,
+  /:id/revisions, /:id/revisions/:rev, /:id/compare), /self-service,
+  /assets (+/new, /:id, /:id/edit), /workflow (+/rules, /approvals,
+  /executions, /rules/:id, /rules/:id/edit, /approvals/:id,
+  /executions/:id), /maintenance, /disposals, /inventory (+/items,
+  /items/new, /items/:id, /items/:id/edit, /receive, /reservations,
+  /transactions, /fulfil), /reports/sla, /reports/departments,
+  /reports/saved, /reports/schedules (ScheduledReports — FIXED),
+  /services, /service-requests (+/:id), /categories, /departments,
+  /notifications, /settings/notifications, /users (+/:id), /profile,
+  /recycle, /audit, /sla-config, #verify-email, #reset-password.
+  NAV (visible): Dashboard(staff), Tickets, KB, Self-Service, Assets |
+  Workflow(staff), Maintenance(staff), Disposals(staff), Inventory(staff) |
+  SLA report(staff), Department reports(staff), Saved reports,
+  Scheduled reports(staff) | Categories, Departments, Notifications,
+  Notification settings, Employees | (admin) Recycle Bin, Audit Log,
+  SLA config. Services/Service Requests ARE in NAV (Work section). Vendors
+  still NOT in NAV.
+
+7. KNOWN TECHNICAL DEBT & LIMITATIONS (VERIFIED, NOT GUESSED)
+--------------------------------------------------------------------------------
+(a) Active bugs / wiring gaps
+  1. FIXED (2026-11-05): App.jsx "#/reports/schedules" now maps to
+     <ScheduledReports /> (was <SavedReports />). Route + NAV verified.
+  2. FIXED (2026-11-05): scheduled-reports.jsx 5× "/api/common/..." paths
+     stripped to "/common/..." (compatible with api.js baseURL /api). Regression
+     test added in scheduled-reports.test.jsx.
+  3. Vendor management page missing: Phase 12D claims "#/vendors" route but
+     App.jsx has no /vendors route and frontend has no vendors page — only
+     dropdowns inside assets.jsx / inventory-ops.jsx. Roadmap overstates.
+     (Owner decision: build #/vendors or correct roadmap.)
+  4. FIXED (2026-11-05): Services frontend completed — create-request form
+     driven by catalogue form_fields, approve/reject/assign/comment/cancel UI,
+     catalogue admin (create/edit/deactivate), NAV entries added.
+  5. FIXED (2026-11-05): Services tests.py now has 18 API tests (was empty
+     stub). inventory/tests.py unchanged (41 lines). workflow/tests.py stub
+     unchanged (real tests in test_workflow.py).
+  6. FIXED (2026-11-05): saved-reports.jsx doRun now fetches through the
+     authenticated axios client (responseType handled via blob), preserving the
+     JWT Authorization header instead of window.open on a protected endpoint.
+     session cookie is used). Needs token-aware export/download path.
+(b) From backend/docs/KNOWN_LIMITATIONS.md (Phase 9, still true)
+  - IT Manager vs IT Support identical permissions; user directory visible
+    org-wide; role changes SysAdmin-only; no MFA.
+  - SMTP never tested with a real provider; inbound IMAP dedup best-effort,
+    also untested. Delivery failures logged, no API-layer retry.
+  - Celery+Redis REQUIRED for SLA reminders, maintenance reminders, inbound
+    email; without them those are silent no-ops.
+  - Attachments: no antivirus, no image processing; photos stored as-is.
+  - No encryption at rest (DB), SQLite dev default, audit log not
+    tamper-evident, privacy erasure is NOT GDPR compliance.
+  - Reports section of KNOWN_LIMITATIONS is STALE (says "no scheduled report
+    delivery" — done in Phases 11D/12A). Do not trust that paragraph.
+  - No K8s/Helm/Docker, no autoscaling; SPA only, single fixed theme, i18n
+    English-only; frontend tests mock the API (no real backend e2e).
+(c) Hygiene
+  - 97 zz_*.py scratch files + add_health.py + apply_throttle.py in backend/
+    root (dev-debug debris). Should be archived/deleted, never imported.
+  - frontend/src/zz-debug.test.jsx + zz-debug-head.txt + zz-smoke.test.jsx
+    (smoke is useful; debug is debris).
+  - DEVELOPMENT_ROADMAP.md phase order is scrambled (20/21 before 16/22);
+    Phase 9 heading duplicated; Phases 10/15/17/18 absent.
+  - App.jsx TITLES has a duplicate "#/kb" key (harmless, last wins).
+  - vite react-router-dom dependency unused (hash router is hand-rolled).
+  - common/views.py recycle registry covers 9 entity types — services /
+    inventory / workflow / KB entities are NOT in the recycle bin.
+  - No migration Dry-run was performed in this scan. Run
+    `python backend/manage.py makemigrations --check --dry-run` and
+    `python backend/manage.py check` before any new phase.
+
+8. WHAT IS COMPLETE — DO NOT REBUILD (anti-loop checklist)
+--------------------------------------------------------------------------------
+  ✓ Auth (JWT, verify, reset, change pw, logout blacklist, throttle)
+  ✓ Departments + employees (CRUD, bulk import/update/activate/delete,
+    deactivate/reactivate, role change, photo, employee_detail)
+  ✓ Categories (ticket + asset, managed, 409-on-use delete)
+  ✓ Tickets (CRUD, notes, attachments+download, history, SLA config+report,
+    bulk ops, KB links, notifications + prefs)
+  ✓ Assets (CRUD, assign/return/retire/mark-lost, bulk ops, serial
+    uniqueness, vendor FK, warranty/cost)
+  ✓ Maintenance + Disposal (full lifecycle + UI + exports + assignment block)
+  ✓ Dashboard + department report (+previous period + export)
+  ✓ SLA (config UI, overdue/breach UI, escalation task + SLAEscalation)
+  ✓ KB (CRUD, feedback, versioning/revisions/compare/restore, review queue,
+    ticket integration, employee search, usefulness dashboard, export)
+  ✓ Audit log + Recycle bin + Privacy erasure (initial, not-GDPR)
+  ✓ Exports (12 datasets × CSV/XLSX/PDF/DOCX, formula-injection guard)
+  ✓ Saved + Scheduled reports (CRUD, 4 formats, email attachments, retry,
+    execution history, beat task)
+  ✓ Notification preferences (per-category, central enforcement)
+  ✓ Email-to-ticket IMAP intake (parser, dedup, ops status)
+  ✓ Celery + Redis (beat: SLA 5m, maintenance 1h, inbound 60s, reports 5m)
+  ✓ Inventory backend + frontend + tests (Phases 16+22)
+  ✓ Service catalogue backend (catalogue + requests + approve/reject/assign/
+    comment) + frontend COMPLETE (catalogue page, dynamic form-field request
+    form, request list/detail, approve/reject/assign/comment/cancel, catalogue
+    admin create/edit/deactivate, form builder, NAV entries)
+  ✓ Workflow backend + frontend + tests (rules engine, approvals, executions)
+  ✓ Production docs (DEPLOYMENT, BACKUP, ARCHITECTURE, EMAIL_OPS, PERMISSIONS,
+    API_OVERVIEW) + CI workflows (backend.yml, frontend.yml)
+  ✓ Self-service portal (tickets/assets/KB search + export)
+
+9. RECOMMENDED ROADMAP (NEXT MILESTONES — IN ORDER, NO REPEATS)
+--------------------------------------------------------------------------------
+  P0 — FIXED (2026-11-05): All reporting bugs resolved:
+       1. App.jsx schedules route -> <ScheduledReports /> import + test.
+       2. scheduled-reports.jsx: strip "/api" prefix (5 calls) + regression
+          test asserting final URL is /api/api/...-free.
+       3. saved-reports.jsx doRun: token-aware download (api client blob) or
+          document the 401; add test.
+       4. Commit the two uncommitted WIP diffs (reports.py bucket fix +
+          saved-reports.jsx prefix fix) OR revert with reason; run backend
+          test_reports + frontend report-dates + scheduled-reports tests.
+       5. Vendor page: either build #/vendors (list/create/edit) to match
+          Phase 12D claim, or correct the roadmap. (Owner decision.)
+  P1 — COMPLETE (2026-11-05): Service Request UI finished:
+       catalogue admin CRUD (#/services/manage), employee request form
+       (form_fields-driven), request detail actions (approve/reject/assign/
+       comment/cancel), NAV entries, status badges, tests. Real tests for
+       services/tests.py (currently empty) while there.
+  P2 — Verify + harden what docs say is untested:
+       real SMTP smoke (verification + reset), real IMAP smoke, Celery
+       absence behaviour, PostgreSQL migration rehearsal, makemigrations
+       --check + manage.py check in CI already; add e2e smoke (zz-smoke
+       already covers routes — extend to workflow/services/inventory).
+  P3 — Hygiene (no features): archive 97 zz_*.py + frontend zz-debug files,
+       dedupe roadmap Phase 9 heading + reorder 16/20/21/22, refresh
+       KNOWN_LIMITATIONS reporting paragraph, remove unused react-router-dom
+       or migrate to it, add services/inventory/workflow/KB to recycle-bin
+       registry IF desired (decision, not default).
+  P4 — Only then net-new scope. Candidates only if owner asks: MFA,
+       attachment AV scan, audit-log chaining, Docker/K8s, i18n. All are
+       currently documented as absent — none are half-built.
+  STOP RULE: If a task's model/migration/view/route already appears in §3
+  or §8, it is done. Check before building. The prompt's "Phase 31" is not
+  a valid starting point — use P0–P4 above.
+================================================================================
+End of progress.txt — generated by codebase scan 2026-11-04. Keep this file
+current: update §5 + git status on every commit.
+================================================================================

@@ -5,6 +5,11 @@ from .models import (
 )
 
 
+def _is_staff(user):
+    return bool(user and user.is_authenticated and user.role in
+                ("system_admin", "it_manager", "it_support"))
+
+
 class ServiceCatalogueItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = ServiceCatalogueItem
@@ -43,9 +48,16 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
     catalogue_item_name = serializers.CharField(source="catalogue_item.name", read_only=True)
     requester_name = serializers.CharField(source="requester.email", read_only=True)
     assigned_to_name = serializers.CharField(source="assigned_to.email", read_only=True, allow_null=True)
-    comments = ServiceRequestCommentSerializer(many=True, read_only=True)
+    comments = serializers.SerializerMethodField(read_only=True)
     history = ServiceRequestHistorySerializer(many=True, read_only=True)
     attachments = ServiceRequestAttachmentSerializer(many=True, read_only=True)
+
+    def get_comments(self, obj):
+        user = self.context.get("request").user if self.context.get("request") else None
+        qs = obj.comments.all()
+        if not _is_staff(user):
+            qs = qs.filter(is_internal=False)
+        return ServiceRequestCommentSerializer(qs, many=True).data
 
     class Meta:
         model = ServiceRequest

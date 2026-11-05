@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -44,7 +47,7 @@ jobs:
           cd backend
           python manage.py makemigrations --check --dry-run
 
-      - name: Run backend tests
+      - name: Run backend tests (SQLite)
         run: |
           cd backend
           python manage.py test
@@ -54,4 +57,76 @@ jobs:
           CELERY_BROKER_URL: "redis://localhost:6379/0"
           CELERY_RESULT_BACKEND: "redis://localhost:6379/0"
           CACHE_LOCATION: "redis://localhost:6379/1"
+          EMAIL_BACKEND: "django.core.mail.backends.locmem.EmailBackend"
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ticketing_test
+          POSTGRES_PASSWORD: ticketing_test
+          POSTGRES_DB: ticketing_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ticketing_test -d ticketing_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Django system checks (PostgreSQL)
+        run: |
+          cd backend
+          python manage.py check
+        env:
+          DATABASE__ENGINE: "django.db.backends.postgresql"
+          DATABASE__NAME: "ticketing_test"
+          DATABASE__HOST: "localhost"
+          DATABASE__PORT: "5432"
+          DATABASE__USER: "ticketing_test"
+          DATABASE__PASSWORD: "ticketing_test"
+
+      - name: Check migration consistency (PostgreSQL)
+        run: |
+          cd backend
+          python manage.py makemigrations --check --dry-run
+        env:
+          DATABASE__ENGINE: "django.db.backends.postgresql"
+          DATABASE__NAME: "ticketing_test"
+          DATABASE__HOST: "localhost"
+          DATABASE__PORT: "5432"
+          DATABASE__USER: "ticketing_test"
+          DATABASE__PASSWORD: "ticketing_test"
+
+      - name: Run backend tests (PostgreSQL)
+        run: |
+          cd backend
+          python manage.py test services common.test_reports common.test_scheduled_reports inventory workflow.test_workflow
+        env:
+          DATABASE__ENGINE: "django.db.backends.postgresql"
+          DATABASE__NAME: "ticketing_test"
+          DATABASE__HOST: "localhost"
+          DATABASE__PORT: "5432"
+          DATABASE__USER: "ticketing_test"
+          DATABASE__PASSWORD: "ticketing_test"
+          DEBUG: "false"
+          SECRET_KEY: "ci-test-secret-key-do-not-use-in-production"
+          CELERY_BROKER_URL: "redis://localhost:6379/0"
+          CELERY_RESULT_BACKEND: "redis://localhost:6379/0"
           EMAIL_BACKEND: "django.core.mail.backends.locmem.EmailBackend"

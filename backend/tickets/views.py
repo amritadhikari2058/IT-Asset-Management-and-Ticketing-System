@@ -1041,6 +1041,10 @@ class TicketAttachmentViewSet(viewsets.ModelViewSet):
         import os
 
         from django.http import FileResponse
+        from common.attachment_security import (
+            add_download_security_headers,
+            safe_content_disposition_filename,
+        )
         obj = self.get_object()  # scoped to visible tickets above
         if obj.is_deleted:
             return Response({"detail": "Attachment is deleted."}, status=404)
@@ -1054,7 +1058,9 @@ class TicketAttachmentViewSet(viewsets.ModelViewSet):
             handle,
             content_type=mimetypes.guess_type(name)[0]
             or "application/octet-stream")
-        resp["Content-Disposition"] = f'attachment; filename="{name}"'
+        safe_name = safe_content_disposition_filename(name)
+        resp["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+        add_download_security_headers(resp)
         return resp
 
 

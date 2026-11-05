@@ -134,3 +134,64 @@ and `CACHE_LOCATION` to point at a managed Redis.
 - `python manage.py test common.test_phase7` — email ingestion, dedup,
   attachments, replies, ops status, task health, outbound dedup (12 tests).
 - Regression suites: `python manage.py test tickets accounts common assets`.
+
+## Safe diagnostics
+
+### Outbound email diagnostic
+
+Configuration-only (no mail sent):
+
+```bash
+python manage.py test_email_delivery --dry-run
+```
+
+Explicit real-send (requires both `--to` and `--send`):
+
+```bash
+python manage.py test_email_delivery --to ops@example.com --send
+```
+
+Never sends unless `--send` is explicitly supplied alongside `--to`.
+Credentials are never printed. Exit codes: 0 = accepted by backend,
+2 = missing/invalid recipient, 3 = missing sender, 4 = send failure.
+
+### Inbound email diagnostic
+
+Configuration check:
+
+```bash
+python manage.py check_inbound_email
+```
+
+Optional read-only live connectivity (IMAP SELECT only, no mutation):
+
+```bash
+python manage.py check_inbound_email --connect
+```
+
+### Parser security tests
+
+Run the inbound parser security suite (no live IMAP):
+
+```bash
+python manage.py test common.test_inbound_parser
+```
+
+Covers: duplicate/missing/malformed Message-ID, missing/malformed sender,
+unknown/inactive sender, missing subject, plain-text/HTML-only/multipart
+bodies, malformed MIME, body and attachment size limits, blocked and
+path-traversal filenames, Unicode/duplicate/empty attachments, idempotent
+reprocessing, and EmailProcessing success/failure records.
+
+## Attachment policy
+
+Inbound attachments go through `common.inbound.validate_inbound_attachment`
+and share the API upload policy:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `ATTACHMENT_ALLOWED_EXTENSIONS` | `pdf,png,jpg,jpeg,txt,csv,log,docx,xlsx` | Allowed extensions |
+| `ATTACHMENT_MAX_SIZE_MB` | `10` | Per-file size cap |
+
+Executable extensions (`exe`, `bat`, `cmd`, `sh`, `ps1`, `msi`) and
+executable MIME types are blocked regardless of extension list.

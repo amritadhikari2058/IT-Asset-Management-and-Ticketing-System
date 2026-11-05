@@ -183,13 +183,33 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+#
+# Local development uses SQLite. Production requires PostgreSQL.
+# Configure via discrete DATABASE_* environment variables (used by CI /
+# rehearsal and production). When none are set, SQLite is the dev default.
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+# Discrete environment variables (used by CI / rehearsal / production).
+_db_engine = os.environ.get("DATABASE__ENGINE",
+                            "django.db.backends.sqlite3")
+_db_name = os.environ.get("DATABASE__NAME",
+                          str(BASE_DIR / "db.sqlite3"))
+_db_host = os.environ.get("DATABASE__HOST", "")
+_db_port = os.environ.get("DATABASE__PORT", "")
+_db_user = os.environ.get("DATABASE__USER", "")
+_db_password = os.environ.get("DATABASE__PASSWORD", "")
+_default_db = {
+    "ENGINE": _db_engine,
+    "NAME": _db_name,
 }
+if _db_host:
+    _default_db["HOST"] = _db_host
+if _db_port:
+    _default_db["PORT"] = _db_port
+if _db_user:
+    _default_db["USER"] = _db_user
+if _db_password:
+    _default_db["PASSWORD"] = _db_password
+DATABASES = {"default": _default_db}
 
 
 # Password validation

@@ -89,7 +89,52 @@ Django database configuration: the settings file defaults to SQLite. For
 production, add a `DATABASES` block that reads `DATABASE_URL` (e.g. via
 `dj-database-url` or manual parsing) and uses `django.db.backends.postgresql`.
 
-## 3. Install dependencies
+## 3. Configuration validation
+
+Before deploying, run the production configuration validator:
+
+```bash
+cd backend
+python manage.py validate_production_config
+```
+
+Normal mode exits 0 when there are no ERROR results (warnings are
+acceptable for local development). Strict mode treats development-acceptable
+settings as production errors:
+
+```bash
+python manage.py validate_production_config --strict
+```
+
+Local development will correctly fail strict validation (DEBUG, SQLite,
+console email backend, etc.). This is expected — strict mode is for
+production-like environments only.
+
+Also run Django's built-in deployment check:
+
+```bash
+python manage.py check --deploy
+```
+
+Review each warning: some are expected under local settings (e.g.
+`security.W018` DEBUG=True) and are resolved by production environment
+variables (see `.env.example`). Do not suppress warnings merely to produce
+a clean command.
+
+### Environment distinction
+
+| Environment | DEBUG | ALLOWED_HOSTS | Cookies | SSL redirect | HSTS |
+|---|---|---|---|---|---|
+| Local development | true | (empty) | insecure | false | 0 |
+| Test / CI | false | test hosts | insecure | false | 0 |
+| Production (HTTPS) | false | explicit hostnames | secure | true | 31536000+ |
+| Behind TLS proxy | false | explicit hostnames | secure | false* | 31536000+ |
+
+\* When behind a reverse proxy that terminates TLS, set
+`SECURE_PROXY_SSL_HEADER` instead of `SECURE_SSL_REDIRECT=true`, and trust
+the proxy via `CSRF_TRUSTED_ORIGINS` / `CORS_ALLOWED_ORIGINS`.
+
+## 4. Install dependencies
 
 ```bash
 cd backend
@@ -104,7 +149,7 @@ npm ci
 npm run build   # -> frontend/dist/
 ```
 
-## 4. Run migrations and seed
+## 5. Run migrations and seed
 
 ```bash
 cd backend
@@ -114,7 +159,33 @@ python manage.py seed_defaults   # optional: demo data
 
 Run `migrate` on every deploy after code changes.
 
-## 5. Serve the backend (Gunicorn)
+### PostgreSQL migration rehearsal
+
+Production requires PostgreSQL; local development uses SQLite. Before a
+production deploy, rehearse migrations against an empty PostgreSQL database
+using the provided script:
+
+```powershell
+# From the repository root (PowerShell):
+.\scripts\rehearse_postgresql.ps1 -DatabaseName ticketing_rehearsal -ConfirmRehearsal
+```
+
+Safeguards:
+- Refuses production-looking database names (`postgres`, `template0`,
+  `production`, `prod`, `live`, `primary`, `ticketing`, `ticketing_prod`,
+  `app_db`, `main`).
+- Requires the explicit `-ConfirmRehearsal` flag.
+- Never creates or drops a database automatically; the rehearsal database
+  must already exist and be empty.
+- Never touches the local SQLite database.
+- Runs `manage.py check`, `makemigrations --check --dry-run`, `migrate`,
+  and targeted backend tests against PostgreSQL.
+
+The script is run in CI against a disposable PostgreSQL service (see
+`.github/workflows/backend.yml`, `postgres` job). Credentials are supplied
+via environment variables only and are never printed.
+
+## 6. Serve the backend (Gunicorn)
 
 ```bash
 cd backend
@@ -129,7 +200,7 @@ gunicorn config.wsgi:application \
 Run behind a reverse proxy (Nginx/Caddy) that terminates TLS. Do not expose
 Gunicorn directly to the internet.
 
-## 6. Serve the frontend
+## 7. Serve the frontend
 
 The Vite build produces static assets in `frontend/dist/`. Serve them with
 the reverse proxy, and proxy `/api/` to the Gunicorn backend:
@@ -143,7 +214,7 @@ The frontend's `api.js` hardcodes `http://127.0.0.1:8000/api` in dev. In
 production, set the axios baseURL via build env or serve the frontend from
 the same origin as the API so relative calls work.
 
-## 7. Celery worker and beat
+## 8. Celery worker and beat
 
 ```bash
 # Worker
@@ -160,7 +231,30 @@ Deployments). Beat runs the periodic tasks:
 - `check_maintenance_reminders` hourly
 - `process_inbound_mailbox` every minute (if `INBOUND_MAILBOX_ENABLED=true`)
 
-## 8. Static and media files
+### Celery and Redis diagnostics
+
+The following management commands validate configuration without contacting
+a worker (safe for CI):
+
+```bash
+# Celery configuration: broker, serializer, accept_content, Beat tasks,
+# time limits, retry settings.
+python manage.py check_celery_config
+
+# Celery worker availability (inspect ping; short timeout).
+python manage.py check_celery_worker
+
+# Redis broker: harmless PING only; never lists, reads, or deletes keys.
+python manage.py check_redis --timeout 5
+```
+
+- `check_redis` performs only a `PING`, sanitizes credentials in output,
+  and returns nonzero on DNS/connection/authentication/timeout failures.
+- `check_celery_worker` uses `inspect ping` and returns nonzero when no
+  worker responds; it never enqueues work.
+- None of these commands print credentials or broker URLs with secrets.
+
+## 9. Static and media files
 
 - **Static**: `python manage.py collectstatic` → `STATIC_ROOT`
   (`backend/staticfiles/`). Serve via the reverse proxy at `/static/`.
@@ -168,7 +262,7 @@ Deployments). Beat runs the periodic tasks:
   permission-checked attachment endpoints — never expose S3 URLs directly.
   Set `AWS_DEFAULT_ACL=None` so objects are private by default.
 
-## 9. HTTPS and domain
+## 10. HTTPS and domain
 
 - Terminate TLS at the reverse proxy with a valid certificate (Let's
   Encrypt or your provider).
@@ -176,7 +270,7 @@ Deployments). Beat runs the periodic tasks:
 - Add the domain to `ALLOWED_HOSTS` and `CSRF_TRUSTED_ORIGINS`.
 - Set `CORS_ALLOWED_ORIGINS` to the production frontend origin only.
 
-## 10. Environment variables and secrets
+## 11. Environment variables and secrets
 
 Never commit `.env`, database files, or credentials to Git. Use a secrets
 manager (AWS Secrets Manager, HashiCorp Vault, GitHub Secrets for CI) and
@@ -191,7 +285,7 @@ Required minimum in production:
 - `AWS_STORAGE_BUCKET_NAME` + region (if `STORAGE_BACKEND=s3`)
 - `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` (Redis)
 
-## 11. Health endpoints
+## 12. Health endpoints
 
 Two endpoints are available for load balancer / orchestration probes:
 
@@ -199,7 +293,7 @@ Two endpoints are available for load balancer / orchestration probes:
 - `GET /ready/` — readiness (checks database connectivity; 503 if DB is
   unavailable)
 
-## 12. Logging and monitoring
+## 13. Logging and monitoring
 
 Django logs to stdout (captured by systemd / container runtime). Log level
 is controlled by `LOG_LEVEL` (default INFO). Celery worker/beat logs go to
@@ -216,14 +310,53 @@ Monitor:
 - `EmailProcessing` table for inbound email intake
 - Disk usage of media (dev) / S3 bucket size (prod)
 
-## 13. SMTP configuration
+## 14. SMTP and IMAP diagnostics
+
+### Outbound email (SMTP)
 
 Outbound email uses Django's SMTP backend (provider-agnostic). Delivery
 failures are logged without credentials or message bodies and never break
 the request flow. Send a real verification + password-reset email against
 the production-like SMTP provider before go-live.
 
-## 14. Pre-go-live checklist
+Configuration-only (safe, no mail sent):
+
+```bash
+python manage.py test_email_delivery --dry-run
+```
+
+Explicit real-send (requires both `--to` and `--send`; never automatic):
+
+```bash
+python manage.py test_email_delivery --to ops@example.com --send
+```
+
+The command prints the backend class, sender, SMTP host/port/TLS/SSL
+settings, and (presence-only) username/password status. Credentials are
+never printed. It exits nonzero on send failure and distinguishes SMTP
+acceptance from inbox delivery.
+
+### Inbound email (IMAP)
+
+Configuration check:
+
+```bash
+python manage.py check_inbound_email
+```
+
+Optional read-only live connectivity (does not fetch bodies, mark messages
+read, move, delete, or create tickets):
+
+```bash
+python manage.py check_inbound_email --connect
+```
+
+The command reports enablement, host, port, username, password presence,
+TLS/SSL, mailbox, and poll interval. With `--connect`, it performs a
+read-only IMAP `SELECT` only and returns nonzero on DNS/timeout/auth/
+mailbox-selection failures. Credentials are never printed.
+
+## 15. Pre-go-live checklist
 
 - [ ] `DEBUG=false` and a unique `SECRET_KEY` set
 - [ ] `ALLOWED_HOSTS` contains production hostnames only
@@ -239,7 +372,7 @@ the production-like SMTP provider before go-live.
 - [ ] `.env` / secrets not in Git; `media/` and `db.sqlite3` git-ignored
 - [ ] CI pipeline passing (lint, tests, build)
 
-## 15. Do not
+## 16. Do not
 
 - Do not auto-deploy or push changes without authorization.
 - Do not run destructive backup/restore against the live database without a

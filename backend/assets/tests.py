@@ -3,7 +3,7 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from accounts.models import User
+from accounts.models import Department, User
 from accounts.tests import auth, make_users
 from assets.models import (
     Asset, AssetAttachment, AssetCategory, AssetHistory, Assignment,
@@ -666,6 +666,45 @@ class AssetAttachmentTests(TestCase):
         att.file.storage.delete(att.file.name)
         dl = self.c.get(f"/api/assets/attachments/{aid}/download/")
         self.assertEqual(dl.status_code, 410)
+
+
+class AssetAttachmentIdorTests(TestCase):
+    """Asset attachment IDOR: employees cannot reach out-of-scope files."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        # Asset assigned to emp (visible to emp via home department).
+        self.own_asset = Asset.objects.create(
+            asset_tag="OWN1", name="Own", category=self.acat,
+            assigned_to=self.emp, status="assigned", department=self.dep)
+        # Asset assigned to another employee in a different department
+        # (NOT visible to emp).
+        other = self.emp.__class__.objects.create_user(
+            username="o@x", email="o@x", employee_id="O1",
+            password="pw12345678", role="employee")
+        other_dep = Department.objects.create(
+            name="Other Dept", code="OT", description="x")
+        self.other_asset = Asset.objects.create(
+            asset_tag="OTH1", name="Other", category=self.acat,
+            assigned_to=other, status="assigned", department=other_dep)
+
+    def _upload(self, asset, name="doc.txt", content=b"hello",
+                ctype="text/plain"):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        up = SimpleUploadedFile(name, content, content_type=ctype)
+        return self.c.post("/api/assets/attachments/",
+                           {"asset": asset.pk, "file": up},
+                           format="multipart")
+
+    def test_employee_cannot_download_other_asset_attachment(self):
+        auth(self.c, self.mgr)
+        aid = self._upload(self.other_asset).data["id"]
+        # Switch to the employee who has no visibility on the other asset.
+        auth(self.c, self.emp)
+        dl = self.c.get(f"/api/assets/attachments/{aid}/download/")
+        self.assertEqual(dl.status_code, 404)
 
 
 class AssetStatusWorkflowTests(TestCase):

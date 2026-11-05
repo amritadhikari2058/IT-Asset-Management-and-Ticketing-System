@@ -15,6 +15,7 @@ import { Disposals } from './disposals';
 import { Dashboard, DepartmentReports } from './dashboard';
 import { SelfService } from "./self-service";
 import { SavedReports } from './saved-reports';
+import { ScheduledReports } from './scheduled-reports';
 import { NotificationSettings } from './settings';
 import { ServicesCatalogue, MyServiceRequests, ServiceRequestDetail } from './services';
 import Inventory, { InventoryItems, StockItemDetail, StockItemForm } from './inventory';
@@ -25,6 +26,8 @@ const NAV = [
   { section: 'Work' },
 { hash: '#/dashboard', label: 'Dashboard', staffOnly: true },
   { hash: '#/tickets', label: 'Tickets' },
+  { hash: '#/services', label: 'Services', staffOnly: false },
+  { hash: '#/service-requests', label: 'Service requests', staffOnly: false },
   { hash: '#/kb', label: 'Knowledge Base', staffOnly: false },
   { hash: '#/self-service', label: 'Self-Service', staffOnly: false },
   { hash: '#/assets', label: 'Assets' },
@@ -64,6 +67,8 @@ function visibleNav(nav, isStaff) {
 const TITLES = {
   '#/dashboard': 'Dashboard',
   '#/tickets': 'Tickets',
+  '#/services': 'Services',
+  '#/service-requests': 'Service requests',
   '#/kb': 'Knowledge Base',
   '#/reports/sla': 'SLA report',
   '#/reports/departments': 'Department reports',
@@ -103,6 +108,9 @@ function crumbs(hash) {
   if (h.startsWith('#/reports/')) return ['Reports', TITLES[h]];
   if (h.startsWith('#/settings/')) return ['Settings', TITLES[h]];
   if ((m = h.match(/^#\/users\/(\d+)$/))) return ['Employees', `Employee #${m[1]}`];
+  if (h === '#/services') return ['Services'];
+  if (h === '#/service-requests') return ['Service requests'];
+  if ((m = h.match(/^#\/service-requests\/(\d+)$/))) return ['Service requests', `Request #${m[1]}`];
   if (h === '#/inventory' || h === '#/inventory/items') return ['Inventory'];
   if ((m = h.match(/^#\/inventory\/items\/(\d+)(?:\/(edit))?$/))) return ['Inventory', `Item #${m[1]}`, m[3] ? 'Edit' : null].filter(Boolean);
   if (h.startsWith('#/inventory/receive')) return ['Inventory', 'Receive stock'];
@@ -159,7 +167,7 @@ function matchRoute(hash) {
     '#/reports/sla': <SLAReport />,
     '#/reports/departments': <DepartmentReports />,
     '#/reports/saved': <SavedReports />,
-    '#/reports/schedules': <SavedReports />,
+    '#/reports/schedules': <ScheduledReports />,
 '#/assets': <Assets />,
     '#/maintenance': <Maintenance />,
     '#/disposals': <Disposals />,

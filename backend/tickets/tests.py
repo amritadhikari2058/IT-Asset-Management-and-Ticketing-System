@@ -1438,3 +1438,108 @@ class TicketCategoryEditTests(TestCase):
                            {"name": "   "}, format="json")
         self.assertEqual(res.status_code, 400)
         self.assertIn("name", res.data)
+
+
+class TicketAttachmentSecurityTests(TestCase):
+    """Ticket attachment download security: authentication, scoping, IDOR."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="General")
+        # A ticket owned by emp, visible to both emp and staff.
+        self.ticket = Ticket.objects.create(
+            title="Private ticket", description="d",
+            category=self.tcat, requester=self.emp,
+            department=self.dep, status="open", priority="medium")
+
+    def _upload(self, name="report.txt", content=b"hello",
+                ctype="text/plain"):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        up = SimpleUploadedFile(name, content, content_type=ctype)
+        return self.c.post("/api/tickets/attachments/",
+                           {"ticket": self.ticket.pk, "file": up},
+                           format="multipart")
+
+    def test_anonymous_download_denied(self):
+        auth(self.c, self.mgr)
+        aid = self._upload().data["id"]
+        self.c.credentials()
+        dl = self.c.get(f"/api/tickets/attachments/{aid}/download/")
+        self.assertEqual(dl.status_code, 401)
+        dl.close()
+
+    def test_employee_downloads_own_ticket_attachment(self):
+        auth(self.c, self.emp)
+        aid = self._upload().data["id"]
+        dl = self.c.get(f"/api/tickets/attachments/{aid}/download/")
+        self.assertEqual(dl.status_code, 200)
+        dl.close()
+
+    def test_staff_downloads_visible_attachment(self):
+        auth(self.c, self.mgr)
+        aid = self._upload().data["id"]
+        dl = self.c.get(f"/api/tickets/attachments/{aid}/download/")
+        self.assertEqual(dl.status_code, 200)
+        dl.close()
+
+    def test_employee_cannot_download_other_employee_ticket_attachment(self):
+        other = self.emp.__class__.objects.create_user(
+            username="o@x", email="o@x", employee_id="O1",
+            password="pw12345678", role="employee")
+        other_dep = self.emp.__class__  # reuse User model
+        other_department = None
+        from accounts.models import Department
+        other_dep_obj = Department.objects.create(
+            name="Other Dept", code="OT", description="x")
+        other_ticket = Ticket.objects.create(
+            title="Other ticket", description="d", category=self.tcat,
+            requester=other, department=other_dep_obj, status="open",
+            priority="medium")
+        # emp uploads to their own ticket first.
+        auth(self.c, self.emp)
+        aid = self._upload().data["id"]
+        # Repoint the attachment onto the other employee's ticket (different
+        # department, not visible to emp).
+        from tickets.models import TicketAttachment
+        att = TicketAttachment.objects.get(pk=aid)
+        att.ticket = other_ticket
+        att.save()
+        # emp should not see a ticket they cannot access.
+        dl = self.c.get(f"/api/tickets/attachments/{aid}/download/")
+        self.assertEqual(dl.status_code, 404)
+
+    def test_download_sets_security_headers(self):
+        auth(self.c, self.mgr)
+        aid = self._upload().data["id"]
+        dl = self.c.get(f"/api/tickets/attachments/{aid}/download/")
+        self.assertEqual(dl.status_code, 200)
+        self.assertEqual(dl["X-Content-Type-Options"], "nosniff")
+        self.assertIn("attachment", dl["Content-Disposition"])
+        # No CRLF in the header value.
+        self.assertNotIn("\r", dl["Content-Disposition"])
+        self.assertNotIn("\n", dl["Content-Disposition"])
+        dl.close()
+
+    def test_download_sanitizes_crlf_filename(self):
+        from tickets.models import TicketAttachment
+        auth(self.c, self.mgr)
+        aid = self._upload().data["id"]
+        att = TicketAttachment.objects.get(pk=aid)
+        att.original_filename = "evil\r\nname.txt"
+        att.save()
+        dl = self.c.get(f"/api/tickets/attachments/{aid}/download/")
+        self.assertEqual(dl.status_code, 200)
+        self.assertNotIn("\r", dl["Content-Disposition"])
+        self.assertNotIn("\n", dl["Content-Disposition"])
+        dl.close()
+
+    def test_download_deleted_attachment_404(self):
+        auth(self.c, self.mgr)
+        aid = self._upload().data["id"]
+        from tickets.models import TicketAttachment
+        att = TicketAttachment.objects.get(pk=aid)
+        att.soft_delete(by_user=self.mgr)
+        dl = self.c.get(f"/api/tickets/attachments/{aid}/download/")
+        self.assertEqual(dl.status_code, 404)
+        dl.close()
