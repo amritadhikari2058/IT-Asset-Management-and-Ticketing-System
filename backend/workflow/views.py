@@ -61,7 +61,15 @@ class AutomationRuleViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in ("create", "update", "partial_update", "destroy"):
-            return [IsSystemAdmin()]
+            role = getattr(self.request.user, "role", "")
+            if role == "it_support":
+                from rest_framework.response import Response
+                from rest_framework.permissions import BasePermission
+                class Deny(BasePermission):
+                    def has_permission(self, request, view):
+                        return False
+                return [Deny()]
+            return [IsITStaff()]
         return [IsITStaff()]
 
     def get_queryset(self):
@@ -235,6 +243,9 @@ class ApprovalRequestViewSet(viewsets.ModelViewSet):
         return self._decide(request, approve=False)
 
     def _decide(self, request, approve):
+        role = getattr(request.user, "role", "")
+        if role == "it_support":
+            return Response({"detail": "Forbidden"}, status=403)
         obj = self.get_object()
         comment = (request.data.get("comment") or "").strip()
         if obj.requested_by_id == request.user.pk:

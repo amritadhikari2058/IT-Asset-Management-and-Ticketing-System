@@ -6,7 +6,7 @@
   explicit {"confirm": "<id>"} and writes a protected AuditLog.
 """
 import logging
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -99,18 +99,28 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         entity_type = p.get("entity_type")
         if entity_type:
             qs = qs.filter(entity_type=entity_type)
-        for param, lookup in (("date_from", "timestamp__date__gte"),
-                              ("date_to", "timestamp__date__lte")):
+        for param, lookup in (("date_from", "timestamp__gte"),
+                              ("date_to", "timestamp__lte")):
             raw = p.get(param)
             if raw:
-                import datetime
                 try:
-                    day = datetime.date.fromisoformat(raw)
+                    day = date.fromisoformat(raw)
                 except ValueError:
                     from rest_framework.exceptions import ValidationError
                     raise ValidationError(
                         {param: "Use ISO date format YYYY-MM-DD."})
-                qs = qs.filter(**{lookup: day})
+                # Explicit UTC day boundaries so the filter is deterministic
+                # and independent of the current active timezone (the
+                # __date lookup casts through the active tz, which can shift
+                # the boundary by a day).
+                start_of_day = timezone.make_aware(
+                    datetime.combine(day, time.min), timezone.UTC)
+                end_of_day = timezone.make_aware(
+                    datetime.combine(day, time.max), timezone.UTC)
+                if param == "date_from":
+                    qs = qs.filter(timestamp__gte=start_of_day)
+                else:
+                    qs = qs.filter(timestamp__lte=end_of_day)
         return qs
 
 

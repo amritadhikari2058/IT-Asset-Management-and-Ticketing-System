@@ -543,10 +543,18 @@ class Vendor(SoftDeleteModel):
     """
 
     name = models.CharField(max_length=200, unique=True)
+    code = models.CharField(max_length=100, unique=True, blank=True,
+                            help_text="Short vendor code/identifier (e.g. DELL, APPLE)")
+    is_active = models.BooleanField(default=True, db_index=True,
+                                    help_text="Vendor active/inactive status")
     contact_person = models.CharField(max_length=200, blank=True, default="")
     email = models.EmailField(blank=True, default="")
     phone = models.CharField(max_length=50, blank=True, default="")
+    website = models.URLField(max_length=200, blank=True,
+                              help_text="Vendor website URL")
     address = models.TextField(blank=True, default="")
+    tax_registration = models.CharField(max_length=100, blank=True,
+                                        help_text="Tax or registration number (administrative data, not shown to employees)")
     notes = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -555,6 +563,7 @@ class Vendor(SoftDeleteModel):
         ordering = ["name"]
         indexes = [
             models.Index(fields=["name"], name="vendor_name_idx"),
+            models.Index(fields=["code"], name="vendor_code_idx"),
         ]
         permissions = [
             ("manage_vendor", "Can manage vendors"),

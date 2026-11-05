@@ -181,6 +181,12 @@ Safeguards:
 - Runs `manage.py check`, `makemigrations --check --dry-run`, `migrate`,
   and targeted backend tests against PostgreSQL.
 
+Verification: the rehearsal was run against a live PostgreSQL 18.4 database
+and the full migration chain (including assets.0003/0005/0006 serial-number
+uniqueness triggers) applied from zero; the serial-number uniqueness tests
+pass on both SQLite and PostgreSQL. The script is vendor-agnostic and works
+with PostgreSQL 16 (CI) and 18.4 (local rehearsal).
+
 The script is run in CI against a disposable PostgreSQL service (see
 `.github/workflows/backend.yml`, `postgres` job). Credentials are supplied
 via environment variables only and are never printed.

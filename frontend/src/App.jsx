@@ -8,7 +8,18 @@ import {
 } from './kb';
 import { AssetForm, AssetDetail } from './assets';
 import { AuditLogPage } from './audit';
+import { VendorForm, VendorsPage, VendorDetail } from './vendors';
 import { TicketForm, TicketDetail } from './tickets';
+import { TicketQueuesPage } from './ticket-queues';
+import { TicketOperationsDashboard } from './ticket-operations';
+import { CannedResponsesPage } from './ticket-canned-responses';
+import { TicketTemplatesPage } from './ticket-templates';
+import { SavedTicketViews } from './ticket-saved-views';
+import { TicketSatisfactionSurvey } from './ticket-satisfaction';
+import { TicketMergeDialog } from './ticket-merge';
+import { TicketTimeline } from './ticket-timeline';
+import { TicketCollaborationPanel } from './ticket-collaboration';
+import { TicketRelationsPanel } from './ticket-relations';
 import { Notifications, NotifBadge } from './notifications';
 import { Maintenance } from './maintenance';
 import { Disposals } from './disposals';
@@ -21,6 +32,7 @@ import { ServicesCatalogue, MyServiceRequests, ServiceRequestDetail } from './se
 import Inventory, { InventoryItems, StockItemDetail, StockItemForm } from './inventory';
 import { ReceiveStock, Reservations, TransactionHistory, FulfilServiceRequest } from './inventory-ops';
 import Workflow from './workflow';
+import { ApprovalCenter } from './approvals';
 
 const NAV = [
   { section: 'Work' },
@@ -29,6 +41,10 @@ const NAV = [
   { hash: '#/services', label: 'Services', staffOnly: false },
   { hash: '#/service-requests', label: 'Service requests', staffOnly: false },
   { hash: '#/kb', label: 'Knowledge Base', staffOnly: false },
+  { hash: '#/tickets/queues', label: 'Ticket Queues', staffOnly: true },
+  { hash: '#/tickets/operations', label: 'Operations', staffOnly: true },
+  { hash: '#/tickets/canned-responses', label: 'Canned Responses', staffOnly: true },
+  { hash: '#/tickets/templates', label: 'Ticket Templates', staffOnly: true },
   { hash: '#/self-service', label: 'Self-Service', staffOnly: false },
   { hash: '#/assets', label: 'Assets' },
   { section: 'Operations', staffOnly: true },
@@ -39,8 +55,11 @@ const NAV = [
   { section: 'Reports' },  { hash: '#/reports/sla', label: 'SLA report', staffOnly: true },
   { hash: '#/reports/departments', label: 'Department reports', staffOnly: true },
   { hash: '#/reports/saved', label: 'Saved reports', staffOnly: false },
-  { hash: '#/reports/schedules', label: 'Scheduled reports', staffOnly: true },
+  { hash: '#/reports/schedules', label: 'Scheduled reports', cap: 'canManageScheduledReports' },
+  { section: 'Approvals' },
+  { hash: '#/approvals', label: 'Approvals', staffOnly: true },
   { section: 'Organize' },
+  { hash: '#/vendors', label: 'Vendors', cap: 'canViewVendors' },
   { hash: '#/categories', label: 'Categories' },
   { hash: '#/departments', label: 'Departments' },
   { hash: '#/notifications', label: 'Notifications', badge: true },
@@ -48,9 +67,17 @@ const NAV = [
   { hash: '#/users', label: 'Employees' },
 ];
 
-/** Drop staff-only entries and any section left with no visible items. */
-function visibleNav(nav, isStaff) {
-  const kept = nav.filter((n) => n.section || !n.staffOnly || isStaff);
+/** Drop staff-only entries, capability-gated entries, and any section left
+ *  with no visible items. `caps` is the set of boolean capability helpers
+ *  from `useAuth()` (isStaff, canManageVendors, ...). Unknown capabilities
+ *  fail closed (entry hidden). */
+function visibleNav(nav, caps) {
+  const kept = nav.filter((n) => {
+    if (n.section) return true;
+    if (n.staffOnly) return !!caps.isStaff;
+    if (n.cap) return !!caps[n.cap];
+    return true;
+  });
   const out = [];
   for (let i = 0; i < kept.length; i += 1) {
     if (!kept[i].section) {
@@ -67,6 +94,10 @@ function visibleNav(nav, isStaff) {
 const TITLES = {
   '#/dashboard': 'Dashboard',
   '#/tickets': 'Tickets',
+  '#/tickets/queues': 'Ticket Queues',
+  '#/tickets/operations': 'Operations Dashboard',
+  '#/tickets/canned-responses': 'Canned Responses',
+  '#/tickets/templates': 'Ticket Templates',
   '#/services': 'Services',
   '#/service-requests': 'Service requests',
   '#/kb': 'Knowledge Base',
@@ -74,6 +105,8 @@ const TITLES = {
   '#/reports/departments': 'Department reports',
   '#/reports/saved': 'Saved reports',
   '#/reports/schedules': 'Scheduled reports',
+  '#/vendors': 'Vendors',
+  '#/approvals': 'Approvals',
   '#/assets': 'Assets',
   '#/workflow': 'Workflow',
   '#/maintenance': 'Maintenance',
@@ -103,6 +136,7 @@ function crumbs(hash) {
   }
   if (h === '#/tickets/new') return ['Tickets', 'New'];
   if (h === '#/assets/new') return ['Assets', 'New'];
+  if (h === '#/vendors/new') return ['Vendors', 'New'];
   if (h === '#/recycle' || h === '#/audit') return ['Administration', TITLES[h]];
   if (h.startsWith('#/workflow')) return ['Workflow'];
   if (h.startsWith('#/reports/')) return ['Reports', TITLES[h]];
@@ -111,6 +145,7 @@ function crumbs(hash) {
   if (h === '#/services') return ['Services'];
   if (h === '#/service-requests') return ['Service requests'];
   if ((m = h.match(/^#\/service-requests\/(\d+)$/))) return ['Service requests', `Request #${m[1]}`];
+  if (h === '#/approvals') return ['Approvals'];
   if (h === '#/inventory' || h === '#/inventory/items') return ['Inventory'];
   if ((m = h.match(/^#\/inventory\/items\/(\d+)(?:\/(edit))?$/))) return ['Inventory', `Item #${m[1]}`, m[3] ? 'Edit' : null].filter(Boolean);
   if (h.startsWith('#/inventory/receive')) return ['Inventory', 'Receive stock'];
@@ -128,6 +163,14 @@ function matchRoute(hash) {
   if ((m = route.match(/^#\/tickets\/(\d+)\/edit$/))) return <TicketForm id={m[1]} />;
   if (route === '#/tickets/new') return <TicketForm />;
   if ((m = route.match(/^#\/tickets\/(\d+)$/))) return <TicketDetail id={m[1]} />;
+  if ((m = route.match(/^#\/tickets\/(\d+)\/timeline$/))) return <TicketTimeline id={m[1]} />;
+  if (route === '#/tickets/queues') return <TicketQueuesPage />;
+  if (route === '#/tickets/operations') return <TicketOperationsDashboard />;
+  if (route === '#/tickets/canned-responses') return <CannedResponsesPage />;
+  if (route === '#/tickets/templates') return <TicketTemplatesPage />;
+  if (route === '#/tickets/saved-views') return <SavedTicketViews />;
+  if (route === '#/tickets/satisfaction') return <TicketSatisfactionSurvey />;
+  if ((m = route.match(/^#\/tickets\/(\d+)\/merge$/))) return <TicketMergeDialog id={m[1]} />;
   if ((m = route.match(/^#\/assets\/(\d+)\/edit$/))) return <AssetForm id={m[1]} />;
   if (route === '#/assets/new') return <AssetForm />;
   if ((m = route.match(/^#\/assets\/(\d+)$/))) return <AssetDetail id={m[1]} />;
@@ -159,16 +202,20 @@ function matchRoute(hash) {
     '#/dashboard': <Dashboard />,
     '#/tickets': <Tickets />,
      '#/kb': <KnowledgeBase />,
-     '#/services': <ServicesCatalogue />,
-     '#/inventory': <Inventory />,
-     '#/workflow': <Workflow />,
-     '#/service-requests': <MyServiceRequests />,
+     '#/services': <ServicesCatalogue />,    '#/inventory': <Inventory />,
+    '#/workflow': <Workflow />,
+    '#/service-requests': <MyServiceRequests />,
 
     '#/reports/sla': <SLAReport />,
     '#/reports/departments': <DepartmentReports />,
     '#/reports/saved': <SavedReports />,
     '#/reports/schedules': <ScheduledReports />,
-'#/assets': <Assets />,
+    '#/assets': <Assets />,
+    '#/vendors': <VendorsPage />,
+    '#/vendors/new': <VendorForm />,
+    '#/vendors/:id': <VendorDetail />,
+    '#/vendors/:id/edit': <VendorForm />,
+    '#/approvals': <ApprovalCenter />,
     '#/maintenance': <Maintenance />,
     '#/disposals': <Disposals />,
     '#/categories': <Categories />,
@@ -192,7 +239,8 @@ function isActive(hash, h) {
 }
 
 function Shell() {
-  const { access, logout, user, profileLoading, isAdmin, isStaff } = useAuth();
+  const { access, logout, user, profileLoading, isAdmin, isStaff, canManageScheduledReports, canViewVendors } = useAuth();
+  const caps = { isStaff, isAdmin, canManageScheduledReports, canViewVendors };
   const [hash, setHash] = useState(location.hash || '#/tickets');
   const [navOpen, setNavOpen] = useState(false);
   useEffect(() => {
@@ -214,7 +262,7 @@ function Shell() {
   }
   const el = matchRoute(hash);
   const active = (h) => isActive(hash, h) ? 'active' : '';
-  const nav = visibleNav(NAV, isStaff);
+  const nav = visibleNav(NAV, caps);
   return (
     <div className="shell">
       <a className="skip-link" href="#main-content">Skip to main content</a>

@@ -22,6 +22,14 @@ class ServiceCatalogueItem(models.Model):
     is_active = models.BooleanField(default=True, db_index=True)
     requires_approval = models.BooleanField(default=False)
     creates_ticket = models.BooleanField(default=False)
+    ticket_category = models.ForeignKey(
+        "tickets.TicketCategory",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="service_catalogue_items",
+        help_text="Ticket category used when this catalogue item creates a linked Ticket. Required when creates_ticket is True.",
+    )
     estimated_fulfilment_hours = models.PositiveIntegerField(null=True, blank=True)
     instructions = models.TextField(blank=True, default="")
     form_fields = models.JSONField(default=list, blank=True)

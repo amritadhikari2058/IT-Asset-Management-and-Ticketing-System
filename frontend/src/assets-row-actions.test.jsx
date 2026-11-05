@@ -126,11 +126,13 @@ describe('Assets list row actions', () => {
     render(<Assets />);
     await waitFor(() => expect(screen.getByLabelText('Assign PR-1')).toBeTruthy());
     fireEvent.click(screen.getByLabelText('Assign PR-1'));
-    expect(await screen.findByText('Assign PR-1')).toBeTruthy();
+    await waitFor(() => expect(screen.findByText('Assign PR-1')).resolves.toBeTruthy());
     // Submit stays blocked until an employee is picked.
     fireEvent.click(screen.getByRole('button', { name: 'Assign' }));
     expect(mockPost).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('Assignee'), { target: { value: '4' } });
+    // Controlled select state flushes synchronously; confirm submit enabled.
+    expect(screen.getByRole('button', { name: 'Assign' }).disabled).toBe(false);
     fireEvent.change(screen.getByPlaceholderText('Reason…'), { target: { value: 'New hire setup' } });
     fireEvent.click(screen.getByRole('button', { name: 'Assign' }));
     await waitFor(() => {

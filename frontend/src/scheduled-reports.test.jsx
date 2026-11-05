@@ -45,11 +45,11 @@ describe('Scheduled reports page', () => {
     mockAuth.mockReturnValue(ctx({ isStaff: false }));
     mockGet.mockResolvedValue({ data: [] });
     render(<ScheduledReports />);
-    expect(screen.getByText('Scheduled report management is restricted to IT staff and admins.')).toBeTruthy();
+    expect(screen.getByText('Scheduled report management is restricted to IT Managers and System Admins.')).toBeTruthy();
   });
 
   it('loads and lists scheduled reports for staff', async () => {
-    mockAuth.mockReturnValue(ctx({ isStaff: true }));
+    mockAuth.mockReturnValue(ctx({ isStaff: true, canManageScheduledReports: true }));
     mockGet.mockImplementation((url) => {
       if (url.includes('scheduled-reports/')) {
         return Promise.resolve({ data: { results: [SR], count: 1, next: null, previous: null } });
@@ -68,7 +68,7 @@ describe('Scheduled reports page', () => {
   });
 
   it('creates a new schedule', async () => {
-    mockAuth.mockReturnValue(ctx({ isStaff: true }));
+    mockAuth.mockReturnValue(ctx({ isStaff: true, canManageScheduledReports: true }));
     mockGet.mockImplementation((url) => {
       if (url.includes('saved-reports/')) {
         return Promise.resolve({ data: [{ id: 5, name: 'HW weekly', report_type: 'ticket_category' }] });
@@ -89,7 +89,7 @@ describe('Scheduled reports page', () => {
   });
 
   it('disables a schedule', async () => {
-    mockAuth.mockReturnValue(ctx({ isStaff: true }));
+    mockAuth.mockReturnValue(ctx({ isStaff: true, canManageScheduledReports: true }));
     mockGet.mockImplementation((url) => {
       if (url.includes('scheduled-reports/')) {
         return Promise.resolve({ data: { results: [{ ...SR }], count: 1, next: null, previous: null } });
@@ -105,7 +105,7 @@ describe('Scheduled reports page', () => {
   });
 
   it('deletes a schedule', async () => {
-    mockAuth.mockReturnValue(ctx({ isStaff: true }));
+    mockAuth.mockReturnValue(ctx({ isStaff: true, canManageScheduledReports: true }));
     mockGet.mockImplementation((url) => {
       if (url.includes('scheduled-reports/')) {
         return Promise.resolve({ data: { results: [{ ...SR }], count: 1, next: null, previous: null } });
@@ -123,7 +123,7 @@ describe('Scheduled reports page', () => {
   });
 
   it('retries a failed run', async () => {
-    mockAuth.mockReturnValue(ctx({ isStaff: true }));
+    mockAuth.mockReturnValue(ctx({ isStaff: true, canManageScheduledReports: true }));
     mockGet.mockImplementation((url) => {
       if (url.includes('scheduled-report-runs/')) {
         return Promise.resolve({

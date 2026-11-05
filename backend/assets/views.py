@@ -2037,25 +2037,134 @@ class KnowledgeBaseFeedbackViewSet(viewsets.ModelViewSet):
 class VendorViewSet(viewsets.ModelViewSet):
     """Vendor / supplier CRUD.
 
-    IT staff can create, update, soft-delete, and restore vendors.
-    Employees can list and view vendors (for asset detail pages).
+    System Admin: full CRUD + activate/deactivate.
+    IT Manager: create, update, activate, deactivate.
+    IT Support: list, retrieve (read-only).
+    Employee: no access to Vendor API; minimal vendor identity may appear via Asset serializer.
     """
-    queryset = Vendor.objects.all()
+    queryset = Vendor.objects.annotate(
+        asset_count=Count("assets"),
+        stock_item_count=Count("stock_items")
+    ).all()
     serializer_class = VendorSerializer
     permission_classes = [IsAuthenticated]
+    filter_backends = []
+    filterset_fields = ["is_active", "is_deleted", "name", "code", "email"]
+    search_fields = ["name", "code", "contact_person", "email", "phone"]
+    ordering_fields = ["name", "code", "created_at", "updated_at", "asset_count", "stock_item_count"]
+    ordering = ["name"]
 
     def get_queryset(self):
         user = self.request.user
-        qs = Vendor.objects.all()
-        if getattr(user, "role", "") == "employee":
-            # Employees see only non-deleted vendors.
+        role = getattr(user, "role", "")
+        if role == "employee":
+            # Employees cannot enumerate vendors via the Vendor API
+            return Vendor.objects.none()
+        qs = Vendor.objects.annotate(
+            asset_count=Count("assets"),
+            stock_item_count=Count("stock_items")
+        )
+        # IT Support can see all non-deleted vendors (read-only scope)
+        if role == "it_support":
             qs = qs.filter(is_deleted=False)
+            return qs
+        # IT Manager and System Admin see everything
         return qs
 
-    def perform_destroy(self, instance):
-        # Soft-delete vendors; hard-delete only via recycle bin (admin).
-        instance.soft_delete(by_user=self.request.user,
+    def get_permissions(self):
+        role = getattr(self.request.user, "role", "")
+        # Employees denied access to Vendor API entirely
+        if role == "employee":
+            from rest_framework.permissions import BasePermission
+            class Deny(BasePermission):
+                def has_permission(self, request, view):
+                    return False
+            return [Deny()]
+        # IT Support can list and retrieve non-deleted vendors (read-only)
+        if role == "it_support":
+            if self.action in ("list", "retrieve"):
+                return [IsAuthenticated()]
+            from rest_framework.permissions import BasePermission
+            class Deny(BasePermission):
+                def has_permission(self, request, view):
+                    return False
+            return [Deny()]
+        # IT Manager has full access
+        if role == "it_manager":
+            return [IsITStaff()]
+        # System Admin has full access
+        if getattr(self.request.user, "is_superuser", False) or role == "system_admin":
+            return [IsSystemAdmin()]
+        return super().get_permissions()
+
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        from common.audit import log_action
+        log_action(actor=self.request.user, action="create", instance=obj,
+                   reason="vendor created")
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        from common.audit import log_action
+        log_action(actor=self.request.user, action="update", instance=obj,
+                   reason="vendor updated")
+
+    @action(detail=True, methods=["post"])
+    def activate(self, request, pk=None):
+        """Activate a deactivated vendor."""
+        obj = self.get_object()
+        if obj.is_active:
+            return Response({"detail": "Vendor is already active."}, status=400)
+        obj.is_active = True
+        obj.save(update_fields=["is_active", "updated_at"])
+        from common.audit import log_action
+        log_action(actor=request.user, action="activate", instance=obj,
+                   reason="vendor activated")
+        return Response(VendorSerializer(obj).data)
+
+    @action(detail=True, methods=["post"])
+    def deactivate(self, request, pk=None):
+        """Deactivate a vendor. Deactivation is allowed even if referenced;
+        referenced records retain the inactive vendor. Deletion is blocked when referenced.
+        """
+        obj = self.get_object()
+        # Check for referencing assets/stock items for warning
+        asset_count = obj.assets.count()
+        stock_item_count = obj.stock_items.count()
+        obj.is_active = False
+        obj.save(update_fields=["is_active", "updated_at"])
+        from common.audit import log_action
+        log_action(actor=request.user, action="deactivate", instance=obj,
+                   reason="vendor deactivated")
+        data = VendorSerializer(obj).data
+        if asset_count > 0 or stock_item_count > 0:
+            data["warning"] = (
+                f"Vendor deactivated. {asset_count} asset(s) and {stock_item_count} stock item(s) "
+                f"still reference this vendor (inactive vendors are excluded from new selections)."
+            )
+        return Response(data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # Check for referencing records before soft-delete
+        asset_count = instance.assets.count()
+        stock_item_count = instance.stock_items.count()
+        if asset_count > 0 or stock_item_count > 0:
+            from rest_framework.response import Response
+            from rest_framework import status
+            return Response({
+                "detail": f"Cannot soft-delete vendor: "
+                           f"{asset_count} asset(s) and "
+                           f"{stock_item_count} stock item(s) "
+                           f"reference it.",
+                "hint": "Deactivate the vendor instead, or reassign records first."
+            }, status=status.HTTP_409_CONFLICT)
+        instance.soft_delete(by_user=request.user,
                              reason="vendor removed")
+        from common.audit import log_action
+        log_action(actor=request.user, action="soft_delete", instance=instance,
+                   reason="vendor soft-deleted")
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class DisposalViewSet(viewsets.ModelViewSet):
@@ -2128,6 +2237,11 @@ class DisposalViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], permission_classes=[IsITStaff])
     def approve(self, request, pk=None):
+        # Only IT Manager or System Admin can approve
+        role = getattr(request.user, "role", "")
+        if role == "it_support":
+            from rest_framework.response import Response
+            return Response({"detail": "Forbidden"}, status=403)
         obj = self.get_object()
         if obj.is_completed:
             return Response(
@@ -2148,6 +2262,10 @@ class DisposalViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], permission_classes=[IsITStaff])
     def reject(self, request, pk=None):
+        role = getattr(request.user, "role", "")
+        if role == "it_support":
+            from rest_framework.response import Response
+            return Response({"detail": "Forbidden"}, status=403)
         obj = self.get_object()
         if obj.is_completed:
             return Response(
@@ -2164,6 +2282,10 @@ class DisposalViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], permission_classes=[IsITStaff])
     def complete(self, request, pk=None):
+        role = getattr(request.user, "role", "")
+        if role == "it_support":
+            from rest_framework.response import Response
+            return Response({"detail": "Forbidden"}, status=403)
         obj = self.get_object()
         if obj.approval_status != "approved":
             return Response(

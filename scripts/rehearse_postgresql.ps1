@@ -34,8 +34,13 @@
 .PARAMETER PgUser
     Rehearsal database user (default: ticketing_rehearsal).
 
+.PARAMETER ConfirmRehearsal
+    Explicit confirmation required to run the rehearsal. Without it the
+    script exits before touching anything.
+
 .PARAMETER PgDatabase
-    Rehearsal database name (default: ticketing_rehearsal).
+    Rehearsal database name (default: ticketing_rehearsal). Must not be an
+    empty or production-looking name.
 
 .PARAMETER PgPasswordEnv
     Environment variable name holding the rehearsal DB password
@@ -51,7 +56,7 @@
     Backend directory (default: backend).
 
 .EXAMPLE
-    .\scripts\rehearse_postgresql.ps1 -PgHost localhost -PgUser ticketing_rehearsal -PgDatabase ticketing_rehearsal -PgPasswordEnv PGREHEARSAL_PASSWORD -Seed
+    .\scripts\rehearse_postgresql.ps1 -PgHost localhost -PgUser ticketing_rehearsal -PgDatabase ticketing_rehearsal -PgPasswordEnv PGREHEARSAL_PASSWORD -ConfirmRehearsal -Seed
 
 .NOTES
     Set PGREHEARSAL_PASSWORD in your environment before running. The script
@@ -63,6 +68,7 @@ param(
     [string]$PgUser = "ticketing_rehearsal",
     [string]$PgDatabase = "ticketing_rehearsal",
     [string]$PgPasswordEnv = "PGREHEARSAL_PASSWORD",
+    [switch]$ConfirmRehearsal,
     [switch]$Seed,
     [string]$Python = "python",
     [string]$BackendDir = "backend"
@@ -71,6 +77,43 @@ param(
 $ErrorActionPreference = "Stop"
 $script:errors = @()
 $script:warnings = @()
+
+# Enter the backend directory so manage.py is found whether the script is
+# invoked from the repo root or from backend/ itself.
+$backendDir = Resolve-Path (Join-Path $PSScriptRoot "..\$BackendDir") -ErrorAction Stop
+Set-Location $backendDir
+
+# ---- 0. Explicit confirmation + rehearsal-name safeguards --------------
+if (-not $ConfirmRehearsal) {
+    Write-Host "ERROR: -ConfirmRehearsal is required to run the rehearsal." -ForegroundColor Red
+    Write-Host "Re-run with -ConfirmRehearsal to proceed."
+    exit 1
+}
+
+function Test-NotProductionDatabaseName([string]$name) {
+    $blocked = @(
+        "", "postgres", "template0", "template1", "production", "prod",
+        "live", "primary", "ticketing", "ticketing_prod", "app_db", "main",
+        "ticketing_rehearsal_prod", "ticketing-live"
+    )
+    $lower = $name.ToLowerInvariant()
+    if (-not $name) { return $false }
+    if ($blocked -contains $lower) { return $false }
+    # Refuse anything that looks like a production-ish identifier.
+    $productionHints = @("prod", "production", "live", "primary", "master",
+                         "ticketing", "ticketing_prod", "app_db")
+    foreach ($hint in $productionHints) {
+        if ($lower -eq $hint -or $lower -like "*_prod" -or $lower -like "prod_*") {
+            return $false
+        }
+    }
+    return $true
+}
+
+if (-not (Test-NotProductionDatabaseName $PgDatabase)) {
+    Write-Result "ERROR" "postgresql.database_name" "Rehearsal database name '$PgDatabase' is empty or looks like a production database." "Use a dedicated rehearsal name (e.g. ticketing_rehearsal) and pass -ConfirmRehearsal."
+    exit 1
+}
 
 function Write-Result([string]$status, [string]$check, [string]$message, [string]$remediation = "") {
     $pad = " " * [Math]::Max(0, 44 - $check.Length)
@@ -97,7 +140,7 @@ try {
 }
 
 # ---- 2. Resolve rehearsal credentials --------------------------------
-$pgPassword = $env:$PgPasswordEnv
+$pgPassword = [Environment]::GetEnvironmentVariable($PgPasswordEnv)
 if (-not $pgPassword) {
     Write-Result "ERROR" "postgresql.credentials" "$PgPasswordEnv environment variable is not set." "Set $PgPasswordEnv to the rehearsal database password."
     exit 1
@@ -105,18 +148,30 @@ if (-not $pgPassword) {
 
 $connString = "host=$PgHost port=$PgPort dbname=$PgDatabase user=$PgUser password=$pgPassword"
 
-# ---- 3. Create / verify rehearsal database exists --------------------
+# ---- 3. Rehearsal database must already exist (never auto-create) ------
 function Test-DatabaseExists() {
     # Connect to the 'postgres' system database and check for our DB.
     $testConn = "host=$PgHost port=$PgPort dbname=postgres user=$PgUser password=$pgPassword"
     $sql = "SELECT 1 FROM pg_database WHERE datname='$PgDatabase'"
     $out = & $Python -c "
-import psycopg2, sys
+import sys
+sql = '''$sql '''
+conn = None
+for mod in ('psycopg2', 'psycopg'):
+    try:
+        m = __import__(mod)
+        conn = m.connect('$testConn')
+        break
+    except Exception:
+        continue
+if conn is None:
+    print('ERROR:no_driver')
+    sys.exit(0)
 try:
-    c = psycopg2.connect('$testConn')
+    c = conn
     c.autocommit = True
     cur = c.cursor()
-    cur.execute('$sql')
+    cur.execute(sql)
     print('EXISTS' if cur.fetchone() else 'MISSING')
     cur.close(); c.close()
 except Exception as e:
@@ -129,38 +184,64 @@ except Exception as e:
 }
 
 if (-not (Test-DatabaseExists)) {
-    Write-Result "WARNING" "postgresql.database" "Rehearsal database '$PgDatabase' does not exist; attempting to create it."
-    $create = & $Python -c "
-import psycopg2, sys
+    Write-Result "ERROR" "postgresql.database" "Rehearsal database '$PgDatabase' does not exist." "Create it first (e.g. CREATE DATABASE \"$PgDatabase\";) or use an existing empty rehearsal database. This script never creates or drops databases automatically."
+    exit 1
+} else {
+    Write-Result "PASS" "postgresql.database" "Rehearsal database '$PgDatabase' already exists."
+}
+
+# ---- 4. Confirm the rehearsal database is empty (no user tables) -------
+function Test-DatabaseEmpty() {
+    $testConn = "host=$PgHost port=$PgPort dbname=$PgDatabase user=$PgUser password=$pgPassword"
+    $sql = "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"
+    $out = & $Python -c "
+import sys
+sql = '''$sql ;'''
+conn = None
+for mod in ('psycopg2', 'psycopg'):
+    try:
+        m = __import__(mod)
+        conn = m.connect('$testConn')
+        break
+    except Exception:
+        continue
+if conn is None:
+    print('ERROR:no_driver')
+    sys.exit(0)
 try:
-    c = psycopg2.connect('host=$PgHost port=$PgPort dbname=postgres user=$PgUser password=$pgPassword')
+    c = conn
     c.autocommit = True
     cur = c.cursor()
-    cur.execute('CREATE DATABASE \"$PgDatabase\"')
-    print('CREATED')
+    cur.execute(sql)
+    print(cur.fetchone()[0])
     cur.close(); c.close()
 except Exception as e:
     print('ERROR:' + type(e).__name__)
 " 2>&1
-    if ($create -match "CREATED") {
-        Write-Result "PASS" "postgresql.database" "Rehearsal database created."
-    } else {
-        Write-Result "ERROR" "postgresql.database" "Failed to create database: $create" "Ensure the rehearsal user has CREATEDB privilege."
-        exit 1
-    }
+    if ($out -match "^\d+$") { return [int]$out }
+    Write-Result "ERROR" "postgresql.empty_check" "Cannot read rehearsal database tables: $out"
+    exit 1
+}
+$tableCount = Test-DatabaseEmpty
+if ($tableCount -gt 0) {
+    Write-Result "WARNING" "postgresql.database_not_empty" "Rehearsal database '$PgDatabase' already has $tableCount table(s); migrations may conflict." "Use an empty rehearsal database or pick a fresh name."
 } else {
-    Write-Result "PASS" "postgresql.database" "Rehearsal database '$PgDatabase' already exists."
+    Write-Result "PASS" "postgresql.database_empty" "Rehearsal database '$PgDatabase' is empty."
 }
 
 # ---- 4. Run Django system checks against the rehearsal DB ------------
 Write-Host ""
 Write-Host "=== Django system checks (rehearsal database) ==="
-$env:PGHOST = $PgHost
-$env:PGPORT = $PgPort
-$env:PGUSER = $PgUser
-$env:PGDATABASE = $PgDatabase
-# Never print the password; pass via DJANGO settings instead of the command line.
-$env:$PgPasswordEnv = $pgPassword
+# Django reads discrete DATABASE__* environment variables (see
+# config/settings.py). Map the rehearsal connection onto those so Django
+# connects to PostgreSQL, never to the dev SQLite database.
+$env:DATABASE__ENGINE = "django.db.backends.postgresql"
+$env:DATABASE__NAME = $PgDatabase
+$env:DATABASE__HOST = $PgHost
+$env:DATABASE__PORT = $PgPort
+$env:DATABASE__USER = $PgUser
+# Never print the password; pass via environment only.
+[Environment]::SetEnvironmentVariable($PgPasswordEnv, $pgPassword)
 $checkOut = & $Python manage.py check 2>&1
 $checkCode = $LASTEXITCODE
 if ($checkCode -eq 0) {
@@ -227,7 +308,7 @@ if ($testCode -eq 0) {
 # ---- Summary ---------------------------------------------------------
 Write-Host ""
 Write-Host "=== Rehearsal summary ==="
-Write-Result "INFO" "postgresql.rehearsal_db" "$PgDatabase on $PgHost:$PgPort"
+Write-Result "INFO" "postgresql.rehearsal_db" "$($PgDatabase) on $($PgHost):$($PgPort)"
 Write-Result "INFO" "postgresql.errors" "$($script:errors.Count) error(s)"
 Write-Result "INFO" "postgresql.warnings" "$($script:warnings.Count) warning(s)"
 

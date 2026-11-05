@@ -59,7 +59,16 @@ function currentApproval() {
 
 function approver(id = 2) {
   mockAuth.mockReturnValue({
-    isStaff: true, isAdmin: false, user: { id, role: 'it_manager' },
+    isStaff: true, isAdmin: false, isSystemAdmin: false, isITManager: true, isITSupport: false, isEmployee: false,
+    isManagerOrAdmin: true, isSupportOrAbove: true,
+    canManageUsers: false, canManageVendors: true, canViewVendors: true,
+    canManageServiceCatalogue: true, canApproveServiceRequests: true,
+    canConfigureWorkflow: true, canApproveDisposals: true,
+    canManageInventory: true, canAdjustInventory: true,
+    canPublishKnowledgeBase: true, canManageScheduledReports: true,
+    canAccessAudit: false, canAccessRecycleBin: false, canPerformPermanentDeletion: false,
+    canCreateTickets: true,
+    user: { id, role: 'it_manager' },
   });
 }
 

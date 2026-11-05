@@ -26,9 +26,27 @@ class TicketSerializer(serializers.ModelSerializer):
     sla_due_at = serializers.DateTimeField(read_only=True)
     sla_breached = serializers.BooleanField(read_only=True)
     is_overdue = serializers.SerializerMethodField(read_only=True)
+    source_service_request = serializers.SerializerMethodField(read_only=True)
 
     def get_is_overdue(self, obj):
         return obj.is_overdue
+
+    def get_source_service_request(self, obj):
+        """Safe, minimal linked Service Request reference (no PII/answers)."""
+        request = self.context.get("request")
+        sr = obj.service_requests.filter(is_deleted=False).first()
+        if sr is None:
+            return None
+        return {
+            "id": sr.pk,
+            "request_number": sr.request_number,
+            "catalogue_item_name": sr.catalogue_item.name
+            if getattr(sr, "catalogue_item_id", None) else None,
+            "status": sr.status,
+            "url": request.build_absolute_uri(
+                f"/api/services/requests/{sr.pk}/") if request
+            else "/api/services/requests/%d/" % sr.pk,
+        }
 
     class Meta:
         model = Ticket
@@ -168,3 +186,28 @@ class TicketKbArticleSerializer(serializers.ModelSerializer):
                     {"article": "This KB article is already linked to the "
                                 "ticket."})
         return attrs
+
+
+class TicketLinkSerializer(serializers.ModelSerializer):
+    """Minimal, safe linked-Ticket representation for Service Requests.
+
+    Exposes only fields a requester/staff need to identify and open the
+    Ticket; excludes notes, attachments, description, and any staff-only
+    data.
+    """
+    assignee_email = serializers.CharField(source="assignee.email",
+                                           read_only=True, allow_null=True)
+    url = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = Ticket
+        fields = ["id", "title", "status", "priority", "assignee_email",
+                  "url"]
+        read_only_fields = fields
+
+    def get_url(self, obj):
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(f"/api/tickets/{obj.pk}/")
+        return "/api/tickets/%d/" % obj.pk
+

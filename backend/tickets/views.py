@@ -1003,6 +1003,72 @@ class TicketHistoryViewSet(viewsets.ReadOnlyModelViewSet):
             return qs
         return qs.none()
 
+    @action(detail=True, methods=["post"])
+    def claim(self, request, pk=None):
+        from tickets.queue_services import claim_ticket
+        ticket = self.get_object()
+        try:
+            ticket = claim_ticket(ticket, request.user)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+    @action(detail=True, methods=["post"])
+    def unclaim(self, request, pk=None):
+        from tickets.queue_services import unclaim_ticket
+        ticket = self.get_object()
+        reason = request.data.get("reason", "")
+        if not reason:
+            return Response({"detail": "reason is required."}, status=400)
+        try:
+            ticket = unclaim_ticket(ticket, request.user, reason)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+    @action(detail=True, methods=["post"])
+    def reassign(self, request, pk=None):
+        from tickets.queue_services import reassign_ticket
+        from accounts.models import User
+        ticket = self.get_object()
+        target_id = request.data.get("assignee") or request.data.get("target_user")
+        reason = request.data.get("reason", "")
+        if not target_id:
+            return Response({"detail": "assignee is required."}, status=400)
+        if not reason:
+            return Response({"detail": "reason is required."}, status=400)
+        try:
+            target = User.objects.get(pk=target_id)
+        except User.DoesNotExist:
+            return Response({"detail": "Target user not found."}, status=404)
+        try:
+            ticket = reassign_ticket(ticket, target, request.user, reason)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+    @action(detail=True, methods=["post"])
+    def move_queue(self, request, pk=None):
+        from tickets.queue_services import move_queue
+        from tickets.models import TicketQueue
+        ticket = self.get_object()
+        queue_id = request.data.get("queue")
+        reason = request.data.get("reason", "")
+        if not queue_id:
+            return Response({"detail": "queue is required."}, status=400)
+        if not reason:
+            return Response({"detail": "reason is required."}, status=400)
+        try:
+            target_queue = TicketQueue.objects.get(pk=queue_id, is_deleted=False)
+        except TicketQueue.DoesNotExist:
+            return Response({"detail": "Queue not found."}, status=404)
+        try:
+            ticket = move_queue(ticket, target_queue, request.user, reason)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+
 
 class TicketAttachmentViewSet(viewsets.ModelViewSet):
     queryset = TicketAttachment.objects.all()
@@ -1224,3 +1290,247 @@ def category_report(request):
              "high_count", "critical_count", "urgent"))
     return Response({"results": list(rows),
                      "filters": {"date_from": date_from, "date_to": date_to}})
+
+    @action(detail=True, methods=["post"])
+    def watch(self, request, pk=None):
+        from tickets.collaboration_services import add_watcher
+        from tickets.advanced_serializers import TicketWatcherCreateSerializer
+        from accounts.models import User
+        ticket = self.get_object()
+        ser = TicketWatcherCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        user_id = ser.validated_data.get("user")
+        user = User.objects.get(pk=user_id) if user_id else request.user
+        try:
+            watcher = add_watcher(ticket, {"user": user,
+                                           "watch_type": ser.validated_data.get(
+                                               "watch_type", "watcher")},
+                                  request.user)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response({"detail": "watcher added", "id": watcher.pk})
+
+    @action(detail=True, methods=["post"])
+    def unwatch(self, request, pk=None):
+        from tickets.collaboration_services import remove_watcher
+        from accounts.models import User
+        ticket = self.get_object()
+        user_id = request.data.get("user")
+        user = User.objects.get(pk=user_id) if user_id else request.user
+        try:
+            remove_watcher(ticket, user, request.user)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response({"detail": "watcher removed"})
+
+    @action(detail=True, methods=["get"])
+    def watchers(self, request, pk=None):
+        from tickets.collaboration_services import list_watchers
+        from tickets.advanced_serializers import TicketWatcherSerializer
+        ticket = self.get_object()
+        qs = list_watchers(ticket, request.user)
+        return Response(TicketWatcherSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=["post"])
+    def request_information(self, request, pk=None):
+        from tickets.resolution_services import request_information
+        from tickets.advanced_serializers import RequestInformationSerializer
+        ticket = self.get_object()
+        ser = RequestInformationSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            ticket, note, pause = request_information(
+                ticket, ser.validated_data, request.user)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+
+    @action(detail=True, methods=["post"])
+    def apply_canned_response(self, request, pk=None):
+        from tickets.template_services import apply_canned_response
+        from tickets.advanced_serializers import CannedResponseApplySerializer
+        ticket = self.get_object()
+        ser = CannedResponseApplySerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            note = apply_canned_response(ticket, ser.validated_data, request.user)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response({"detail": "applied", "note_id": note.pk})
+
+    @action(detail=True, methods=["post"])
+    def resolve(self, request, pk=None):
+        from tickets.resolution_services import resolve_ticket
+        from tickets.advanced_serializers import ResolveTicketSerializer
+        ticket = self.get_object()
+        ser = ResolveTicketSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            ticket = resolve_ticket(ticket, ser.validated_data, request.user)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+    @action(detail=True, methods=["post"])
+    def close(self, request, pk=None):
+        from tickets.resolution_services import close_ticket
+        from tickets.advanced_serializers import CloseTicketSerializer
+        ticket = self.get_object()
+        ser = CloseTicketSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            ticket = close_ticket(ticket, request.user,
+                                 ser.validated_data.get("reason", ""))
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+
+    @action(detail=True, methods=["post"])
+    def reopen(self, request, pk=None):
+        from tickets.resolution_services import reopen_ticket
+        from tickets.advanced_serializers import ReopenTicketSerializer
+        ticket = self.get_object()
+        ser = ReopenTicketSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            ticket = reopen_ticket(ticket, ser.validated_data, request.user)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+    @action(detail=True, methods=["post"])
+    def merge(self, request, pk=None):
+        from tickets.merge_services import merge_tickets
+        from tickets.advanced_serializers import TicketMergeSerializer
+        primary = self.get_object()
+        ser = TicketMergeSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        duplicate_id = ser.validated_data["duplicate_ticket_id"]
+        try:
+            duplicate = Ticket.objects.get(pk=duplicate_id, is_deleted=False)
+        except Ticket.DoesNotExist:
+            return Response({"detail": "Duplicate ticket not found."}, status=404)
+        options = {"transfer_watchers": ser.validated_data.get(
+            "transfer_watchers", True)}
+        try:
+            primary, duplicate, record = merge_tickets(
+                primary, duplicate, request.user,
+                ser.validated_data["reason"], options)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response({"primary": primary.pk, "merged": duplicate.pk,
+                         "record": record.pk})
+
+    @action(detail=True, methods=["get"])
+    def timeline(self, request, pk=None):
+        from tickets.models import TicketHistory
+        ticket = self.get_object()
+        qs = TicketHistory.objects.filter(ticket=ticket).order_by("timestamp")
+        user = request.user
+        staff = getattr(user, "role", "") in ("system_admin", "it_manager",
+                                              "it_support") or getattr(
+            user, "is_superuser", False)
+        events = []
+        for h in qs:
+            events.append({
+                "id": str(h.pk),
+                "source": "history",
+                "actor": str(h.actor) if h.actor else None,
+                "actor_email": getattr(h.actor, "email", None),
+                "timestamp": h.timestamp,
+                "action": h.action,
+                "summary": h.note or h.action,
+                "internal": False,
+                "url": None,
+            })
+        page = int(request.query_params.get("page", 1) or 1)
+        size = int(request.query_params.get("page_size", 20) or 20)
+        start = (page - 1) * size
+        end = start + size
+        return Response({"results": events[start:end], "count": len(events)})
+
+    @action(detail=True, methods=["get"])
+    def satisfaction(self, request, pk=None):
+        from tickets.satisfaction_services import get_survey
+        from tickets.advanced_serializers import TicketSatisfactionSurveySerializer
+        ticket = self.get_object()
+        survey = get_survey(ticket, request.user)
+        if not survey:
+            return Response({"detail": "No survey found."}, status=404)
+        return Response(TicketSatisfactionSurveySerializer(survey).data)
+
+    @action(detail=True, methods=["post"], url_path="satisfaction/submit")
+    def satisfaction_submit(self, request, pk=None):
+        from tickets.satisfaction_services import submit_survey
+        from tickets.advanced_serializers import (
+            SatisfactionSubmitSerializer, TicketSatisfactionSurveySerializer)
+        ticket = self.get_object()
+        ser = SatisfactionSubmitSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            survey = submit_survey(ticket, ser.validated_data, request.user)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSatisfactionSurveySerializer(survey).data)
+
+
+    @action(detail=False, methods=["post"], url_path="check-duplicates")
+    def check_duplicates(self, request):
+        from tickets.duplicate_services import find_duplicates
+        from tickets.advanced_serializers import DuplicateCheckSerializer, DuplicateSuggestionSerializer
+        ser = DuplicateCheckSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        candidates = find_duplicates(ser.validated_data, request.user)
+        return Response({"results": candidates})
+
+    @action(detail=False, methods=["get"], url_path="operations-dashboard")
+    def operations_dashboard(self, request):
+        from tickets.metrics_services import operations_dashboard
+        filters = {
+            "date_from": request.query_params.get("date_from"),
+            "date_to": request.query_params.get("date_to"),
+            "department": request.query_params.get("department"),
+            "queue": request.query_params.get("queue"),
+            "assignee": request.query_params.get("assignee"),
+            "category": request.query_params.get("category"),
+            "priority": request.query_params.get("priority"),
+        }
+        try:
+            data = operations_dashboard(filters, request.user)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(data)
+
+    @action(detail=False, methods=["get"], url_path="agent-workload")
+    def agent_workload(self, request):
+        from tickets.metrics_services import agent_workload
+        filters = {
+            "date_from": request.query_params.get("date_from"),
+            "date_to": request.query_params.get("date_to"),
+            "department": request.query_params.get("department"),
+            "queue": request.query_params.get("queue"),
+            "assignee": request.query_params.get("assignee"),
+            "category": request.query_params.get("category"),
+            "priority": request.query_params.get("priority"),
+        }
+        try:
+            data = agent_workload(filters, request.user)
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(data)
+
+    @action(detail=False, methods=["get"], url_path="satisfaction-report")
+    def satisfaction_report(self, request):
+        from tickets.satisfaction_services import satisfaction_report
+        filters = {
+            "date_from": request.query_params.get("date_from"),
+            "date_to": request.query_params.get("date_to"),
+        }
+        try:
+            data = satisfaction_report(filters, request.user)
+        except PermissionDenied as exc:
+            return Response({"detail": str(exc)}, status=403)
+        return Response(data)
+

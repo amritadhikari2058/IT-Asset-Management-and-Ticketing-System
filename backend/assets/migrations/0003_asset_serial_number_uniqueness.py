@@ -20,6 +20,15 @@ DRF validation - while leaving pre-existing rows untouched and their
 other fields editable. Application validation lives in
 ``assets.serializers.AssetSerializer.validate_serial_number`` and the
 bulk endpoints, which produce the friendly field-level messages.
+
+Vendor portability
+------------------
+SQLite uses ``SELECT RAISE(ABORT, ...)`` triggers. PostgreSQL does not
+support that syntax, so this migration creates an equivalent PL/pgSQL
+trigger function on PostgreSQL. The database vendor is detected at
+migrate time via ``schema_editor.connection.vendor`` so the same
+migration file applies cleanly on both SQLite (dev) and PostgreSQL
+(production) without editing historical data.
 """
 import django.db.models
 from django.db import migrations, models
@@ -62,38 +71,88 @@ def report_existing_duplicates(apps, schema_editor):
         print(f"assets.0003:   serial {serial!r} used by {row['n']} assets: {detail}")
 
 
-CREATE_INSERT_TRIGGER = (
-    "CREATE TRIGGER assets_asset_serial_unique_insert "
-    "BEFORE INSERT ON assets_asset "
-    "FOR EACH ROW WHEN NEW.serial_number <> '' AND EXISTS ("
-    "  SELECT 1 FROM assets_asset other "
-    "  WHERE other.serial_number = NEW.serial_number"
-    ") "
-    "BEGIN "
-    "  SELECT RAISE(ABORT, 'duplicate serial number: serial numbers must "
-    "be unique across all assets'); "
-    "END"
-)
+def _serial_unique_sql(vendor):
+    """Return the (forward_sql, reverse_sql) list for the given vendor."""
+    fq_table = "assets_asset"
+    col = "serial_number"
+    msg = "duplicate serial number: serial numbers must be unique across all assets"
 
-CREATE_UPDATE_TRIGGER = (
-    "CREATE TRIGGER assets_asset_serial_unique_update "
-    "BEFORE UPDATE OF serial_number ON assets_asset "
-    "FOR EACH ROW WHEN NEW.serial_number <> '' "
-    "AND NEW.serial_number <> OLD.serial_number AND EXISTS ("
-    "  SELECT 1 FROM assets_asset other "
-    "  WHERE other.serial_number = NEW.serial_number "
-    "    AND other.id <> NEW.id"
-    ") "
-    "BEGIN "
-    "  SELECT RAISE(ABORT, 'duplicate serial number: serial numbers must "
-    "be unique across all assets'); "
-    "END"
-)
+    if vendor == "sqlite":
+        forward = [
+            "CREATE TRIGGER IF NOT EXISTS assets_asset_serial_unique_insert "
+            "BEFORE INSERT ON assets_asset "
+            "FOR EACH ROW WHEN NEW.serial_number <> '' AND EXISTS ("
+            "  SELECT 1 FROM assets_asset other "
+            "  WHERE other.serial_number = NEW.serial_number"
+            ") "
+            "BEGIN "
+            "  SELECT RAISE(ABORT, '%s'); " % msg +
+            "END",
+            "CREATE TRIGGER IF NOT EXISTS assets_asset_serial_unique_update "
+            "BEFORE UPDATE OF serial_number ON assets_asset "
+            "FOR EACH ROW WHEN NEW.serial_number <> '' "
+            "AND NEW.serial_number <> OLD.serial_number AND EXISTS ("
+            "  SELECT 1 FROM assets_asset other "
+            "  WHERE other.serial_number = NEW.serial_number "
+            "    AND other.id <> NEW.id"
+            ") "
+            "BEGIN "
+            "  SELECT RAISE(ABORT, '%s'); " % msg +
+            "END",
+        ]
+        reverse = [
+            "DROP TRIGGER IF EXISTS assets_asset_serial_unique_insert",
+            "DROP TRIGGER IF EXISTS assets_asset_serial_unique_update",
+        ]
+        return forward, reverse
 
-DROP_TRIGGERS = [
-    "DROP TRIGGER IF EXISTS assets_asset_serial_unique_insert",
-    "DROP TRIGGER IF EXISTS assets_asset_serial_unique_update",
-]
+    if vendor == "postgresql":
+        forward = [
+            # A single PL/pgSQL function serves both INSERT and UPDATE.
+            "CREATE OR REPLACE FUNCTION assets_asset_serial_unique_check() "
+            "RETURNS trigger AS $$ "
+            "BEGIN "
+            "  IF NEW.serial_number <> '' AND EXISTS ("
+            "    SELECT 1 FROM assets_asset other "
+            "    WHERE other.serial_number = NEW.serial_number "
+            "      AND other.id <> NEW.id"
+            "  ) THEN "
+            "    RAISE EXCEPTION '%s' USING ERRCODE = '23505'; " % msg +
+            "  END IF; "
+            "  RETURN NEW; "
+            "END; "
+            "$$ LANGUAGE plpgsql",
+            "DROP TRIGGER IF EXISTS assets_asset_serial_unique_insert ON assets_asset",
+            "DROP TRIGGER IF EXISTS assets_asset_serial_unique_update ON assets_asset",
+            "CREATE TRIGGER assets_asset_serial_unique_insert "
+            "BEFORE INSERT ON assets_asset "
+            "FOR EACH ROW EXECUTE FUNCTION assets_asset_serial_unique_check()",
+            "CREATE TRIGGER assets_asset_serial_unique_update "
+            "BEFORE UPDATE OF serial_number ON assets_asset "
+            "FOR EACH ROW EXECUTE FUNCTION assets_asset_serial_unique_check()",
+        ]
+        reverse = [
+            "DROP TRIGGER IF EXISTS assets_asset_serial_unique_insert ON assets_asset",
+            "DROP TRIGGER IF EXISTS assets_asset_serial_unique_update ON assets_asset",
+            "DROP FUNCTION IF EXISTS assets_asset_serial_unique_check()",
+        ]
+        return forward, reverse
+
+    raise NotImplementedError(
+        "Asset serial-number uniqueness trigger is not implemented for "
+        "database vendor: %r" % vendor)
+
+
+def create_serial_uniqueness_trigger(apps, schema_editor):
+    forward, _reverse = _serial_unique_sql(schema_editor.connection.vendor)
+    for sql in forward:
+        schema_editor.execute(sql)
+
+
+def drop_serial_uniqueness_trigger(apps, schema_editor):
+    _forward, reverse = _serial_unique_sql(schema_editor.connection.vendor)
+    for sql in reverse:
+        schema_editor.execute(sql)
 
 
 class Migration(migrations.Migration):
@@ -105,6 +164,6 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunPython(
             report_existing_duplicates, migrations.RunPython.noop),
-        migrations.RunSQL(
-            [CREATE_INSERT_TRIGGER, CREATE_UPDATE_TRIGGER], DROP_TRIGGERS),
+        migrations.RunPython(
+            create_serial_uniqueness_trigger, drop_serial_uniqueness_trigger),
     ]

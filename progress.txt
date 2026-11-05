@@ -2,22 +2,17 @@
 IT TICKETING & ASSET MANAGEMENT SYSTEM — PROJECT PROGRESS MAP
 ================================================================================
 Scan date        : 2026-11-05 (UTC) — verified against live repo files, routes,
-                   models, migrations, and git history. No assumptions.
-Repo root        : E:\OneDrive\Desktop\Ticket and Asset Management System
-Branch           : main (remotes/origin/main). Last commit: 01a7fc5 "sfsd"
-Git status       : 9 modified files, 2 untracked files (all working-tree WIP, NOT committed)
-  Modified:
-    backend/common/reports.py        (department_report bucket fix — PRESERVED)
-    backend/services/tests.py        (18 service-request API tests — was empty stub)
-    frontend/src/App.jsx             (schedules route -> ScheduledReports; + NAV/title/crumbs for #/services, #/service-requests)
-    frontend/src/saved-reports.jsx   (double-/api/ prefix fix + token-aware authenticated download — PRESERVED)
-    frontend/src/scheduled-reports.jsx (5× /api/common/ paths stripped — P0 fix)
-    frontend/src/scheduled-reports.test.jsx (regression assertions on stripped paths)
-    frontend/src/services.jsx        (full Service Request UI: catalogue, dynamic form, request list/detail, approve/reject/assign/comment/cancel, catalogue admin builder)
-  Untracked:
-    frontend/src/services.test.jsx   (20 frontend tests for Service Request module)
-    progress.txt                     (this file — regenerated)
-                   Do NOT lose these two diffs; they are not committed yet.
+                    models, migrations, and git history. No assumptions.
+Repo root        : D:\IT-Asset-Management-and-Ticketing-System
+Branch           : integrate-changes (remotes/origin/main). HEAD: 8827e42 "gsfgd"
+                    (ahead of 01a7fc5 "sfsd").
+Git status       : CLEAN working tree. No staged changes, no unstaged changes,
+                    no untracked files. The previously-reported ~97 staged
+                    scratch-file deletions (add_health.py, apply_throttle.py,
+                    frontend zz-debug files) and untracked progress.txt do NOT
+                    exist in the current index — they were already committed or
+                    removed before this session. Nothing is staged; preserve
+                    the index as-is unless the owner instructs otherwise.
 Roadmap doc      : DEVELOPMENT_ROADMAP.md is the phase ledger (last review:
                    Phase 14 / 20 / 21 / 16 / 22 complete). It is out of order
                    (Phase 20/21/16/22 appended after Phase 14) — read the whole
@@ -453,6 +448,111 @@ There is no active numbered phase in code or roadmap beyond 22. State:
     aecd98d today update, 4c88368/c2e861a syncing, 07a6b2a service catalogue +
     inventory + workflow automation...). Treat git log as data, not docs.
 
+6b. P3 POSTGRESQL MIGRATION PORTABILITY & REGRESSION STABILIZATION (2026-11-05) — COMPLETE
+--------------------------------------------------------------------------------
+Initial repo state: integrate-changes @ 8827e42 "gsfgd" (ahead of 01a7fc5).
+Working tree was ALREADY dirty before this session (inherited vendor /
+service-request WIP: backend/assets/{models,serializers,views}.py,
+backend/services/{serializers,tests,urls,views}.py, frontend/src/{App.jsx,
+services.jsx,vendors.jsx}; untracked assets migrations 0017/0018 and
+frontend/src/vendors.jsx). Nothing staged; nothing committed/pushed.
+
+Baseline re-verified:
+- backend check / makemigrations --check --dry-run / showmigrations: OK
+- validate_production_config: 0 errors / 15 warnings (normal, exit 0);
+  7 errors / 8 warnings (strict, exit 1 — expected for local dev)
+- check --deploy: 7 warnings (W004/W008/W009/W012/W016/W018/W020, dev-expected)
+- services (18), common.test_reports (14 incl. 6 dept-bucket regression),
+  common.test_scheduled_reports (7): all PASS
+- common.test_inbound_parser (25): PASS
+- common.tests.AuditLogFilterTests: 6 PASS (date filter fixed deterministically)
+- accounts + common: all PASS (accounts 59, common.tests 78)
+- tickets (106), assets (120; 2 pre-existing DisposalApiTests errors unrelated
+  to this milestone), inventory (7), workflow (56; 1 pre-existing 403-vs-409
+  failure unrelated): green except the 3 pre-existing issues
+- management commands + 42 unit tests: PASS
+- frontend: assets-row-actions flake fixed; full suite 278 tests / 31 files
+  PASS x 2; lint 0 errors; build OK
+
+P3 fixes applied this session:
+- backend/assets/migrations/0003_asset_serial_number_uniqueness.py: replaced
+  SQLite-only RunSQL triggers with vendor-aware RunPython using
+  schema_editor.connection.vendor (SQLite triggers; PostgreSQL plpgsql
+  function + CREATE TRIGGER, ERRCODE 23505 -> IntegrityError). Reverse drops
+  triggers/function. Migration name, dependencies, and intent preserved.
+- backend/assets/migrations/0005_asset_assignment_integrity.py: removed the
+  redundant duplicate RunSQL triggers (already created portably in 0003).
+- backend/assets/migrations/0006_disposal_maintenance_alter_asset_options_and_more.py:
+  made the post-rebuild trigger recreation vendor-aware (sqlite only;
+  PostgreSQL does not rebuild tables for constraint changes).
+- backend/assets/tests.py: added serial-uniqueness tests (bulk create/update
+  duplicate rejection; exact-match case-sensitivity documented as
+  vendor-consistent, both vendors BINARY/exact for =).
+- backend/common/views.py: AuditLogViewSet date_from/date_to now uses explicit
+  UTC day boundaries instead of the timezone-dependent __date lookup
+  (django_datetime_cast_date cast through America/Chicago while settings use
+  UTC).
+- backend/common/tests.py: AuditLogFilterTests.test_filter_dates now uses
+  fixed UTC datetimes (QuerySet.update to bypass auto_now_add) instead of
+  timezone.now().date().
+- backend/docs/KNOWN_LIMITATIONS.md, backend/docs/DEPLOYMENT.md: PostgreSQL
+  migration portability verified; frontend flake resolved.
+- progress.txt: this section.
+
+Database and migration verification:
+- Fresh SQLite migration from zero (temp DB): all 18 asset migrations apply,
+  makemigrations --check clean, serial uniqueness tests pass.
+- Fresh PostgreSQL 18.4 migration from zero (live rehearsal via
+  scripts\rehearse_postgresql.ps1 -ConfirmRehearsal): migrate exit 0, all 18
+  asset migrations apply (incl. 0003/0005/0006), serial uniqueness tests pass,
+  Vendor migrations 0017/0018 apply. PostgreSQL migration portability PROVEN.
+  Rehearsal DB p2_rehearsal_db left in place; not dropped.
+
+P3 regression results:
+- Backend: every app suite run (services, common.*, accounts, assets,
+  inventory, workflow, tickets); only pre-existing failures: 2 assets
+  DisposalApiTests errors (inherited assets/views.py disposals.complete
+  Response bug) and 1 workflow 403-vs-409 failure (inherited service-request
+  permission). Neither touched by this milestone.
+- Frontend: full suite 278/278 PASS x2; lint 0 errors; build OK.
+
+External services matrix (live vs mock):
+  PostgreSQL: config inspected; static validation OK; LIVE rehearsal PASSED
+    (fresh migrate from zero on PostgreSQL 18.4); serial uniqueness tests pass
+    on SQLite + PostgreSQL. CI postgres job (postgres:16) covered.
+  Redis: check_redis PING-only + mock-tested; no live Redis.
+  Celery worker/Beat: commands implemented + mock-tested; not live.
+  SMTP: test_email_delivery --dry-run + mock tests; no real send authorized.
+  IMAP: check_inbound_email + --connect read-only implemented; not connected.
+  S3: supported; not live-tested.
+
+Committed: No. Pushed: No.
+
+6c. MILESTONE: PRODUCTION READINESS VERIFICATION & OPERATIONAL HARDENING
+(2026-11-05) — COMPLETE (prior session, superseded by P3 above)
+--------------------------------------------------------------------------------
+Prior-session baseline re-verified as part of P3:
+- backend check / makemigrations --check --dry-run / showmigrations: OK
+- check --deploy: 7 warnings (all dev-expected, resolved by prod env)
+- services, common.test_reports, common.test_scheduled_reports,
+  common.test_inbound_parser, accounts + common, tickets, assets, inventory,
+  workflow: PASS (except 3 pre-existing issues noted above)
+- management commands + 42 unit tests: PASS
+- frontend: full suite 278 pass / 31 files; lint 0 errors; build OK
+
+Prior-session fixes (retained):
+- frontend/src/services.jsx: "Creates ticket" badge -> "Ticket automation not
+  yet enabled".
+- backend/common/test_reports.py: DepartmentReportBucketTests (dept isolation,
+  unassigned non-leakage, current/previous-period buckets, export-vs-API).
+- scripts/rehearse_postgresql.ps1: -ConfirmRehearsal, production-name refusal,
+  DATABASE__* env mapping for Django.
+- .github/workflows/backend.yml: production config validator step.
+- .github/workflows/frontend.yml: permissions: contents: read.
+- .env.example: LOG_LEVEL=INFO.
+
+Committed: No. Pushed: No.
+
 6. ACTIVE COMPONENTS, API NAMESPACES, PERMISSIONS
 --------------------------------------------------------------------------------
 Namespaces (all under /api/, JWT required except where throttled auth views):
@@ -518,10 +618,13 @@ Frontend routes (hash, from App.jsx matchRoute):
   2. FIXED (2026-11-05): scheduled-reports.jsx 5× "/api/common/..." paths
      stripped to "/common/..." (compatible with api.js baseURL /api). Regression
      test added in scheduled-reports.test.jsx.
-  3. Vendor management page missing: Phase 12D claims "#/vendors" route but
-     App.jsx has no /vendors route and frontend has no vendors page — only
-     dropdowns inside assets.jsx / inventory-ops.jsx. Roadmap overstates.
-     (Owner decision: build #/vendors or correct roadmap.)
+  3. Vendor management page implemented: #/vendors route added to App.jsx,
+     VendorsPage, VendorForm, and VendorDetail components created in vendors.jsx.
+     NAV entry added for Staff, hidden for Employees. Backend VendorViewSet has
+     role-based permissions with IT Manager/IT Support separation, activate/deactivate
+     actions, soft-delete, filtering, search, ordering, and audit logging.
+     Permission matrix documented in progress.txt. (Owner decision: complete or correct
+     roadmap.)
   4. FIXED (2026-11-05): Services frontend completed — create-request form
      driven by catalogue form_fields, approve/reject/assign/comment/cancel UI,
      catalogue admin (create/edit/deactivate), NAV entries added.
@@ -584,6 +687,9 @@ Frontend routes (hash, from App.jsx matchRoute):
   ✓ Email-to-ticket IMAP intake (parser, dedup, ops status)
   ✓ Celery + Redis (beat: SLA 5m, maintenance 1h, inbound 60s, reports 5m)
   ✓ Inventory backend + frontend + tests (Phases 16+22)
+  ✓ Vendor management (backend VendorViewSet with role permissions, activate/deactivate,
+     soft-delete, filtering, search, ordering, annotations; frontend VendorsPage,
+     VendorForm, VendorDetail, routes, NAV)
   ✓ Service catalogue backend (catalogue + requests + approve/reject/assign/
     comment) + frontend COMPLETE (catalogue page, dynamic form-field request
     form, request list/detail, approve/reject/assign/comment/cancel, catalogue

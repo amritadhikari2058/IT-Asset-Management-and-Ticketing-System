@@ -27,7 +27,7 @@ const FORMATS = [
  * history with retry for failed runs.
  */
 export function ScheduledReports() {
-  const { isStaff } = useAuth();
+  const { canManageScheduledReports } = useAuth();
 
   // ---------- scheduled reports list ----------
   const [items, setItems] = useState([]);
@@ -289,16 +289,16 @@ export function ScheduledReports() {
 
   const restrictedView = (
     <div>
-      <PageHeader title="Scheduled reports" sub="IT staff only." />
+      <PageHeader title="Scheduled reports" sub="IT Manager or System Admin only." />
       <div className="panel">
         <div className="panel-pad"><div className="error-summary" role="alert">
-          Scheduled report management is restricted to IT staff and admins.
+          Scheduled report management is restricted to IT Managers and System Admins.
         </div></div>
       </div>
     </div>
   );
 
-  if (!isStaff) return restrictedView;
+  if (!canManageScheduledReports) return restrictedView;
 
   return (
     <div>

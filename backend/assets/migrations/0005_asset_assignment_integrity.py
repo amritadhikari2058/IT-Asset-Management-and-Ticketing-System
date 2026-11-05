@@ -178,38 +178,4 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunPython(report_all_rules, migrations.RunPython.noop),
         AddConstraintsIfClean(CONSTRAINTS),
-        migrations.RunSQL(
-            [
-                """
-                CREATE TRIGGER IF NOT EXISTS assets_asset_serial_unique_insert
-                BEFORE INSERT ON assets_asset FOR EACH ROW
-                WHEN NEW.serial_number <> ''
-                AND EXISTS (
-                    SELECT 1 FROM assets_asset other
-                    WHERE other.serial_number = NEW.serial_number
-                )
-                BEGIN
-                    SELECT RAISE(ABORT, 'duplicate serial number: serial numbers must be unique across all assets');
-                END
-                """,
-                """
-                CREATE TRIGGER IF NOT EXISTS assets_asset_serial_unique_update
-                BEFORE UPDATE OF serial_number ON assets_asset FOR EACH ROW
-                WHEN NEW.serial_number <> ''
-                AND NEW.serial_number <> OLD.serial_number
-                AND EXISTS (
-                    SELECT 1 FROM assets_asset other
-                    WHERE other.serial_number = NEW.serial_number
-                      AND other.id <> NEW.id
-                )
-                BEGIN
-                    SELECT RAISE(ABORT, 'duplicate serial number: serial numbers must be unique across all assets');
-                END
-                """,
-            ],
-            [
-                "DROP TRIGGER IF EXISTS assets_asset_serial_unique_insert",
-                "DROP TRIGGER IF EXISTS assets_asset_serial_unique_update",
-            ],
-        ),
     ]

@@ -56,8 +56,15 @@ scope decisions that operators should be aware of before go-live.
   and blocked when history/assignments reference the row.
 - **No database encryption at rest**: Configure PostgreSQL encryption
   (TDE or pgcrypto) at the infrastructure level if required.
-- **SQLite not for production**: The dev default is SQLite. Production
-  requires PostgreSQL.
+- **SQLite for development, PostgreSQL for production**: The dev default
+  is SQLite. Production requires PostgreSQL. The full migration chain
+  (assets 0001-0018 including the serial-number uniqueness backstop in
+  assets.0003) has been verified to apply from zero on both SQLite and a
+  live PostgreSQL 18.4 rehearsal database. The serial-number uniqueness
+  rule (optional/blank serials repeatable; non-blank serials unique across
+  all assets including soft-deleted ones) is enforced by vendor-portable
+  triggers created in assets.0003 and re-created after SQLite table
+  rebuilds in assets.0006.
 
 ## Internationalization / localization
 
@@ -71,15 +78,22 @@ scope decisions that operators should be aware of before go-live.
 - Report exports (12 datasets) are verified against the API in
   `common.test_reports`.
 
-## External service live-status (not tested)
+## External service live-status
 
 The following external integrations are statically configured and
-mock-tested, but have **not** been validated against live services:
+mock-tested, but have **not** been validated against live services unless
+noted below:
 
-- **PostgreSQL**: settings and migrations support PostgreSQL, but no live
-  PostgreSQL database was used locally. CI runs a PostgreSQL 16 service
-  job for migration consistency and targeted tests. Local live test was
-  not performed (no PostgreSQL server available).
+- **PostgreSQL 18.4**: A local live PostgreSQL server WAS available and was
+  used for a migration rehearsal (`scripts\rehearse_postgresql.ps1`). The
+  full migration chain applies from zero on PostgreSQL (`migrate` exit 0,
+  all 18 asset migrations including 0003/0005/0006 applied), Django `check`
+  and `makemigrations --check --dry-run` pass, and the serial-number
+  uniqueness tests pass on both SQLite and PostgreSQL. Production
+  PostgreSQL deployment is therefore **no longer blocked** by assets.0003.
+  CI runs a PostgreSQL 16 service job; the fix is vendor-agnostic
+  (plpgsql triggers on PostgreSQL, SQLite triggers on SQLite) and works on
+  both versions.
 - **Redis / Celery**: broker and result backend are configured
   (`redis://localhost:6379/0`). `check_redis`, `check_celery_config`, and
   `check_celery_worker` commands are implemented and mock-tested. No live
@@ -118,6 +132,9 @@ mock-tested, but have **not** been validated against live services:
 
 - React SPA served from static files. No server-side rendering.
 - Theme is a single fixed design; no user-selectable theming.
+- Frontend test suite (31 files / 278 tests) passes repeatedly; the
+  Assets row-actions assign-modal test was stabilized (deterministic
+  controlled-input interaction, no jest-dom-dependent matchers).
 
 ## Deployment
 

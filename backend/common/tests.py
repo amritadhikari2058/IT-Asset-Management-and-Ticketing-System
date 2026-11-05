@@ -808,13 +808,38 @@ class AuditLogFilterTests(TestCase):
         self.assertEqual(rows[0]["entity_type"], "assets.Asset")
 
     def test_filter_dates(self):
+        from datetime import datetime, date
         from django.utils import timezone
+        from common.models import AuditLog
 
         auth(self.c, self.admin)
-        today = timezone.now().date().isoformat()
+        # Fixed, timezone-independent timestamps (UTC). auto_now_add would
+        # overwrite an explicit timestamp on create(), so set them via
+        # QuerySet.update() afterwards (bypasses save()/auto_now_add).
+        base = timezone.make_aware(datetime(2026, 3, 10, 9, 0, 0), timezone.UTC)
+        e1 = AuditLog.objects.create(actor=self.admin, action="create",
+                                     entity_type="tickets.Ticket", object_id="1")
+        AuditLog.objects.filter(pk=e1.pk).update(timestamp=base)
+        e2 = AuditLog.objects.create(actor=self.mgr, action="update",
+                                     entity_type="assets.Asset", object_id="2")
+        AuditLog.objects.filter(pk=e2.pk).update(
+            timestamp=timezone.make_aware(datetime(2026, 3, 10, 17, 30, 0),
+                                          timezone.UTC))
+        # Out of range (next day).
+        e3 = AuditLog.objects.create(actor=self.admin, action="create",
+                                     entity_type="tickets.Ticket", object_id="9")
+        AuditLog.objects.filter(pk=e3.pk).update(
+            timestamp=timezone.make_aware(datetime(2026, 3, 11, 1, 0, 0),
+                                          timezone.UTC))
+        target = date(2026, 3, 10).isoformat()
         rows = self._rows(self.c.get(
-            "/api/common/audit-logs/", {"date_from": today}))
+            "/api/common/audit-logs/",
+            {"date_from": target, "date_to": target}))
         self.assertEqual(len(rows), 2)
+        # date_from alone also includes the next-day entry.
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"date_from": target}))
+        self.assertGreaterEqual(len(rows), 2)
         rows = self._rows(self.c.get(
             "/api/common/audit-logs/", {"date_from": "2999-01-01"}))
         self.assertEqual(rows, [])

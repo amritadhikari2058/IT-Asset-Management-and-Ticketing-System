@@ -55,12 +55,34 @@ export function AuthProvider({ children }) {
     setAccess(null);
     setUser(null);
   };
-  const isStaff = !!user && (STAFF_ROLES.includes(user.role) || !!user.is_superuser);
-  const isAdmin = !!user && (user.role === 'system_admin' || !!user.is_superuser);
+  const role = user?.role;
+  const isSuperuser = !!user?.is_superuser;
+  const isSystemAdmin = role === 'system_admin' || isSuperuser;
+  const isITManager = role === 'it_manager';
+  const isITSupport = role === 'it_support';
+  const isEmployee = role === 'employee';
+  const isStaff = !!user && (STAFF_ROLES.includes(role) || isSuperuser);
+  const isAdmin = isSystemAdmin;
+  const isManagerOrAdmin = isSystemAdmin || isITManager;
+  const isSupportOrAbove = isSystemAdmin || isITManager || isITSupport;
   const canCreateTickets =
-    !!user && (isStaff || user.role === 'system_admin' || !!user.can_create_tickets || !!user.is_superuser);
+    !!user && (isStaff || role === 'system_admin' || !!user.can_create_tickets || isSuperuser);
+  const canManageUsers = isSystemAdmin;
+  const canManageVendors = isSystemAdmin || isITManager;
+  const canViewVendors = isSupportOrAbove;
+  const canManageServiceCatalogue = isSystemAdmin || isITManager;
+  const canApproveServiceRequests = isSystemAdmin || isITManager;
+  const canConfigureWorkflow = isSystemAdmin || isITManager;
+  const canApproveDisposals = isSystemAdmin || isITManager;
+  const canManageInventory = isSystemAdmin || isITManager;
+  const canAdjustInventory = isSystemAdmin || isITManager;
+  const canPublishKnowledgeBase = isSystemAdmin || isITManager;
+  const canManageScheduledReports = isSystemAdmin || isITManager;
+  const canAccessAudit = isSystemAdmin;
+  const canAccessRecycleBin = isSystemAdmin;
+  const canPerformPermanentDeletion = isSystemAdmin;
   return (
-    <AuthCtx.Provider value={{ access, user, profileLoading, login, logout, isStaff, isAdmin, canCreateTickets, refreshProfile: fetchProfile }}>
+    <AuthCtx.Provider value={{ access, user, profileLoading, login, logout, isStaff, isAdmin, canCreateTickets, refreshProfile: fetchProfile, role, isSuperuser, isSystemAdmin, isITManager, isITSupport, isEmployee, isManagerOrAdmin, isSupportOrAbove, canManageUsers, canManageVendors, canViewVendors, canManageServiceCatalogue, canApproveServiceRequests, canConfigureWorkflow, canApproveDisposals, canManageInventory, canAdjustInventory, canPublishKnowledgeBase, canManageScheduledReports, canAccessAudit, canAccessRecycleBin, canPerformPermanentDeletion }}>
       {children}
     </AuthCtx.Provider>
   );

@@ -47,6 +47,19 @@ jobs:
           cd backend
           python manage.py makemigrations --check --dry-run
 
+      - name: Run production config validator (CI configuration)
+        run: |
+          cd backend
+          python manage.py validate_production_config
+        env:
+          DEBUG: "false"
+          SECRET_KEY: "ci-test-secret-key-do-not-use-in-production"
+          EMAIL_BACKEND: "django.core.mail.backends.locmem.EmailBackend"
+        # Normal mode must exit 0 (warnings allowed, no ERRORs) for the CI
+        # configuration. Strict mode is intentionally NOT enforced here because
+        # CI/test uses SQLite and locmem email, which are development-acceptable
+        # but not production-acceptable.
+
       - name: Run backend tests (SQLite)
         run: |
           cd backend

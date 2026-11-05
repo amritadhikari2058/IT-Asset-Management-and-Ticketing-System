@@ -107,11 +107,17 @@ INSTALLED_APPS = [
     'common',
     'accounts',
     'assets',
+    'changes',
     'tickets',
     'services',
     'inventory',
     'workflow',
+    'procurement',
+    'approval_center',
+    'lifecycle',
+    'licensing',
 ]
+
 
 # Celery configuration
 import os
@@ -139,6 +145,14 @@ CELERY_BEAT_SCHEDULE = {
     'run-scheduled-reports': {
         'task': 'common.tasks.run_scheduled_reports',
         'schedule': 300.0,  # every 5 minutes
+    },
+    'evaluate-license-deadlines': {
+        'task': 'licensing.tasks.evaluate_license_deadlines',
+        'schedule': 86400.0,  # daily
+    },
+    'evaluate-license-compliance': {
+        'task': 'licensing.tasks.evaluate_license_compliance_task',
+        'schedule': 86400.0,  # daily
     },
 }
 

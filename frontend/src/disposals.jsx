@@ -147,7 +147,7 @@ function buildDisposalUrl(filters) {
 }
 
 export function Disposals() {
-  const { isStaff } = useAuth();
+  const { isStaff, canApproveDisposals } = useAuth();
   const [items, setItems] = useState([]);
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
@@ -227,7 +227,7 @@ export function Disposals() {
     { key: 'disposal_date', label: 'Disposed', render: (d) => (d.disposal_date ? fmtDateTime(d.disposal_date) : <span className="cell-muted">—</span>) },
     { key: 'actions', label: 'Actions', thClass: 'table-actions', render: (d) => (
       <span className="row-gap" style={{ gap: 'var(--sp-1)' }}>
-        {d.approval_status === 'pending' && !d.is_completed && (
+        {d.approval_status === 'pending' && !d.is_completed && canApproveDisposals && (
           <>
             <button type="button" className="btn-small" disabled={busyRow === d.id}
               onClick={() => setConfirm({ action: 'approve', record: d })}>Approve</button>
@@ -235,7 +235,7 @@ export function Disposals() {
               onClick={() => setConfirm({ action: 'reject', record: d })}>Reject</button>
           </>
         )}
-        {d.approval_status === 'approved' && !d.is_completed && (
+        {d.approval_status === 'approved' && !d.is_completed && canApproveDisposals && (
           <button type="button" className="btn-small btn-danger" disabled={busyRow === d.id}
             onClick={() => setConfirm({ action: 'complete', record: d })}>Complete…</button>
         )}

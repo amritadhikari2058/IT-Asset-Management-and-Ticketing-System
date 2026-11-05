@@ -71,7 +71,7 @@ function ErrorState({ message, onRetry }) {
  * links to the pending-review queue and per-article revision history.
  */
 export function KnowledgeBase() {
-  const { isStaff } = useAuth();
+  const { isStaff, isManagerOrAdmin } = useAuth();
   const [items, setItems] = useState([]);
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
@@ -352,10 +352,14 @@ export function KnowledgeBase() {
             <Field label="Status">
               <select id="kb-status" className="input" value={form.status} onChange={(e) => setField('status')(e.target.value)} disabled={formBusy}>
                 <option value="draft">Draft</option>
-                <option value="pending_review">Pending review</option>
-                <option value="approved">Approved</option>
-                <option value="published">Published</option>
-                <option value="archived">Archived</option>
+                {isManagerOrAdmin || form.status === 'pending_review' ? <option value="pending_review">Pending review</option> : null}
+                {isManagerOrAdmin ? (
+                  <>
+                    <option value="approved">Approved</option>
+                    <option value="published">Published</option>
+                    <option value="archived">Archived</option>
+                  </>
+                ) : null}
               </select>
             </Field>
             {editing && (
@@ -433,7 +437,7 @@ function ReviewSummary({ article }) {
 
 /** Read-only detail view for a single knowledge-base article. */
 export function KnowledgeBaseDetail({ id }) {
-  const { user, isStaff } = useAuth();
+  const { user, isStaff, isManagerOrAdmin } = useAuth();
   const [article, setArticle] = useState(null);
   const [revisions, setRevisions] = useState([]);
   const [revLoading, setRevLoading] = useState(false);
@@ -536,20 +540,25 @@ export function KnowledgeBaseDetail({ id }) {
   };
 
   let statusActions = null;
-  if (article && isStaff && user) {
+  if (article && user) {
+    const canManage = isManagerOrAdmin;
     if (article.status === 'draft' || article.status === 'archived') {
       statusActions = (
         <div className="row-end">
-          <button type="button" className="btn-primary" onClick={() => postAction('submit_review', {}, 'Article submitted for review.')} disabled={busy}>
-            Submit for review
-          </button>
-          <button type="button" className="btn-ghost" onClick={() => postAction('archive', {}, 'Article archived.')} disabled={busy}>
-            Archive
-          </button>
+          {isStaff && (
+            <button type="button" className="btn-primary" onClick={() => postAction('submit_review', {}, 'Article submitted for review.')} disabled={busy}>
+              Submit for review
+            </button>
+          )}
+          {canManage && (
+            <button type="button" className="btn-ghost" onClick={() => postAction('archive', {}, 'Article archived.')} disabled={busy}>
+              Archive
+            </button>
+          )}
         </div>
       );
     } else if (article.status === 'pending_review') {
-      statusActions = (
+      statusActions = canManage ? (
         <div className="row-end">
           <button type="button" className="btn-primary" onClick={() => { setReviewComment(''); setApproveOpen(true); }} disabled={busy}>
             Approve
@@ -558,9 +567,9 @@ export function KnowledgeBaseDetail({ id }) {
             Reject
           </button>
         </div>
-      );
+      ) : null;
     } else if (article.status === 'approved') {
-      statusActions = (
+      statusActions = canManage ? (
         <div className="row-end">
           <button type="button" className="btn-primary" onClick={() => postAction('publish', {}, 'Article published.')} disabled={busy}>
             Publish
@@ -569,15 +578,15 @@ export function KnowledgeBaseDetail({ id }) {
             Archive
           </button>
         </div>
-      );
+      ) : null;
     } else if (article.status === 'published') {
-      statusActions = (
+      statusActions = canManage ? (
         <div className="row-end">
           <button type="button" className="btn-ghost" onClick={() => postAction('archive', {}, 'Article archived.')} disabled={busy}>
             Archive
           </button>
         </div>
-      );
+      ) : null;
     }
   }
 

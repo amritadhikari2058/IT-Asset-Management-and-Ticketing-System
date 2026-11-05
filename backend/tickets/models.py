@@ -16,7 +16,7 @@ from django.db import models
 from django.utils import timezone
 from datetime import timedelta
 
-from common.models import SoftDeleteModel
+from common.models import SoftDeleteManager, SoftDeleteModel
 
 
 def attachment_upload_to(instance, filename):
@@ -56,9 +56,13 @@ class Ticket(SoftDeleteModel):
     STATUS_CHOICES = [
         ("open", "Open"),
         ("in_progress", "In progress"),
+        ("waiting_requester", "Waiting for Requester"),
+        ("waiting_third_party", "Waiting for Third Party"),
         ("resolved", "Resolved"),
         ("closed", "Closed"),
         ("reopened", "Reopened"),
+        ("cancelled", "Cancelled"),
+        ("merged", "Merged"),
         ("archived", "Archived"),
     ]
     PRIORITY_CHOICES = [
@@ -68,13 +72,26 @@ class Ticket(SoftDeleteModel):
         ("critical", "Critical"),
     ]
 
+    # Statuses that are considered terminal / non-operational for SLA and
+    # workload calculations.
+    TERMINAL_STATUSES = frozenset({"resolved", "closed", "archived", "cancelled", "merged"})
+    # Statuses where the SLA clock should not be running.
+    SLA_PAUSED_STATUSES = frozenset({"waiting_requester", "waiting_third_party"})
+
     # Allowed next statuses per current status (bulk validates each ticket).
     VALID_TRANSITIONS = {
-        "open": {"in_progress", "resolved", "closed", "archived"},
-        "in_progress": {"resolved", "open", "closed"},
-        "resolved": {"closed", "reopened"},
-        "closed": {"reopened", "archived"},
+        "open": {"in_progress", "waiting_requester", "waiting_third_party",
+                 "resolved", "closed", "cancelled", "merged", "archived"},
+        "in_progress": {"waiting_requester", "waiting_third_party", "resolved",
+                        "closed", "cancelled", "merged", "open", "archived"},
+        "waiting_requester": {"in_progress", "resolved", "cancelled", "merged"},
+        "waiting_third_party": {"in_progress", "waiting_requester", "resolved",
+                                "closed", "cancelled", "merged"},
+        "resolved": {"closed", "reopened", "merged"},
+        "closed": {"reopened", "archived", "merged"},
         "reopened": {"in_progress", "resolved", "closed"},
+        "cancelled": set(),
+        "merged": set(),
         "archived": set(),
     }
 
@@ -125,6 +142,37 @@ class Ticket(SoftDeleteModel):
     # TicketSLA configuration (admin-configurable per priority).
     sla_due_at = models.DateTimeField(null=True, blank=True)
     sla_breached = models.BooleanField(default=False)
+    # Queue routing
+    queue = models.ForeignKey(
+        "TicketQueue", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="tickets",
+        help_text="Support queue holding this ticket.",
+    )
+    # Parent-child relationships
+    parent_ticket = models.ForeignKey(
+        "self", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="child_tickets",
+        help_text="Parent ticket when this is a child ticket.",
+    )
+    merged_into = models.ForeignKey(
+        "self", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="merged_duplicates",
+        help_text="Primary ticket this ticket was merged into (status merged).",
+    )
+    # Resolution
+    resolution_code = models.ForeignKey(
+        "TicketResolutionCode", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="resolved_tickets",
+        help_text="Code used when the ticket was resolved.",
+    )
+    resolution_summary = models.TextField(blank=True, default="")
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="resolved_tickets_by",
+    )
+    reopened_at = models.DateTimeField(null=True, blank=True)
+    reopen_count = models.PositiveIntegerField(default=0)
+    version = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -138,6 +186,12 @@ class Ticket(SoftDeleteModel):
             models.Index(fields=["department"], name="ticket_department_idx"),
             models.Index(fields=["created_at"], name="ticket_created_at_idx"),
             models.Index(fields=["priority"], name="ticket_priority_idx"),
+            models.Index(fields=["queue"], name="ticket_queue_idx"),
+            models.Index(fields=["parent_ticket"], name="ticket_parent_idx"),
+            models.Index(fields=["merged_into"], name="ticket_merged_into_idx"),
+            models.Index(fields=["resolved_at"], name="ticket_resolved_at_idx"),
+            models.Index(fields=["closed_at"], name="ticket_closed_at_idx"),
+            models.Index(fields=["reopened_at"], name="ticket_reopened_at_idx"),
         ]
         permissions = [
             ("hard_delete_ticket", "Can permanently delete tickets"),
@@ -187,7 +241,7 @@ class TicketSLA(SoftDeleteModel):
     to flag overdue tickets.
 
     escalation_hours: if set, send a notification this many hours before the
-    SLA deadline (breach threshold).  When null, the default is 80 % of
+    SLA deadline (breach threshold).  When null, the default is 80ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¯% of
     target_resolution_hours.
 
     breach_hours: if set, send a breach notification this many hours after the
@@ -385,3 +439,615 @@ class TicketKbArticle(SoftDeleteModel):
 
     def __str__(self):
         return f"#{self.ticket_id} <-> KB#{self.article_id}"
+
+
+class TicketQueue(SoftDeleteModel):
+    """Support queue that owns/holds tickets awaiting or in work.
+
+    Queues route unassigned tickets, group members, and drive assignment
+    strategies. Deactivation (not deletion) is preferred; deletion is
+    blocked while active tickets reference the queue.
+    """
+
+    ASSIGNMENT_STRATEGY_CHOICES = [
+        ("manual", "Manual"),
+        ("round_robin", "Round Robin"),
+        ("least_open_tickets", "Least Open Tickets"),
+        ("category_owner", "Category Owner"),
+        ("department_queue", "Department Queue"),
+    ]
+
+    name = models.CharField(max_length=150)
+    code = models.CharField(max_length=40, unique=True, db_index=True)
+    description = models.TextField(blank=True, default="")
+    department = models.ForeignKey(
+        "accounts.Department",
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ticket_queues",
+        help_text="Optional: restricts queue to a department; null = cross-department IT queue.",
+    )
+    default_category = models.ForeignKey(
+        "tickets.TicketCategory",
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="queues_defaulting_here",
+    )
+    default_priority = models.CharField(
+        max_length=20, choices=Ticket.PRIORITY_CHOICES, blank=True, default=""
+    )
+    is_active = models.BooleanField(default=True)
+    email_address = models.EmailField(blank=True, default="")
+    assignment_strategy = models.CharField(
+        max_length=30, choices=ASSIGNMENT_STRATEGY_CHOICES, default="manual"
+    )
+    allow_self_claim = models.BooleanField(default=True)
+    manager = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="managed_queues",
+        help_text="Active IT Manager or System Admin.",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_queues",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["code"], name="queue_code_idx"),
+            models.Index(fields=["is_active", "department"], name="queue_active_dept_idx"),
+            models.Index(fields=["manager"], name="queue_manager_idx"),
+        ]
+        permissions = [
+            ("manage_ticketqueue", "Can manage ticket queues and memberships"),
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.manager_id and not self._manager_eligible(self.manager):
+            raise ValidationError(
+                {"manager": "Queue manager must be an active IT Manager or System Admin."}
+            )
+
+    @staticmethod
+    def _manager_eligible(user):
+        if user is None or not getattr(user, "pk", None):
+            return False
+        role = getattr(user, "role", "")
+        return bool(
+            getattr(user, "is_active", False)
+            and not getattr(user, "is_deleted", False)
+            and (role in ("system_admin", "it_manager") or getattr(user, "is_superuser", False))
+        )
+
+
+class TicketQueueMembership(SoftDeleteModel):
+    """Links an IT staff member to a queue with a role and capabilities."""
+
+    ROLE_CHOICES = [
+        ("manager", "Queue Manager"),
+        ("agent", "Agent"),
+        ("observer", "Observer"),
+    ]
+
+    queue = models.ForeignKey(
+        TicketQueue, on_delete=models.CASCADE, related_name="memberships"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="queue_memberships",
+    )
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    is_active = models.BooleanField(default=True)
+    can_claim = models.BooleanField(default=True)
+    can_assign_others = models.BooleanField(default=False)
+    can_view_all = models.BooleanField(default=False)
+    joined_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_memberships",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        ordering = ["queue", "user"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["queue", "user"],
+                condition=models.Q(is_deleted=False, is_active=True),
+                name="one_active_membership_per_queue_user",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["queue", "is_active"], name="membership_queue_active_idx"),
+            models.Index(fields=["user", "is_active"], name="membership_user_active_idx"),
+            models.Index(fields=["role"], name="membership_role_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.user} -> {self.queue} ({self.role})"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.user_id and not self._staff_eligible(self.user):
+            raise ValidationError(
+                {"user": "Only active IT staff can be queue members."}
+            )
+        if self.role == "observer" and (self.can_claim or self.can_assign_others):
+            raise ValidationError(
+                {"role": "Observer cannot claim or assign others."}
+            )
+
+    @staticmethod
+    def _staff_eligible(user):
+        if user is None or not getattr(user, "pk", None):
+            return False
+        role = getattr(user, "role", "")
+        return bool(
+            getattr(user, "is_active", False)
+            and not getattr(user, "is_deleted", False)
+            and (role in ("system_admin", "it_manager", "it_support")
+                 or getattr(user, "is_superuser", False))
+        )
+
+
+class TicketWatcher(SoftDeleteModel):
+    """A user subscribed to ticket updates without being the assignee."""
+
+    WATCH_TYPE_CHOICES = [
+        ("watcher", "Watcher"),
+        ("follower", "Follower"),
+        ("requester_delegate", "Requester Delegate"),
+        ("manager", "Manager"),
+    ]
+
+    ticket = models.ForeignKey(
+        Ticket, on_delete=models.CASCADE, related_name="watchers"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="ticket_watches",
+    )
+    watch_type = models.CharField(max_length=30, choices=WATCH_TYPE_CHOICES, default="watcher")
+    added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="added_watches",
+    )
+    is_active = models.BooleanField(default=True)
+    muted_until = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ticket", "user"],
+                condition=models.Q(is_deleted=False, is_active=True),
+                name="one_active_watcher_per_ticket_user",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["ticket", "is_active"], name="watcher_ticket_active_idx"),
+            models.Index(fields=["user", "is_active"], name="watcher_user_active_idx"),
+            models.Index(fields=["muted_until"], name="watcher_muted_until_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.user} watches #{self.ticket_id} ({self.watch_type})"
+
+    def is_muted(self):
+        from django.utils import timezone
+        return bool(self.muted_until and timezone.now() < self.muted_until)
+
+
+class CannedResponse(SoftDeleteModel):
+    """Approved standard reply template usable on ticket notes."""
+
+    VISIBILITY_CHOICES = [
+        ("public_reply", "Public Reply"),
+        ("internal_note", "Internal Note"),
+        ("both", "Both"),
+    ]
+
+    title = models.CharField(max_length=200)
+    code = models.CharField(max_length=60, unique=True, blank=True, default="")
+    body = models.TextField(help_text="Plain text or safely validated limited markup.")
+    visibility = models.CharField(max_length=20, choices=VISIBILITY_CHOICES, default="internal_note")
+    category = models.CharField(max_length=100, blank=True, default="")
+    queue = models.ForeignKey(
+        TicketQueue, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="canned_responses"
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="canned_responses",
+    )
+    is_shared = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    usage_count = models.PositiveIntegerField(default=0)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_canned_responses",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        ordering = ["title"]
+        indexes = [
+            models.Index(fields=["is_active", "is_shared"], name="canned_active_shared_idx"),
+            models.Index(fields=["owner"], name="canned_owner_idx"),
+            models.Index(fields=["queue"], name="canned_queue_idx"),
+            models.Index(fields=["category"], name="canned_category_idx"),
+        ]
+
+    def __str__(self):
+        return self.title
+
+
+class TicketTemplate(SoftDeleteModel):
+    """Template that pre-fills a new ticket from a standard pattern."""
+
+    name = models.CharField(max_length=200)
+    code = models.CharField(max_length=60, unique=True, blank=True, default="")
+    title_template = models.CharField(max_length=255)
+    description_template = models.TextField(blank=True, default="")
+    category = models.ForeignKey(
+        TicketCategory, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="templates"
+    )
+    queue = models.ForeignKey(
+        TicketQueue, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="templates"
+    )
+    priority = models.CharField(max_length=20, choices=Ticket.PRIORITY_CHOICES, blank=True, default="")
+    default_assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="default_templates"
+    )
+    default_status = models.CharField(max_length=20, blank=True, default="open")
+    required_asset = models.BooleanField(default=False)
+    note_templates = models.JSONField(default=list, blank=True,
+                                      help_text="List of {title, body, is_internal} note previews.")
+    custom_fields = models.JSONField(default=dict, blank=True,
+                                     help_text="Allowlisted bounded custom field values.")
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ticket_templates",
+    )
+    is_shared = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    version = models.PositiveIntegerField(default=1)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_ticket_templates",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["is_active", "is_shared"], name="template_active_shared_idx"),
+            models.Index(fields=["owner"], name="template_owner_idx"),
+            models.Index(fields=["category"], name="template_category_idx"),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class TicketRelation(SoftDeleteModel):
+    RELATION_TYPE_CHOICES = [
+        ("related", "Related"),
+        ("duplicate", "Duplicate"),
+        ("parent", "Parent"),
+        ("child", "Child"),
+        ("caused_by", "Caused By"),
+        ("blocks", "Blocks"),
+        ("blocked_by", "Blocked By"),
+        ("follow_up", "Follow Up"),
+    ]
+
+    source_ticket = models.ForeignKey(
+        Ticket, on_delete=models.CASCADE, related_name="relations_as_source"
+    )
+    target_ticket = models.ForeignKey(
+        Ticket, on_delete=models.CASCADE, related_name="relations_as_target"
+    )
+    relation_type = models.CharField(max_length=20, choices=RELATION_TYPE_CHOICES)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_ticket_relations",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    notes = models.TextField(blank=True, default="")
+
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_ticket", "target_ticket", "relation_type"],
+                name="unique_relation_pair_type",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(source_ticket=models.F("target_ticket")),
+                name="relation_no_self_reference",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["source_ticket"], name="relation_source_idx"),
+            models.Index(fields=["target_ticket"], name="relation_target_idx"),
+            models.Index(fields=["relation_type"], name="relation_type_idx"),
+        ]
+
+    def __str__(self):
+        return f"#{self.source_ticket_id} {self.relation_type} -> #{self.target_ticket_id}"
+
+
+class TicketMergeRecord(SoftDeleteModel):
+    """Immutable record of a ticket merged into a primary ticket."""
+
+    primary_ticket = models.ForeignKey(
+        Ticket, on_delete=models.PROTECT, related_name="merge_records_as_primary"
+    )
+    merged_ticket = models.ForeignKey(
+        Ticket, on_delete=models.PROTECT, related_name="merge_records_as_merged"
+    )
+    merged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="performed_merges",
+    )
+    merged_at = models.DateTimeField(auto_now_add=True)
+    reason = models.TextField()
+    merge_summary = models.TextField(blank=True, default="")
+    transferred_notes_count = models.PositiveIntegerField(default=0)
+    transferred_attachments_count = models.PositiveIntegerField(default=0)
+    transferred_watchers_count = models.PositiveIntegerField(default=0)
+    previous_status = models.CharField(max_length=20, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-merged_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["merged_ticket"],
+                name="one_merge_record_per_merged_ticket",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(primary_ticket=models.F("merged_ticket")),
+                name="merge_no_self_merge",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["primary_ticket"], name="mergerecord_primary_idx"),
+            models.Index(fields=["merged_ticket"], name="mergerecord_merged_idx"),
+        ]
+
+    def __str__(self):
+        return f"#{self.merged_ticket_id} -> #{self.primary_ticket_id}"
+
+
+class TicketSlaPause(SoftDeleteModel):
+    """Interval during which a ticket's SLA clock is paused."""
+
+    PAUSE_TYPE_CHOICES = [
+        ("waiting_requester", "Waiting for Requester"),
+        ("waiting_third_party", "Waiting for Third Party"),
+        ("approved_hold", "Approved Hold"),
+    ]
+
+    ticket = models.ForeignKey(
+        Ticket, on_delete=models.CASCADE, related_name="sla_pauses"
+    )
+    reason = models.TextField(blank=True, default="")
+    started_at = models.DateTimeField()
+    ended_at = models.DateTimeField(null=True, blank=True)
+    started_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="started_sla_pauses",
+    )
+    ended_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ended_sla_pauses",
+    )
+    pause_type = models.CharField(max_length=30, choices=PAUSE_TYPE_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [
+            models.Index(fields=["ticket", "started_at"], name="sla_pause_ticket_idx"),
+            models.Index(fields=["pause_type"], name="sla_pause_type_idx"),
+        ]
+
+    def __str__(self):
+        return f"#{self.ticket_id} pause {self.pause_type} @ {self.started_at:%Y-%m-%d %H:%M}"
+
+    @property
+    def duration(self):
+        if not self.started_at:
+            return None
+        end = self.ended_at
+        if end is None:
+            return None
+        return end - self.started_at
+
+
+class TicketResolutionCode(SoftDeleteModel):
+    """Admin-managed code used when resolving a ticket."""
+
+    name = models.CharField(max_length=150)
+    code = models.CharField(max_length=60, unique=True, db_index=True)
+    description = models.TextField(blank=True, default="")
+    category = models.CharField(max_length=100, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    requires_summary = models.BooleanField(default=True)
+    requires_kb_link = models.BooleanField(default=False)
+    marks_known_error = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_resolution_codes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["is_active", "category"], name="resolutioncode_active_cat_idx"),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class TicketSatisfactionSurvey(SoftDeleteModel):
+    """Requester satisfaction survey offered after ticket resolution/closure."""
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("submitted", "Submitted"),
+        ("expired", "Expired"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    ticket = models.ForeignKey(
+        Ticket, on_delete=models.CASCADE, related_name="satisfaction_surveys"
+    )
+    requester = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="ticket_satisfaction_surveys",
+    )
+    token_hash = models.CharField(max_length=128, blank=True, default="")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    rating = models.PositiveSmallIntegerField(null=True, blank=True)
+    resolution_helpful = models.BooleanField(null=True, blank=True)
+    response_time_satisfied = models.BooleanField(null=True, blank=True)
+    communication_satisfied = models.BooleanField(null=True, blank=True)
+    comments = models.TextField(blank=True, default="")
+    offered_at = models.DateTimeField(auto_now_add=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    reminder_sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        ordering = ["-offered_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ticket", "requester"],
+                condition=models.Q(is_deleted=False, status="pending"),
+                name="one_active_survey_per_ticket_requester",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["ticket", "status"], name="survey_ticket_status_idx"),
+            models.Index(fields=["requester", "status"], name="survey_requester_status_idx"),
+            models.Index(fields=["expires_at", "status"], name="survey_expiry_idx"),
+        ]
+
+    def __str__(self):
+        return f"Survey #{self.ticket_id} for {self.requester_id} ({self.status})"
+
+
+class SavedTicketView(SoftDeleteModel):
+    """User-saved ticket filter view with validated filters/ordering/columns."""
+
+    name = models.CharField(max_length=200)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="saved_ticket_views",
+    )
+    description = models.TextField(blank=True, default="")
+    filters = models.JSONField(default=dict, blank=True,
+                               help_text="Validated filter key/operator/value JSON.")
+    ordering = models.CharField(max_length=200, blank=True, default="")
+    columns = models.JSONField(default=list, blank=True,
+                               help_text="Allowlisted columns to return.")
+    is_shared = models.BooleanField(default=False)
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner"],
+                condition=models.Q(is_deleted=False, is_default=True),
+                name="one_default_view_per_owner",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["owner", "is_default"], name="savedview_owner_default_idx"),
+            models.Index(fields=["is_shared"], name="savedview_shared_idx"),
+        ]
+
+    def __str__(self):
+        return self.name

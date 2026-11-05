@@ -3,7 +3,7 @@ import api from './api';
 import { useAuth } from './auth';
 import {
   Badge, ConfirmDialog, DataTable, EmptyState, ErrorSummary, Field,
-  LoadingRows, PageHeader, Pager,
+  LoadingRows, PageHeader, Pager, AccessDenied,
 } from './components';
 import { fetchPage, fieldMsg, parseApiError } from './api-utils';
 
@@ -469,7 +469,7 @@ function RuleEditPage({ id }) {
   );
 }
 
-function RuleDetail({ id, isAdmin }) {
+export function RuleDetail({ id, canConfigureWorkflow }) {
   const [rule, setRule] = useState(null);
   const [executions, setExecutions] = useState([]);
   const [executionError, setExecutionError] = useState('');
@@ -538,7 +538,7 @@ function RuleDetail({ id, isAdmin }) {
       <PageHeader
         title={rule.name}
         sub={`Automation rule #${rule.id}`}
-        actions={isAdmin ? (
+        actions={canConfigureWorkflow ? (
           <>
             <a className="btn-secondary" href={`#/workflow/rules/${rule.id}/edit`}>Edit rule</a>
             <button type="button" className="btn-secondary" onClick={toggle} disabled={busy}>
@@ -596,7 +596,7 @@ function RuleDetail({ id, isAdmin }) {
   );
 }
 
-function RulesList({ isAdmin }) {
+export function RulesList({ canConfigureWorkflow }) {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -677,8 +677,8 @@ function RulesList({ isAdmin }) {
       render: (r) => (
         <span className="row-gap" style={{ gap: 'var(--sp-1)' }}>
           <a className="btn-small" href={`#/workflow/rules/${r.id}`}>View</a>
-          {isAdmin && <a className="btn-small" href={`#/workflow/rules/${r.id}/edit`}>Edit</a>}
-          {isAdmin && (
+          {canConfigureWorkflow && <a className="btn-small" href={`#/workflow/rules/${r.id}/edit`}>Edit</a>}
+          {canConfigureWorkflow && (
             <button type="button" className="btn-small" onClick={() => toggle(r)} disabled={busyId === r.id}>
               {busyId === r.id ? 'Working…' : r.is_enabled ? 'Disable' : 'Enable'}
             </button>
@@ -690,7 +690,7 @@ function RulesList({ isAdmin }) {
 
   return (
     <div>
-      {isAdmin ? (
+      {canConfigureWorkflow ? (
         <form onSubmit={create} className="filter-bar" aria-label="Create automation rule">
           <div className="field-inline grow">
             <div className="caption">New rule name</div>
@@ -856,8 +856,8 @@ function ApprovalsList() {
   );
 }
 
-function ApprovalDetail({ id }) {
-  const { isStaff, user } = useAuth();
+export function ApprovalDetail({ id }) {
+  const { isStaff, isManagerOrAdmin, user } = useAuth();
   const [approval, setApproval] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -882,7 +882,7 @@ function ApprovalDetail({ id }) {
 
   const isOwn = approval && user?.id != null
     && Number(approval.requested_by) === Number(user.id);
-  const canDecide = !!approval && isStaff && approval.status === 'pending' && !isOwn;
+  const canDecide = !!approval && isManagerOrAdmin && approval.status === 'pending' && !isOwn;
 
   const decide = async () => {
     if (busy || !decision) return;
@@ -1267,7 +1267,7 @@ const TABS = [
 ];
 
 export default function Workflow({ tab, ruleId, ruleEdit, approvalId, executionId }) {
-  const { isStaff, isAdmin } = useAuth();
+  const { isStaff, isAdmin, canConfigureWorkflow, isManagerOrAdmin } = useAuth();
   const activeTab = ruleId ? 'rules' : approvalId ? 'approvals' : executionId ? 'executions' : (tab || 'rules');
 
   // Employees have no workflow-management page, but may open an approval on
@@ -1303,9 +1303,13 @@ export default function Workflow({ tab, ruleId, ruleEdit, approvalId, executionI
       )}
 
       {ruleId ? (
-        ruleEdit ? <RuleEditPage id={ruleId} /> : <RuleDetail id={ruleId} isAdmin={isAdmin} />
+        ruleEdit ? (
+          canConfigureWorkflow ? <RuleEditPage id={ruleId} /> : (
+            <div className="panel-pad"><AccessDenied reason="manager" backLabel="Go to Workflow" /></div>
+          )
+        ) : <RuleDetail id={ruleId} canConfigureWorkflow={canConfigureWorkflow} />
       ) : approvalId ? (
-        <ApprovalDetail id={approvalId} />
+        <ApprovalDetail id={approvalId} isManagerOrAdmin={isManagerOrAdmin} />
       ) : executionId ? (
         <ExecutionDetail id={executionId} />
       ) : activeTab === 'approvals' ? (
@@ -1313,7 +1317,7 @@ export default function Workflow({ tab, ruleId, ruleEdit, approvalId, executionI
       ) : activeTab === 'executions' ? (
         <ExecutionsList />
       ) : (
-        <RulesList isAdmin={isAdmin} />
+        <RulesList canConfigureWorkflow={canConfigureWorkflow} />
       )}
     </div>
   );

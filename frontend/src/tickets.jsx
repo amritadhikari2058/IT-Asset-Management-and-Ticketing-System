@@ -290,13 +290,13 @@ export function TicketForm({ id }) {
 }
 
 export function TicketDetail({ id }) {
-  const { isStaff, user } = useAuth();
+  const { isStaff, user, isManagerOrAdmin, isSupportOrAbove, isEmployee } = useAuth();
   const [ticket, setTicket] = useState(null);
   const [notes, setNotes] = useState([]);
-  const [history, setHistory] = useState(null); // null = not permitted / not loaded
-  const [kbArticles, setKbArticles] = useState([]); // linked KB articles
-  const [approvals, setApprovals] = useState([]); // workflow approvals for this ticket
-  const [executions, setExecutions] = useState(isStaff ? [] : null); // staff-only automation history
+  const [history, setHistory] = useState(null);
+  const [kbArticles, setKbArticles] = useState([]);
+  const [approvals, setApprovals] = useState([]);
+  const [executions, setExecutions] = useState(isStaff ? [] : null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [noteBody, setNoteBody] = useState('');
@@ -316,6 +316,12 @@ export function TicketDetail({ id }) {
   const [attBusy, setAttBusy] = useState(false);
   const [newKbSlug, setNewKbSlug] = useState('');
   const [kbLinkBusy, setKbLinkBusy] = useState(false);
+  const [watching, setWatching] = useState(false);
+  const [watchers, setWatchers] = useState([]);
+  const [queue, setQueue] = useState(null);
+  const [queueMembers, setQueueMembers] = useState([]);
+  const [queueLoading, setQueueLoading] = useState(true);
+  const [filter, setFilter] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -330,27 +336,27 @@ export function TicketDetail({ id }) {
         const at = await api.get('/tickets/attachments/', { params: { ticket: id } });
         setAttachments(at.data.results ?? at.data ?? []);
       } catch { setAttachments([]); }
-      // History is staff-only server-side; non-staff never get the 403
-      // round-trip and the section stays hidden.
+      try {
+        setQueue((await api.get(`/tickets/${id}/queue/`)).data);
+        setQueueMembers((await api.get(`/tickets/${id}/queue/members/`)).data ?? []);
+      } catch { setQueue(null); setQueueMembers([]); }
+      try {
+        setWatchers((await api.get(`/tickets/${id}/watchers/`)).data ?? []);
+      } catch { setWatchers([]); }
       if (isStaff) {
         try {
           const h = await api.get('/tickets/histories/', { params: { ticket: id } });
           setHistory(h.data.results ?? h.data ?? []);
         } catch { setHistory(null); }
       }
-      // Linked KB articles (visible to anyone who can see the ticket).
       try {
         const k = await api.get('/tickets/kb-articles/', { params: { ticket: id } });
         setKbArticles(k.data.results ?? k.data ?? []);
       } catch { setKbArticles([]); }
-      // Related workflow approvals. The approval API applies ticket visibility
-      // itself, so employees only receive approvals for tickets they can see.
       try {
         const ap = await api.get('/workflow/approval-requests/', { params: { ticket: id } });
         setApprovals(ap.data.results ?? ap.data ?? []);
       } catch { setApprovals([]); }
-      // Execution history is IT-staff-only server-side: never request it for
-      // employees, so the section cannot leak or add a guaranteed 403.
       if (isStaff) {
         try {
           const ex = await api.get('/workflow/rule-executions/', {

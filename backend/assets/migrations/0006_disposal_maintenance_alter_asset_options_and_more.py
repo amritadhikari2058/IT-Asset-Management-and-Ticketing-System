@@ -4,6 +4,54 @@ import django.db.models.deletion
 from django.conf import settings
 from django.db import migrations, models
 
+# SQLite-only trigger SQL used to recreate the serial-number uniqueness
+# backstop after a SQLite table rebuild (which drops triggers). PostgreSQL
+# does not rebuild tables for constraint changes, so these are only executed
+# on the sqlite vendor.
+CREATE_INSERT_TRIGGER = (
+    "CREATE TRIGGER IF NOT EXISTS assets_asset_serial_unique_insert "
+    "BEFORE INSERT ON assets_asset "
+    "FOR EACH ROW WHEN NEW.serial_number <> '' AND EXISTS ("
+    "  SELECT 1 FROM assets_asset other "
+    "  WHERE other.serial_number = NEW.serial_number"
+    ") "
+    "BEGIN "
+    "  SELECT RAISE(ABORT, 'duplicate serial number: serial numbers must "
+    "be unique across all assets'); "
+    "END"
+)
+CREATE_UPDATE_TRIGGER = (
+    "CREATE TRIGGER IF NOT EXISTS assets_asset_serial_unique_update "
+    "BEFORE UPDATE OF serial_number ON assets_asset "
+    "FOR EACH ROW WHEN NEW.serial_number <> '' "
+    "AND NEW.serial_number <> OLD.serial_number AND EXISTS ("
+    "  SELECT 1 FROM assets_asset other "
+    "  WHERE other.serial_number = NEW.serial_number "
+    "    AND other.id <> NEW.id"
+    ") "
+    "BEGIN "
+    "  SELECT RAISE(ABORT, 'duplicate serial number: serial numbers must "
+    "be unique across all assets'); "
+    "END"
+)
+
+
+def _recreate_serial_triggers(apps, schema_editor):
+    """Recreate serial-uniqueness triggers after a SQLite table rebuild.
+
+    SQLite rebuilds the table when CHECK constraints are added/removed
+    (0006 below), which drops the triggers created in 0003. Recreate them so
+    the concurrency backstop survives. PostgreSQL adds constraints without a
+    table rebuild, so its triggers survive and this is a no-op there.
+    """
+    if schema_editor.connection.vendor == "sqlite":
+        schema_editor.execute(CREATE_INSERT_TRIGGER)
+        schema_editor.execute(CREATE_UPDATE_TRIGGER)
+
+
+def _no_reverse(apps, schema_editor):
+    pass
+
 
 class Migration(migrations.Migration):
 
@@ -15,33 +63,9 @@ class Migration(migrations.Migration):
 
     # SQLite table rebuilds (triggered by the constraint change below) drop
     # the serial-number uniqueness triggers created in 0003. Recreate them
-    # here so the concurrency backstop survives the rebuild.
-    CREATE_INSERT_TRIGGER = (
-        "CREATE TRIGGER IF NOT EXISTS assets_asset_serial_unique_insert "
-        "BEFORE INSERT ON assets_asset "
-        "FOR EACH ROW WHEN NEW.serial_number <> '' AND EXISTS ("
-        "  SELECT 1 FROM assets_asset other "
-        "  WHERE other.serial_number = NEW.serial_number"
-        ") "
-        "BEGIN "
-        "  SELECT RAISE(ABORT, 'duplicate serial number: serial numbers must "
-        "be unique across all assets'); "
-        "END"
-    )
-    CREATE_UPDATE_TRIGGER = (
-        "CREATE TRIGGER IF NOT EXISTS assets_asset_serial_unique_update "
-        "BEFORE UPDATE OF serial_number ON assets_asset "
-        "FOR EACH ROW WHEN NEW.serial_number <> '' "
-        "AND NEW.serial_number <> OLD.serial_number AND EXISTS ("
-        "  SELECT 1 FROM assets_asset other "
-        "  WHERE other.serial_number = NEW.serial_number "
-        "    AND other.id <> NEW.id"
-        ") "
-        "BEGIN "
-        "  SELECT RAISE(ABORT, 'duplicate serial number: serial numbers must "
-        "be unique across all assets'); "
-        "END"
-    )
+    # here so the concurrency backstop survives the rebuild. PostgreSQL does
+    # not rebuild tables for constraint changes, so its triggers (created
+    # portably in 0003) survive and nothing needs recreating here.
 
     operations = [
         migrations.CreateModel(
@@ -153,5 +177,5 @@ class Migration(migrations.Migration):
             name='deleted_by',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='%(class)s_deleted', to=settings.AUTH_USER_MODEL),
         ),
-        migrations.RunSQL([CREATE_INSERT_TRIGGER, CREATE_UPDATE_TRIGGER]),
+        migrations.RunPython(_recreate_serial_triggers, _no_reverse),
     ]

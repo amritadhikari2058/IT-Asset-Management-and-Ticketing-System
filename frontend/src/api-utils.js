@@ -48,8 +48,8 @@ export function parseApiError(e) {
     if (k === 'detail' || k === 'non_field_errors') out.global = out.global ? `${out.global} ${msg}` : msg;
     else out.fields[k] = msg;
   }
-  if (!out.global && Object.keys(out.fields).length === 0) out.global = 'Request failed.';
   if (e?.response?.status === 403 && !out.global) out.global = 'Forbidden: you lack permission for this action.';
+  if (!out.global && Object.keys(out.fields).length === 0) out.global = 'Request failed.';
   return out;
 }
 

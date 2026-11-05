@@ -56,7 +56,7 @@ function CatalogueCard({ item, onRequest, staff, onEdit, onToggleActive, onDelet
           <Badge kind="status" value="open" label={item.category || 'other'} />
           {!item.is_active && <Badge kind="status" value="inactive" label="Inactive" />}
           {item.requires_approval && <Badge kind="status" value="pending" label="Approval required" />}
-          {item.creates_ticket && <Badge kind="status" value="scheduled" label="Creates ticket" />}
+          {item.creates_ticket && <Badge kind="status" value="scheduled" label="Ticket automation not yet enabled" />}
         </div>
         <p className="muted" style={{ marginTop: 8 }}>{item.description || 'No description.'}</p>
         {item.instructions && <p className="small" style={{ marginTop: 8 }}>{item.instructions}</p>}
@@ -83,7 +83,7 @@ function CatalogueCard({ item, onRequest, staff, onEdit, onToggleActive, onDelet
 }
 
 export function ServicesCatalogue() {
-  const { isStaff } = useAuth();
+  const { isStaff, canManageServiceCatalogue } = useAuth();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -229,7 +229,7 @@ export function ServicesCatalogue() {
       <PageHeader
         title="Service Catalogue"
         sub={`${visible.length} service${visible.length === 1 ? '' : 's'} available.`}
-        actions={isStaff ? <button type="button" className="btn-primary" onClick={() => openForm()} disabled={catBusy}>+ New service</button> : null}
+        actions={canManageServiceCatalogue ? <button type="button" className="btn-primary" onClick={() => openForm()} disabled={catBusy}>+ New service</button> : null}
       />
       {error && <div className="error-summary" role="alert">{error}</div>}
       {msg && <div className="success-summary" role="status">{msg}</div>}
@@ -238,7 +238,7 @@ export function ServicesCatalogue() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           {visible.map((item) => (
-            <CatalogueCard key={item.id} item={item} onRequest={openRequest} staff={isStaff}
+            <CatalogueCard key={item.id} item={item} onRequest={openRequest} staff={canManageServiceCatalogue}
               onEdit={openForm} onToggleActive={toggleActive} onDelete={setDelFor} />
           ))}
         </div>
@@ -396,7 +396,7 @@ export function MyServiceRequests() {
 }
 
 export function ServiceRequestDetail({ id }) {
-  const { isStaff } = useAuth();
+  const { isStaff, canApproveServiceRequests } = useAuth();
   const [req, setReq] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -472,7 +472,7 @@ export function ServiceRequestDetail({ id }) {
   );
 
   const canCancel = !['fulfilled', 'cancelled', 'rejected'].includes(req.status);
-  const canDecide = isStaff && req.status === 'pending_approval';
+  const canDecide = canApproveServiceRequests && req.status === 'pending_approval';
   const comments = Array.isArray(req.comments) ? req.comments : [];
   const history = Array.isArray(req.history) ? req.history : [];
   const visibleComments = isStaff ? comments : comments.filter((c) => !c.is_internal);

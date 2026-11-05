@@ -148,6 +148,33 @@ export function EmptyState({ title, hint, action }) {
   );
 }
 
+/** Professional, Bootstrap 5 access-denied state.
+ *
+ * Never renders raw API responses, stack traces, or role implementation
+ * details. Offers a single way back to the dashboard and makes no repeated
+ * unauthorized API calls.
+ */
+export function AccessDenied({ reason = 'access', backLabel = 'Go to Dashboard' }) {
+  const messages = {
+    access: 'You do not have permission to access this page.',
+    action: 'You do not have permission to perform this action.',
+    manager: 'This action requires IT Manager or System Admin permission.',
+  };
+  return (
+    <div className="access-denied" role="alert" aria-live="polite">
+      <div className="alert alert-warning">
+        <h4 className="alert-heading">{messages[reason] ?? messages.access}</h4>
+        <p className="mb-0">
+          If you believe you should have access, contact your system
+          administrator.
+        </p>
+        <hr className="my-3" />
+        <a className="btn btn-primary" href="#/dashboard">{backLabel}</a>
+      </div>
+    </div>
+  );
+}
+
 /** Table-shaped skeleton: same row rhythm as `table.grid`. */
 const SK_WIDTHS = [['10%', '30%', '14%', '14%'], ['10%', '24%', '14%', '18%'], ['10%', '34%', '14%', '12%']];
 
@@ -451,6 +478,25 @@ export function Modal({ title, onClose, children, size }) {
 }
 
 /** Reusable confirmation dialog. Message must describe the actual operation. */
+export function Button({ kind = 'primary', size = 'medium', children, className = '', disabled = false, onClick, type = 'button' }) {
+  const base = 'btn';
+  const kindClass = {
+    primary: 'btn-primary',
+    danger: 'btn-danger',
+    ghost: 'btn-ghost',
+    small: 'btn-small',
+  }[kind] || 'btn-primary';
+  const sizeClass = {
+    small: 'btn-small',
+    medium: '',
+  }[size] || '';
+  return (
+    <button type={type} className={`${base} ${kindClass} ${sizeClass} ${className}`} disabled={disabled} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
 export function ConfirmDialog({ title, message, confirmLabel = 'Confirm', danger = false, busy = false, onConfirm, onCancel }) {
   return (
     <Modal title={title} onClose={onCancel}>
@@ -830,4 +876,25 @@ export function UserSelect({ value, onChange, error, disabled, label }) {
       {error ? <div className="field-error" role="alert">{error}</div> : null}
     </div>
   );
+}
+
+export function Alert({ variant = 'info', children }) {
+  const cls = variant === 'danger' ? 'error-summary' : variant === 'success' ? 'success-summary' : 'muted';
+  return <div className={cls} role={variant === 'danger' ? 'alert' : 'status'}>{children}</div>;
+}
+
+export function Input({ label, ...props }) {
+  const el = (props.rows || props.type === 'textarea')
+    ? <textarea className="input" {...props} />
+    : <input className="input" {...props} />;
+  return label ? <label className="field"><span>{label}</span>{el}</label> : el;
+}
+
+export function Select({ label, children, ...props }) {
+  const el = <select className="input" {...props}>{children}</select>;
+  return label ? <label className="field"><span>{label}</span>{el}</label> : el;
+}
+
+export function Option(props) {
+  return <option {...props} />;
 }

@@ -985,6 +985,50 @@ class AssetSerialUniquenessTests(TestCase):
         self.assertIn("already used", str(res.data["serial_number"]))
         self.assertEqual(Asset.all_objects.count(), 1)
 
+    # ---------- bulk endpoints ----------
+
+    def test_bulk_create_duplicate_serial_rejected(self):
+        res = self.c.post("/api/assets/bulk_create/", {
+            "preview": False, "confirm": True,
+            "rows": [
+                {"asset_tag": "BK1", "name": "one",
+                 "category": self.acat.name, "serial_number": "SN-BK-1"},
+                {"asset_tag": "BK2", "name": "two",
+                 "category": self.acat.name, "serial_number": "SN-BK-1"},
+            ],
+        }, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data["successful"]), 1)
+        self.assertEqual(len(res.data["failed"]), 1)
+        self.assertIn("serial", res.data["failed"][0]["errors"].lower())
+        # self.first + BK1 persisted.
+        self.assertEqual(Asset.all_objects.count(), 2)
+
+    def test_bulk_update_duplicate_serial_rejected(self):
+        other = Asset.objects.create(asset_tag="S2", name="two",
+                                     category=self.acat)
+        res = self.c.post("/api/assets/bulk_update/", {
+            "preview": False, "confirm": True,
+            "rows": [{"asset_tag": "S2", "serial_number": "SN-1"}],
+        }, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data["failed"]), 1)
+        self.assertIn("serial", res.data["failed"][0]["errors"].lower())
+        other.refresh_from_db()
+        self.assertEqual(other.serial_number, "")
+
+    def test_serial_number_case_sensitivity_is_exact_match(self):
+        # Exact-match semantics: no Lower() normalization is applied, so
+        # "sn-1" differs from the existing "SN-1" on both SQLite (BINARY
+        # collation for =) and PostgreSQL. Both serials coexist.
+        b = Asset.objects.create(asset_tag="SX", name="x",
+                                 category=self.acat, serial_number="sn-1")
+        self.assertEqual(b.serial_number, "sn-1")
+        self.assertEqual(
+            Asset.all_objects.filter(serial_number="sn-1").count(), 1)
+        self.assertEqual(
+            Asset.all_objects.filter(serial_number="SN-1").count(), 1)
+
 
 class AssetWarrantyTests(TestCase):
     """warranty_start/warranty_expiry are stored and returned by the API."""

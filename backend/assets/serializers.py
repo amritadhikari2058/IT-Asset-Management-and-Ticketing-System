@@ -112,9 +112,69 @@ class VendorSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Vendor
-        fields = ["id", "name", "contact_person", "email", "phone",
-                  "address", "notes", "is_deleted", "created_at", "updated_at"]
+        fields = ["id", "name", "code", "contact_person", "email",
+                  "phone", "website", "address", "tax_registration",
+                  "notes", "is_deleted", "created_at", "updated_at"]
         read_only_fields = ["id", "is_deleted", "created_at", "updated_at"]
+
+    def validate_name(self, value):
+        """Normalize vendor name: trim, collapse internal spaces, uppercase."""
+        value = (value or "").strip()
+        # Collapse multiple internal spaces to one
+        while "  " in value:
+            value = value.replace("  ", " ")
+        return value
+
+    def validate_code(self, value):
+        """Normalize vendor code: trim, uppercase."""
+        value = (value or "").strip().upper()
+        return value
+
+    def validate_email(self, value):
+        """Validate and normalize email."""
+        value = (value or "").strip().lower()
+        # Django's EmailField validation will run automatically
+        return value
+
+    def validate_website(self, value):
+        """Validate URL format."""
+        value = (value or "").strip()
+        if value and not value.startswith(('http://', 'https://')):
+            value = 'https://' + value
+        return value
+
+    def validate_phone(self, value):
+        """Phone: trim but don't over-restrict international formats."""
+        value = (value or "").strip()
+        return value
+
+    def validate(self, attrs):
+        """Cross-field validation: prevent duplicate names differing only by
+        capitalization, spaces, or normalization."""
+        name = attrs.get("name") or ""
+        code = attrs.get("code") or ""
+
+        # Normalize for comparison
+        normalized_name = (name or "").strip()
+        while "  " in normalized_name:
+            normalized_name = normalized_name.replace("  ", " ")
+        normalized_name = normalized_name.upper()
+
+        # Check for duplicates (excluding current instance if updating)
+        queryset = Vendor.objects.all()
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+
+        if Vendor.objects.filter(name__iexact=name).exclude(pk__in=queryset.values('pk')).exists():
+            raise serializers.ValidationError(
+                {"name": "A vendor with that name already exists."})
+
+        # Check code uniqueness
+        if code and Vendor.objects.filter(code__iexact=code).exclude(pk__in=queryset.values('pk')).exists():
+            raise serializers.ValidationError(
+                {"code": "A vendor with that code already exists."})
+
+        return attrs
 
 
 class AssignmentSerializer(serializers.ModelSerializer):

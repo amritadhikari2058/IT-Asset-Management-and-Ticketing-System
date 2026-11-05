@@ -20,6 +20,10 @@ class RoleSecurityTests(TestCase):
 
     def setUp(self):
         self.dep, self.admin, self.mgr, self.emp = make_users()
+        from accounts.models import User
+        self.support = User.objects.create_user(
+            username="s@x", email="s@x", employee_id="S1", password="pw12345678",
+            role="it_support", home_department=self.dep)
         self.c = APIClient()
         self.acat = AssetCategory.objects.create(name="Laptop")
         # Asset owned by emp, in emp's home department (visible to emp)
@@ -45,7 +49,7 @@ class RoleSecurityTests(TestCase):
         user_map = {
             "system_admin": self.admin,
             "it_manager": self.mgr,
-            "it_support": self.mgr,  # no it_support user; mgr covers IT staff
+            "it_support": getattr(self, "support", self.mgr),
             "employee": self.emp,
         }
         auth(c, user_map[role])
@@ -187,3 +191,55 @@ class RoleSecurityTests(TestCase):
         res = c.get(f"/api/accounts/users/{self.mgr.pk}/")
         self.assertEqual(res.status_code, 200, res.data)
         self.assertEqual(res.data["employee_id"], self.mgr.employee_id)
+
+    # ----------------------------------------------------------------
+    # Vendor permission separation
+    # ----------------------------------------------------------------
+    def test_employee_cannot_list_vendors(self):
+        c = self._as("employee")
+        res = c.get("/api/assets/vendors/")
+        self.assertIn(res.status_code, (403, 401))
+
+    def test_employee_cannot_retrieve_vendor_detail(self):
+        from assets.models import Vendor
+        v = Vendor.objects.create(name="TestVendor", code="TV")
+        c = self._as("employee")
+        res = c.get(f"/api/assets/vendors/{v.id}/")
+        self.assertIn(res.status_code, (403, 401, 404))
+
+    def test_it_support_cannot_create_vendor(self):
+        c = self._as("it_support")
+        res = c.post("/api/assets/vendors/", {"name": "NewV"}, format="json")
+        self.assertIn(res.status_code, (403, 405))
+
+    def test_it_support_cannot_activate_vendor(self):
+        from assets.models import Vendor
+        v = Vendor.objects.create(name="V2", code="V2", is_active=False)
+        c = self._as("it_support")
+        res = c.post(f"/api/assets/vendors/{v.id}/activate/", {}, format="json")
+        self.assertIn(res.status_code, (403, 405))
+
+    def test_it_manager_can_manage_vendor(self):
+        c = self._as("it_manager")
+        res = c.post("/api/assets/vendors/", {"name": "V3", "code": "V3"}, format="json")
+        self.assertIn(res.status_code, (201, 200))
+
+    def test_it_manager_can_deactivate_referenced_vendor(self):
+        from assets.models import Vendor, Asset, AssetCategory
+        v = Vendor.objects.create(name="V4", code="V4", is_active=True)
+        cat = AssetCategory.objects.first() or AssetCategory.objects.create(name="X")
+        Asset.objects.create(asset_tag="A1", name="A1", category=cat, vendor=v, serial_number="SN-A1")
+        c = self._as("it_manager")
+        res = c.post(f"/api/assets/vendors/{v.id}/deactivate/", {}, format="json")
+        self.assertIn(res.status_code, (200,))
+        v.refresh_from_db()
+        self.assertFalse(v.is_active)
+
+    def test_cannot_delete_vendor_with_references(self):
+        from assets.models import Vendor, Asset, AssetCategory
+        v = Vendor.objects.create(name="V5", code="V5", is_active=True)
+        cat = AssetCategory.objects.first() or AssetCategory.objects.create(name="Y")
+        Asset.objects.create(asset_tag="A2", name="A2", category=cat, vendor=v, serial_number="SN-A2")
+        c = self._as("it_manager")
+        res = c.delete(f"/api/assets/vendors/{v.id}/", {}, format="json")
+        self.assertIn(res.status_code, (409,))

@@ -26,7 +26,15 @@ import { ServicesCatalogue, MyServiceRequests, ServiceRequestDetail } from './se
 
 function staff() {
   mockAuth.mockReturnValue({
-    isStaff: true, isAdmin: true,
+    isStaff: true, isAdmin: true, isSystemAdmin: true, isITManager: false, isITSupport: false, isEmployee: false,
+    isManagerOrAdmin: true, isSupportOrAbove: true,
+    canManageUsers: true, canManageVendors: true, canViewVendors: true,
+    canManageServiceCatalogue: true, canApproveServiceRequests: true,
+    canConfigureWorkflow: true, canApproveDisposals: true,
+    canManageInventory: true, canAdjustInventory: true,
+    canPublishKnowledgeBase: true, canManageScheduledReports: true,
+    canAccessAudit: true, canAccessRecycleBin: true, canPerformPermanentDeletion: true,
+    canCreateTickets: true,
     user: { id: 1, employee_id: 'E1', role: 'system_admin', email: 'admin@x' },
   });
 }

@@ -1,11 +1,12 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from .views import ServiceCatalogueItemViewSet, ServiceRequestViewSet
+from .views import ServiceCatalogueItemViewSet, ServiceRequestViewSet, ServiceRequestAttachmentViewSet
 
 router = DefaultRouter()
 router.register("catalogue", ServiceCatalogueItemViewSet, basename="service-catalogue")
 router.register("requests", ServiceRequestViewSet, basename="service-request")
+router.register("request-attachments", ServiceRequestAttachmentViewSet, basename="service-request-attachment")
 
 urlpatterns = [
     path("", include(router.urls)),

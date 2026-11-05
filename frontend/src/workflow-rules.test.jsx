@@ -55,7 +55,16 @@ function paginated(results, count = results.length, next = null, previous = null
 
 function admin() {
   mockAuth.mockReturnValue({
-    isStaff: true, isAdmin: true, user: { id: 1, role: 'system_admin' },
+    isStaff: true, isAdmin: true, isSystemAdmin: true, isITManager: false, isITSupport: false, isEmployee: false,
+    isManagerOrAdmin: true, isSupportOrAbove: true,
+    canManageUsers: true, canManageVendors: true, canViewVendors: true,
+    canManageServiceCatalogue: true, canApproveServiceRequests: true,
+    canConfigureWorkflow: true, canApproveDisposals: true,
+    canManageInventory: true, canAdjustInventory: true,
+    canPublishKnowledgeBase: true, canManageScheduledReports: true,
+    canAccessAudit: true, canAccessRecycleBin: true, canPerformPermanentDeletion: true,
+    canCreateTickets: true,
+    user: { id: 1, role: 'system_admin' },
   });
 }
 
