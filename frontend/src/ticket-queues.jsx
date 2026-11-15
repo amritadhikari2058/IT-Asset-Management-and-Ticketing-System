@@ -17,7 +17,7 @@ export function TicketQueuesPage() {
       setLoading(true);
       setError('');
       try {
-        const r = await api.get('/api/queues/');
+        const r = await api.get('/tickets/queues/');
         if (!cancelled) setQueues(r.data.results ?? r.data ?? []);
       } catch (e) {
         if (!cancelled) setError(parseApiError(e).global || 'Failed to load queues.');

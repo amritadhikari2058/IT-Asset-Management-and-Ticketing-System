@@ -194,7 +194,7 @@ function VendorsPage() {
           <>
             <button
               className="btn btn-primary"
-              onClick={() => openDeleteConfirm(null)}
+              onClick={() => { location.hash = '#/vendors/new'; }}
               disabled={deleteBusy}
               style={{ marginRight: '8px' }}
             >

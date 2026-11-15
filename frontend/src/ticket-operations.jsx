@@ -120,7 +120,7 @@ export function TicketOperationsDashboard() {
           <small>SLA Breached</small>
         </div>
         <div className="col-md-2">
-          <Badge variant="warning">{kPIUrgent || 0}</Badge>
+          <Badge variant="warning">{kpiUrgent || 0}</Badge>
           <small>Urgent</small>
         </div>
       </div>

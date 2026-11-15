@@ -35,12 +35,12 @@ describe('ApprovalCenter', () => {
   it('loads and renders approval list when staff', async () => {
     mockAuth.mockReturnValue({ isStaff: true });
     mockGet.mockResolvedValueOnce({ data: { approvals: [] } });
-    mockGet.mockResolvedValueOnce({ data: { total: 0 } });
+    mockGet.mockResolvedValueOnce({ data: { total_pending: 0, service_requests: 0, disposals: 0, procurement: 0, workflow: 0, knowledge_base: 0, by_type: {} } });
 
     render(<ApprovalCenter />);
     await waitFor(() => expect(screen.queryByText('No pending approvals')).toBeTruthy());
-    expect(mockGet).toHaveBeenCalledWith('/api/approvals/');
-    expect(mockGet).toHaveBeenCalledWith('/api/approvals/counts/');
+    expect(mockGet).toHaveBeenCalledWith('/approvals/');
+    expect(mockGet).toHaveBeenCalledWith('/approvals/counts/');
   });
 
   it('shows error state when request fails', async () => {

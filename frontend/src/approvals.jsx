@@ -11,16 +11,25 @@ function rowFor(item) {
     purchase_order: 'Purchase Order',
     workflow_approval: 'Workflow Approval',
     knowledge_base: 'KB Review',
-  }[item.type] || item.type;
+  }[item.approval_type] || item.approval_type;
+
+  const submitted = item.submitted_at ? new Date(item.submitted_at) : null;
+  const age_hours = submitted
+    ? Math.max(0, (Date.now() - submitted.getTime()) / 3600000)
+    : 0;
+
+  const actions = [];
+  if (item.can_approve) actions.push('approve');
+  if (item.can_reject) actions.push('reject');
 
   return {
-    id: item.id,
+    id: item.object_id,
     type: typeLabel,
     reference: item.reference,
     title: item.title,
     requester: item.requester,
-    age: item.age_hours,
-    actions: item.actions,
+    age: age_hours,
+    actions,
   };
 }
 
@@ -36,11 +45,20 @@ export function ApprovalCenter() {
     setError('');
     try {
       const [listRes, countsRes] = await Promise.all([
-        api.get('/api/approvals/'),
-        api.get('/api/approvals/counts/'),
+        api.get('/approvals/'),
+        api.get('/approvals/counts/'),
       ]);
       setApprovals(listRes.data.approvals.map(rowFor));
-      setCounts(countsRes.data);
+      const c = countsRes.data;
+      setCounts({
+        total: c.total_pending,
+        service_request: c.service_requests,
+        disposal: c.disposals,
+        purchase_request: c.procurement,
+        purchase_order: 0,
+        workflow_approval: c.workflow,
+        knowledge_base: c.knowledge_base,
+      });
     } catch (e) {
       setError('Could not load pending approvals.');
     } finally {
