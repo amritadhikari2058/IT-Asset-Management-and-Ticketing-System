@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Badge, Form, Input, Select, Button } from './components';
+import { PageHeader, Badge, Form, Input, Select, Button, Row, Col } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError } from './changes-utils';
 

@@ -106,9 +106,9 @@ export function ChangeForm({ changeId = null }) {
             </Select>
           </Col>
         </Row>
-        <Row className="mt-3"><Col sm={4><Select onChange={(e) => setChange(c => ({ ...c, priority: e.target.value }))} value={change.priority || ''}><option value="">Priority</option>{Object.keys(PRIORITY_LABELS).map(k => (
+        <Row className="mt-3"><Col sm={4}><Select onChange={(e) => setChange(c => ({ ...c, priority: e.target.value }))} value={change.priority || ''}><option value="">Priority</option>{Object.keys(PRIORITY_LABELS).map(k => (
           <option key={k} value={k}>{PRIORITY_LABELS[k]}</option>
-        ))}</Select></Col><Col sm={4><Select onChange={(e) => setChange(c => ({ ...c, risk_level: e.target.value }))} value={change.risk_level || ''}><option value="">Risk</option>{['low','medium','high','critical'].map(l => <option key={l} value={l}>{l}</option>)}</Select></Col><Col sm={4><Input placeholder="Emergency" value={change.emergency_reason || ''} onChange={(e) => setChange(c => ({ ...c, emergency_reason: e.target }))} /></Col></Row>
+        ))}</Select></Col><Col sm={4}><Select onChange={(e) => setChange(c => ({ ...c, risk_level: e.target.value }))} value={change.risk_level || ''}><option value="">Risk</option>{['low','medium','high','critical'].map(l => <option key={l} value={l}>{l}</option>)}</Select></Col><Col sm={4}><Input placeholder="Emergency" value={change.emergency_reason || ''} onChange={(e) => setChange(c => ({ ...c, emergency_reason: e.target }))} /></Col></Row>
         <Button onClick={next}>Next</Button><Button onClick={prev}>Cancel</Button>
       </Form>
     );
@@ -159,8 +159,8 @@ export function ChangeForm({ changeId = null }) {
           <Col sm={6}><h4>Assets</h4><Select multiple onChange={(e) => handleAssetChange(e.target.value)}>{/* Asset options */}</Col>
           <Col sm={6}><h4>Services</h4><Select multiple onChange={(e) => handleServiceChange(e.target.value)}>{/* Service options */}</Col>
         </Row>
-        <Row className="mt-3"><Col sm={12}<Input placeholder="Related Tickets (IDs)" value={change.related_tickets_str || ''} onChange={(e) => setChange(c => ({ ...c, related_tickets_str: e.target.value }))} /></Col></Row>
-        <Row className="mt-3"><Col sm={12}<Input placeholder="KB References" value={change.knowledge_base_references_str || ''} onChange={(e) => setChange(c => ({ ...c, knowledge_base_references_str: e.target.value }))} /></Col></Row>
+        <Row className="mt-3"><Col sm={12}><Input placeholder="Related Tickets (IDs)" value={change.related_tickets_str || ''} onChange={(e) => setChange(c => ({ ...c, related_tickets_str: e.target.value }))} /></Col></Row>
+        <Row className="mt-3"><Col sm={12}><Input placeholder="KB References" value={change.knowledge_base_references_str || ''} onChange={(e) => setChange(c => ({ ...c, knowledge_base_references_str: e.target.value }))} /></Col></Row>
         <Button onClick={next}>Next</Button><Button onClick={prev}>Previous</Button>
       </Form>
     );

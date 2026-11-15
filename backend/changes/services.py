@@ -290,16 +290,29 @@ def request_approval(change, user, approval_level="manager"):
         return approval
 
 
-def approve_change(change, user, decision_reason=""):
+def approve_change(change, user, decision_reason="", approval=None):
     """Approve a change. Transactional: approves and advances status.
+
+    If ``approval`` is supplied it must belong to ``change`` and still be
+    pending; the exact approval ID is operated on (not another pending
+    approval for the same change). Otherwise the latest pending approval for
+    the change is used.
 
     Returns the ChangeApproval row.
     """
-    approval = (
-        ChangeApproval.objects.filter(change=change, status="pending")
-        .order_by("-created_at")
-        .first()
-    )
+    if approval is None:
+        approval = (
+            ChangeApproval.objects.filter(change=change, status="pending")
+            .order_by("-created_at")
+            .first()
+        )
+    else:
+        # Verify the supplied approval belongs to the change and is pending.
+        if approval.change_id != change.pk:
+            raise ValidationError("Approval does not belong to the supplied change.")
+        if approval.status != "pending":
+            raise ValidationError("Only pending approvals can be decided.")
+
     if not approval:
         raise ValidationError("No pending approval to decide.")
 
@@ -314,6 +327,13 @@ def approve_change(change, user, decision_reason=""):
         )
 
     with transaction.atomic():
+        # Row-lock the exact approval to prevent concurrent decisions.
+        approval = ChangeApproval.objects.select_for_update().get(pk=approval.pk)
+        if approval.status != "pending":
+            raise ValidationError("Only pending approvals can be decided.")
+        if approval.change_id != change.pk:
+            raise ValidationError("Approval does not belong to the supplied change.")
+
         approval.status = "approved"
         approval.decided_by = user
         approval.decided_at = timezone.now()
@@ -321,9 +341,9 @@ def approve_change(change, user, decision_reason=""):
         approval.save()
 
         change.status = "approved"
-        change.approver = user
+        change.current_approver = user
         change.approved_at = timezone.now()
-        change.save(update_fields=["status", "approver", "approved_at", "updated_at"])
+        change.save(update_fields=["status", "current_approver", "approved_at", "updated_at"])
 
         ChangeHistory.objects.create(
             change=change,
@@ -345,13 +365,27 @@ def approve_change(change, user, decision_reason=""):
         return approval
 
 
-def reject_change(change, user, decision_reason):
-    """Reject a change."""
-    approval = (
-        ChangeApproval.objects.filter(change=change, status="pending")
-        .order_by("-created_at")
-        .first()
-    )
+def reject_change(change, user, decision_reason, approval=None):
+    """Reject a change.
+
+    If ``approval`` is supplied it must belong to ``change`` and still be
+    pending; the exact approval ID is operated on (not another pending
+    approval for the same change). Otherwise the latest pending approval for
+    the change is used.
+    """
+    if approval is None:
+        approval = (
+            ChangeApproval.objects.filter(change=change, status="pending")
+            .order_by("-created_at")
+            .first()
+        )
+    else:
+        # Verify the supplied approval belongs to the change and is pending.
+        if approval.change_id != change.pk:
+            raise ValidationError("Approval does not belong to the supplied change.")
+        if approval.status != "pending":
+            raise ValidationError("Only pending approvals can be decided.")
+
     if not approval:
         raise ValidationError("No pending approval to decide.")
 
@@ -359,6 +393,13 @@ def reject_change(change, user, decision_reason):
         raise ValidationError("Requester cannot reject their own change.")
 
     with transaction.atomic():
+        # Row-lock the exact approval to prevent concurrent decisions.
+        approval = ChangeApproval.objects.select_for_update().get(pk=approval.pk)
+        if approval.status != "pending":
+            raise ValidationError("Only pending approvals can be decided.")
+        if approval.change_id != change.pk:
+            raise ValidationError("Approval does not belong to the supplied change.")
+
         approval.status = "rejected"
         approval.decided_by = user
         approval.decided_at = timezone.now()

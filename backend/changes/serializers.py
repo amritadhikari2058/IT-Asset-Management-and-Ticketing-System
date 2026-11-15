@@ -271,28 +271,31 @@ class ChangeRiskAssessmentSerializer(serializers.ModelSerializer):
 
 
 class ChangeApprovalSerializer(serializers.ModelSerializer):
-    requested_by_email = serializers.CharField(
-        source="requested_by.email", read_only=True
+    requested_by = serializers.PrimaryKeyRelatedField(
+        source="requester", read_only=True
     )
-    decided_by_email = serializers.CharField(
-        source="decided_by.email", read_only=True, allow_null=True
+    requested_by_email = serializers.CharField(
+        source="requester.email", read_only=True
     )
     requested_from_email = serializers.CharField(
         source="requested_from.email", read_only=True, allow_null=True
+    )
+    decided_by_email = serializers.CharField(
+        source="decided_by.email", read_only=True, allow_null=True
     )
 
     class Meta:
         model = ChangeApproval
         fields = [
             "id", "change", "approval_level", "status",
-            "requested_from", "requested_from_email", "requested_by",
-            "requested_by_email", "requested_at", "decided_by",
-            "decided_by_email", "decided_at", "decision_reason",
+            "requested_from", "requested_from_email", "requester",
+            "requested_by", "requested_by_email", "requested_at",
+            "decided_by", "decided_by_email", "decided_at", "decision_reason",
             "change_version", "risk_level_snapshot",
             "planned_window_snapshot", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "id", "requested_at", "decided_at", "created_at", "updated_at",
+            "id", "requester", "requested_at", "decided_at", "created_at", "updated_at",
         ]
 
 

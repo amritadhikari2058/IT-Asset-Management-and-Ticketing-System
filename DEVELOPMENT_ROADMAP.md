@@ -492,3 +492,75 @@ Scope: close the frontend gap for the Phase 16 inventory backend — dashboard, 
 No backend changes, no new migrations, no database reset. Badge statuses `in_stock`/`low_stock`/`out_of_stock` added to `frontend/src/components.jsx` (`STATUS_TONE`, `STATUS_LABELS`).
 
 Remaining limitations: backend stock-item list search supports `q`/`category`/`low_stock` but not server-side ordering (UI list has no sort controls); purchase-receipt endpoints are the only receiving path (stock-item `/receive/` action exists as a secondary quick action); movements history endpoint returns at most 200 rows; service requests have no dedicated inventory-requirements field (fulfilment is ad-hoc item + quantity).
+
+## Phase 26 — System Observability, Operational Monitoring and Reliability (complete)
+
+Backend: health checks (database, Redis, Celery worker/beat, background
+tasks, email, storage, application errors), database migration consistency,
+sanitized deduplicated error recording, operational alerts with
+acknowledgement/resolution, operational incidents, lightweight API
+performance monitoring, scheduled Celery monitoring tasks, and IT
+staff/System Admin permissions. Frontend: React + Bootstrap 5 monitoring
+dashboard (health, tasks, errors, alerts, incidents, performance,
+email/storage) with routes and admin/IT-staff navigation.
+
+## Phase 27 — Backup, Restore and Disaster Recovery (complete)
+
+Backend: new `backup` app providing database, media and full backups with
+SHA-256 checksum verification, backup schedules and retention policies,
+minimum-recoverable-backup protection, controlled database and media
+restores with pre-restore recovery checkpoints, restore audit records and
+authorization, Celery tasks and scheduling, backup API and frontend
+functionality, and integration with the existing `common` monitoring system
+(`OperationalAlert` via `create_or_update_alert`, `BackgroundTaskRun` with
+`correlation_id`).
+
+Key safety behaviors:
+- SQLite backups use `sqlite3.Connection.backup()` (online backup API) with
+  an optional WAL checkpoint so the artifact is a consistent, self-contained
+  snapshot; checksums are computed only after the backup completes and
+  connections are closed; partial artifacts are never marked successful.
+- Database restore (SQLite) verifies the recorded checksum before restoring,
+  validates the source backup with `PRAGMA integrity_check`/`quick_check`,
+  creates a verified pre-restore checkpoint (restore aborts if it fails),
+  restores into a temporary file first, validates it, closes Django
+  connections, replaces the live database atomically, runs `migrate --noinput`,
+  and recovers automatically from the checkpoint if replacement or
+  post-replacement validation fails. PostgreSQL live restore is deliberately
+  NOT automated (documented DBA-assisted limitation; rejected safely with a
+  clear message).
+- Media restore validates every archive member (rejects absolute paths,
+  path traversal, symlinks, hard links, devices and other unsupported types),
+  extracts into a temp staging directory, then merges into `MEDIA_ROOT`
+  without deleting unrelated existing files. Partial extraction failures are
+  handled safely (staging discarded).
+- Backup locking uses `cache.add` tokens (owned-token release only) plus a
+  shared-DB "already running" guard; TTL bounds abandoned locks. A shared
+  cache backend (Redis) is required for correct distributed locking.
+- Retention never deletes the only recoverable backup of a type
+  (`keep_min_count`), never deletes an artifact referenced by a pending or
+  running restore, does not count failed/incomplete backups as recoverable,
+  and records filesystem deletion failures.
+- Backup/restore durations are stored in seconds (not milliseconds).
+- Backup/restore failures raise `common.OperationalAlert` records (component
+  `database`/`storage`, severity critical/warning) and are recorded in
+  `common.BackgroundTaskRun` with correlation IDs where supported. The
+  removed `operations` app is NOT used; Location A monitoring is preserved.
+
+Frontend: React backup & disaster recovery page (`#/backup` and sub-views
+`#/backup/restores`, `#/backup/schedules`, `#/backup/retention`) with
+on-demand backup, verification, retention cleanup, restore initiation
+(System Admin only, explicit `confirm=true`, no concurrent restores),
+schedules, retention policies, and a readiness dashboard. Backend
+permissions are enforced; frontend hiding is UX only. The interface does not
+claim that PostgreSQL live restoration is automated.
+
+No `operations` application or duplicate monitoring models were added. The
+existing Phase 25 privacy and Phase 26 monitoring work is preserved.
+
+Limitations (documented in `backend/docs/KNOWN_LIMITATIONS.md`): PostgreSQL
+live restore is not automated; backup artifacts are not encrypted at rest by
+the application; no production backup/restore has been executed against a
+live PostgreSQL/Redis/S3 deployment; validate before relying on this in
+production. A shared cache backend (Redis) is required for distributed
+backup locking.

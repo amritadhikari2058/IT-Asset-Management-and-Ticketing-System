@@ -116,6 +116,7 @@ INSTALLED_APPS = [
     'approval_center',
     'lifecycle',
     'licensing',
+    'backup',
 ]
 
 
@@ -154,6 +155,26 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'licensing.tasks.evaluate_license_compliance_task',
         'schedule': 86400.0,  # daily
     },
+    'evaluate-retention-policies': {
+        'task': 'common.monitoring_tasks.evaluate_retention_policies',
+        'schedule': 3600.0,  # hourly
+    },
+    'evaluate-component-health': {
+        'task': 'common.monitoring_tasks.evaluate_component_health',
+        'schedule': 300.0,  # every 5 minutes
+    },
+    'detect-repeated-task-failures': {
+        'task': 'common.monitoring_tasks.detect_repeated_task_failures',
+        'schedule': 900.0,  # every 15 minutes
+    },
+    'detect-missed-scheduled-tasks': {
+        'task': 'common.monitoring_tasks.detect_missed_scheduled_tasks',
+        'schedule': 900.0,  # every 15 minutes
+    },
+    'sync-backup-schedules': {
+        'task': 'backup.tasks.sync_beat_schedules',
+        'schedule': 300.0,  # every 5 minutes
+    },
 }
 
 AUTH_USER_MODEL = 'accounts.User'
@@ -173,6 +194,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'common.middleware.SecurityAuditMiddleware',
+    'common.monitoring_metrics.ApiPerformanceMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'

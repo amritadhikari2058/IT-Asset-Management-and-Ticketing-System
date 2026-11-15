@@ -71,6 +71,9 @@ BACKEND_URL=https://api.tickets.example.com
 # Cache (Redis for multi-process)
 CACHE_LOCATION=redis://redis:6379/1
 
+# Backup / disaster recovery (Phase 27)
+BACKUP_ROOT=/var/backups/tickets   # protected; separate from MEDIA_ROOT
+
 # Celery
 CELERY_BROKER_URL=redis://redis:6379/0
 CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -236,6 +239,9 @@ Deployments). Beat runs the periodic tasks:
 - `run_scheduled_reports` every 5 minutes
 - `check_maintenance_reminders` hourly
 - `process_inbound_mailbox` every minute (if `INBOUND_MAILBOX_ENABLED=true`)
+- `evaluate_component_health` every 5 minutes (system health checks)
+- `detect_repeated_task_failures` every 15 minutes
+- `detect_missed_scheduled_tasks` every 15 minutes
 
 ### Celery and Redis diagnostics
 
@@ -306,14 +312,34 @@ is controlled by `LOG_LEVEL` (default INFO). Celery worker/beat logs go to
 their own stdout.
 
 Operational visibility endpoints (IT staff/admin only):
+
 - `GET /api/common/operations/status/` — email intake + background task
-  health + Celery broker ping
-- `GET /api/common/dashboard/` — dashboard KPIs
+  health + Celery broker ping.
+- `GET /api/common/dashboard/` — dashboard KPIs.
+- `GET /api/common/health/` — centralized system health (per-component state:
+  backend, database, Redis, Celery worker/beat, background tasks, email,
+  storage, application errors). Reflects actual availability, not just
+  configuration.
+- `GET /api/common/health/results/` — health check result history.
+- `GET /api/common/tasks/` — background task execution history; `POST
+  /api/common/tasks/retry/` (System Admin) re-enqueues a safe-to-retry task.
+- `GET /api/common/errors/` — sanitized, deduplicated application errors;
+  `POST /api/common/errors/<id>/resolve/` (IT staff) marks resolved.
+- `GET /api/common/alerts/` — operational alerts; `POST
+  /api/common/alerts/<id>/acknowledge/`, `/resolve/` (IT staff), `/close/`
+  (System Admin); `POST /api/common/alerts/` create (System Admin).
+- `GET /api/common/incidents/` — operational incidents (CRUD; System Admin
+  create/delete, assignee-scoped updates).
+- `GET /api/common/api-performance/` — aggregated API request counts, response
+  times and error rates (no per-request DB writes).
+- `GET /api/common/email-storage/` — email and storage health detail.
 
 Monitor:
 - Celery worker heartbeat (beat schedule running)
 - `BackgroundTaskRun` table for recent task outcomes
 - `EmailProcessing` table for inbound email intake
+- `HealthCheckResult` / `OperationalAlert` / `OperationalIncident` /
+  `OperationalErrorEvent` tables for monitoring state
 - Disk usage of media (dev) / S3 bucket size (prod)
 
 ## 14. SMTP and IMAP diagnostics
@@ -384,3 +410,29 @@ mailbox-selection failures. Credentials are never printed.
 - Do not run destructive backup/restore against the live database without a
   verified copy.
 - Do not log passwords, tokens, SMTP credentials, or sensitive user data.
+
+## 17. Backup / disaster recovery (`backup` app)
+
+The `backup` app (`/api/backup/`) automates database, media and full
+backups, verification, retention and controlled restore. It is wired into
+the existing Celery Beat via `backup.tasks.sync_beat_schedules` (Phase 26
+beat entries are never clobbered).
+
+### Configuration
+- `BACKUP_ROOT` — artifact directory (default `backend/backups/`). Protect
+  with OS permissions; it is separate from `MEDIA_ROOT` and is not exposed
+  publicly through the API. Only metadata + checksums are returned.
+- `pg_dump`, `pg_restore` and `gzip` — required on PATH for PostgreSQL
+  backups. When absent, PostgreSQL backups are recorded as failed with a
+  clear message rather than silently succeeding.
+
+### Operational notes
+- SQLite backups use `sqlite3.Connection.backup()` (WAL-aware, consistent
+  snapshot). PostgreSQL live restore is NOT automated — a documented
+  DBA-assisted limitation is returned safely instead of a destructive live
+  restore (`pg_restore` requires connection termination by a DBA).
+- Distributed backup locking requires a shared cache backend (Redis).
+  `LocMemCache` (the dev default) is per-process only, so configure
+  `CACHE_LOCATION` to a Redis URL for multi-worker production deployments.
+- Backup artifacts are not encrypted at rest by the application; protect
+  `BACKUP_ROOT` via filesystem permissions.

@@ -157,3 +157,66 @@ Adjust based on your organization's regulatory requirements.
 - Do not store `.env` or database credentials in Git.
 - Do not rely solely on soft-deleted rows as "backup" — soft deletion is an
   operational undo mechanism, not disaster recovery.
+
+## Phase 27 — Automated backup app (`backup`)
+
+In addition to the manual runbook above, the system ships a `backup` Django
+app (`/api/backup/...`) that automates database, media and full backups,
+verification, retention, and controlled restore.
+
+### What it covers
+- **Database backups**: SQLite via `sqlite3.Connection.backup()` (online
+  backup API, WAL-aware, consistent snapshot) or `pg_dump \| gzip` for
+  PostgreSQL (when `pg_dump`/`gzip` are on PATH).
+- **Media backups**: `tar.gz` of `MEDIA_ROOT`; empty media yields a
+  verifiable empty tarball.
+- **Full backups**: database + media; recoverable only when both complete.
+- **Verification**: SHA-256 recomputed after the artifact is fully written;
+  artifact existence, readability and checksum match are confirmed.
+- **Scheduling**: `BackupSchedule` rows drive Celery Beat entries via
+  `backup.tasks.sync_beat_schedules` (Phase 26 beat entries are never
+  clobbered).
+- **Retention**: `BackupRetentionPolicy` + per-schedule `retention_days` /
+  `keep_min_count`; the only recoverable backup of a type is never deleted,
+  and artifacts referenced by a pending/running restore are protected.
+- **Restore (controlled)**: System Admin only, explicit `confirm=true`, no
+  concurrent restores. SQLite restores create a verified pre-restore
+  checkpoint, restore into a temp file first, validate, replace the live DB
+  atomically, run `migrate --noinput`, and recover automatically from the
+  checkpoint if replacement or post-replacement validation fails.
+- **PostgreSQL restore**: NOT automated; a clear documented limitation is
+  returned instead of attempting a destructive live restore (`pg_restore`
+  requires DBA-assisted connection termination).
+- **Monitoring**: failures raise `common.OperationalAlert` records (component
+  `database`/`storage`) via `common.monitoring_service.create_or_update_alert`;
+  outcomes and correlation IDs are recorded in
+  `common.BackgroundTaskRun`. The removed `operations` app is not used.
+
+### Artifact storage
+Backups live under `BACKUP_ROOT` (default: `backend/backups/`), separate from
+user uploads (`MEDIA_ROOT`). Only metadata + checksums are returned through
+the API — no filesystem paths or credentials. Protect `BACKUP_ROOT` with OS
+permissions; artifacts are not encrypted at rest by the application.
+
+### Endpoints
+- `GET|POST /api/backup/backups/` — list / create (on-demand) backups
+- `POST /api/backup/backups/<id>/verify/` — verify an artifact
+- `POST /api/backup/backups/run-retention/` — run retention cleanup
+- `GET|POST /api/backup/restores/` — list / initiate restores
+- `GET|POST|PATCH|PUT|DELETE /api/backup/schedules/` — schedules
+- `GET|POST|PATCH|PUT|DELETE /api/backup/retention/` — retention policies
+- `GET /api/backup/readiness/` — recovery readiness snapshot
+
+Permissions: IT staff may view; System Admin may create/verify backups,
+manage schedules, configure retention, and initiate restores. Restore requires
+`confirm: true` and is blocked while another restore is in progress. All
+permissions are enforced in the backend.
+
+### Known limitations
+- PostgreSQL live restore is not automated (DBA-assisted; documented).
+- Backup artifacts are not encrypted at rest by the application.
+- Distributed backup locking requires a shared cache backend (Redis);
+  LocMem is per-process only.
+- No production backup/restore has been executed against a live
+  PostgreSQL/Redis/S3 deployment; validate before relying on this in
+  production.

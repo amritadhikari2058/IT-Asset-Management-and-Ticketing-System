@@ -47,7 +47,10 @@ export function ChangeList({ initialFilters = {} }) {
   if (isStaff === false || role === 'employee') {
     return null;
   }
-{loading ? (
+
+  return (
+    <div>
+      {loading ? (
         <div className="mt-3"><p>Loading changes…</p></div>
       ) : error ? (
         <div className="mt-3">
@@ -61,7 +64,8 @@ export function ChangeList({ initialFilters = {} }) {
           text="No changes match the current filters. Adjust the filters above to see changes."
         />
       ) : (
-<tbody>
+        <table className="table">
+          <tbody>
             {changes.map((change) => (
               <tr key={change.id} className="align-middle">
                 <td><strong>{change.change_number}</strong></td>
@@ -128,8 +132,9 @@ export function ChangeList({ initialFilters = {} }) {
               </tr>
             ))}
           </tbody>
-        </DataTable>
-      ){changes.length > 0 && (
+        </table>
+      )}
+      {changes.length > 0 && (
         <Pager
           count={changes.length}
           page={page}

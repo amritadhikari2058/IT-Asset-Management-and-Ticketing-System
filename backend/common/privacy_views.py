@@ -1,43 +1,51 @@
 """Privacy erasure endpoints (System Admin only).
 
-Dual-approval workflow (additive to the original):
+Two-person-approval lifecycle:
 
-    create  -> pending_review
-    approve (reviewer != requester) -> approved
-    reject  (reviewer != requester) -> rejected
-    execute (approved + confirmation) -> executing -> completed / failed
-    cancel  -> cancelled
+  create (pending_review) -> independent review (approved / rejected)
+  -> execution (execution_pending / executing -> completed / failed)
+  -> optionally cancelled before completion.
 
-The requester can never approve/reject their own request. Execution requires
-an *approved* decision and is protected by a database row lock against
-concurrent execution. The impact assessment is recalculated immediately
-before execution; a material change after approval invalidates the approval.
-
-AuditLog rows record IDs + scope only, never the erased personal data.
+Create requires {"entity_type", "object_id", "scope", "reason", "confirm": "<object_id>}. Detail shows the dependency/retention check.
+Execute requires independent reviewer approval + explicit confirm and runs
+in a transaction; it is idempotent. PII is never logged.
 """
-import logging
+
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
-from accounts.models import User
-from common.audit import log_action
-from common.models import AuditLog, PrivacyErasureRequest
 from common.permissions import IsSystemAdmin
-from common.serializers import AuditLogSerializer
+from common.privacy_service import (
+    approve_erasure, analyze_dependencies, cancel_erasure, execute_erasure,
+    reject_erasure, validate_transition)
+from common.retention_service import execute_retention, preview_retention
+from common.serializers import (AuditLogSerializer,
+                                DataRetentionExecutionSerializer,
+                                DataRetentionPolicySerializer,
+                                PrivacyErasureCreateSerializer,
+                                PrivacyErasureExecuteSerializer,
+                                PrivacyErasureRequestSerializer,
+                                PrivacyErasureReviewSerializer)
+from common.models import (AuditLog, DataRetentionExecution,
+                           DataRetentionPolicy, PrivacyErasureRequest)
 
-logger = logging.getLogger("privacy.erasure")
 
-# Fields that, if they change materially between approval and execution,
-# invalidate the approval and require a new review. The impact assessment
-# snapshot captures related counts and retention notes; a change in the
-# target's identity or scope is captured by re-running dependency_check.
+class SmallPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
 
 def _snapshot_assessment(check):
-    """Return a PII-free snapshot of the dependency/retention check."""
+    """PII-free projection of the dependency/retention check.
+
+    Only exists/is_deleted/related/retention are stored; names, emails and
+    other personal data are never persisted in the snapshot.
+    """
     if not check:
         return {}
     return {
@@ -48,418 +56,270 @@ def _snapshot_assessment(check):
     }
 
 
-def _assessment_changed(a, b):
-    """True if two assessment snapshots differ materially."""
-    if a == b:
-        return False
-    for k in ("exists", "is_deleted", "retention"):
-        if a.get(k) != b.get(k):
-            return True
-    if a.get("related") != b.get("related"):
-        return True
-    return True
-
-
-def dependency_check(entity_type, object_id):
-    """Counts + retention notes without exposing personal data."""
-    notes = ["Audit logs are retained without personal data.",
-             "Ticket/assignment history rows are preserved (de-identified)."]
-    related = {}
-    try:
-        u = User.objects.with_deleted().get(pk=object_id)
-    except (User.DoesNotExist, ValueError):
-        return None, ["Target not found."]
-    related = {"tickets_requested": u.tickets_requested.count(),
-               "tickets_assigned": u.tickets_assigned.count(),
-               "assignments_received": u.assignments_received.count(),
-               "audit_actions": u.audit_actions.count(),
-               "ticket_notes": u.ticket_notes.count()}
-    if any(related.values()):
-        notes.append("User has linked records: they are kept but "
-                     "de-identified; hard deletion is NOT performed.")
-    return {"exists": True, "is_deleted": u.is_deleted,
-            "related": related, "retention": notes}, []
-
-
 class PrivacyErasureViewSet(viewsets.ModelViewSet):
     queryset = PrivacyErasureRequest.objects.all()
+    serializer_class = PrivacyErasureRequestSerializer
     permission_classes = [IsSystemAdmin]
-    serializer_class = None  # custom responses below
+    pagination_class = SmallPagination
+    lookup_field = "pk"
 
-    # ---------------- list ----------------
+    def get_queryset(self):
+        qs = (PrivacyErasureRequest.objects.all()
+              .select_related("requested_by", "reviewed_by", "executed_by")
+              .order_by("-created_at"))
+        p = self.request.query_params
+        status_val = p.get("status")
+        if status_val:
+            qs = qs.filter(status=status_val)
+        entity_type = p.get("entity_type")
+        if entity_type:
+            qs = qs.filter(entity_type=entity_type)
+        for param, field in (("requested_by", "requested_by_id"),
+                             ("reviewed_by", "reviewed_by_id")):
+            raw = p.get(param)
+            if raw:
+                qs = qs.filter(**{field: raw})
+        date_from = p.get("date_from")
+        date_to = p.get("date_to")
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+        q = p.get("q")
+        if q:
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(reason__icontains=q) | Q(scope__icontains=q)
+                | Q(entity_type__icontains=q) | Q(object_id__icontains=q))
+        return qs
+
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset()
-        status_filter = request.query_params.get("status")
-        if status_filter:
-            qs = qs.filter(status=status_filter)
-        rows = qs.values(
-            "id", "entity_type", "object_id", "status", "reason", "scope",
-            "created_at", "decided_at", "reviewed_by", "reviewed_at",
-            "execution_outcome", "requested_by")
-        return Response(list(rows))
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
 
-    # ---------------- create ----------------
     def create(self, request, *args, **kwargs):
-        data = request.data
-        if data.get("confirm") != str(data.get("object_id")):
-            return Response(
-                {"detail": "Confirmation required: re-enter the record ID.",
-                 "hint": '{"confirm": "<object_id>"}'}, status=400)
-        if not data.get("reason") or not data.get("scope"):
-            return Response(
-                {"detail": "Both 'reason' and 'scope' are required."},
-                status=400)
-        check, errors = dependency_check(data.get("entity_type", ""),
-                                         data.get("object_id", ""))
-        if check is None:
-            return Response({"detail": "Target not found.",
-                             "errors": errors}, status=404)
-        req = PrivacyErasureRequest.objects.create(
-            entity_type=data["entity_type"], object_id=str(data["object_id"]),
-            scope=data["scope"], reason=data["reason"],
-            requested_by=request.user, status="pending_review")
-        assessment = _snapshot_assessment(check)
-        req.impact_assessment = assessment
-        req.impact_assessed_at = timezone.now()
-        req.save(update_fields=["impact_assessment", "impact_assessed_at"])
-        AuditLog.objects.create(
-            actor=request.user, action="create",
-            entity_type="common.PrivacyErasureRequest",
-            object_id=str(req.pk), object_repr=f"erasure request {req.pk}",
-            reason=data["reason"],
-            details={"target": f"{req.entity_type}:{req.object_id}",
-                     "scope": req.scope,
-                     "impact_assessment": assessment})  # IDs/counts only
+        serializer = PrivacyErasureCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        check, errors = analyze_dependencies(data["entity_type"],
+                                             data["object_id"])
+        if not check.get("exists"):
+            return Response({"detail": "Target not found.", "errors": errors},
+                            status=404)
+        if not check.get("can_proceed"):
+            return Response({"detail": "Entity type not supported for automated erasure.",
+                             "dependency_check": check}, status=400)
+        snapshot = _snapshot_assessment(check)
+        with transaction.atomic():
+            req = PrivacyErasureRequest.objects.create(
+                entity_type=data["entity_type"], object_id=str(data["object_id"]),
+                scope=data["scope"], reason=data["reason"],
+                requested_by=request.user,
+                impact_assessment=snapshot,
+                impact_assessed_at=timezone.now())
+            AuditLog.objects.create(
+                actor=request.user, action="create",
+                entity_type="common.PrivacyErasureRequest",
+                object_id=str(req.pk), object_repr=f"erasure request {req.pk}",
+                reason="Privacy erasure request created.",
+                details={"target": f"{req.entity_type}:{req.object_id}",
+                         "scope": req.scope})  # IDs + scope only, no PII
+        out = PrivacyErasureRequestSerializer(req, context={"request": request})
         return Response({"id": req.pk, "status": req.status,
                          "dependency_check": check,
-                         "impact_assessment": assessment}, status=201)
+                         "impact_assessment": snapshot,
+                         "request": out.data},
+                        status=201)
 
-    # ---------------- retrieve ----------------
     def retrieve(self, request, pk=None):
         req = self.get_object()
-        check, errors = dependency_check(req.entity_type, req.object_id)
-        data = {"id": req.pk, "entity_type": req.entity_type,
-                "object_id": req.object_id, "scope": req.scope,
-                "reason": req.reason, "status": req.status,
-                "requested_by": req.requested_by_id,
-                "reviewed_by": req.reviewed_by_id,
-                "review_decision": req.review_decision,
-                "reviewed_at": req.reviewed_at,
-                "review_reason": req.review_reason,
-                "impact_assessment": req.impact_assessment,
-                "impact_assessed_at": req.impact_assessed_at,
-                "execution_started_at": req.execution_started_at,
-                "executed_at": req.executed_at,
-                "execution_outcome": req.execution_outcome,
-                "execution_error": req.execution_error,
-                "created_at": req.created_at, "decided_at": req.decided_at,
-                "result": req.result}
-        if check is None:
-            data["errors"] = ["Target not found."]
-        else:
-            data["dependency_check"] = check
-            data["impact_assessment"] = _snapshot_assessment(check)
-        return Response(data)
+        check, errors = analyze_dependencies(req.entity_type, req.object_id)
+        audit = (AuditLog.objects.filter(
+            entity_type="common.PrivacyErasureRequest",
+            object_id=str(req.pk)).order_by("-timestamp")[:50])
+        from common.serializers import AuditLogSerializer
+        return Response({"id": req.pk, "entity_type": req.entity_type,
+                         "object_id": req.object_id, "scope": req.scope,
+                         "reason": req.reason, "status": req.status,
+                         "requested_by": {"id": req.requested_by_id,
+                                          "email": getattr(req.requested_by, "email", None),
+                                          "employee_id": getattr(req.requested_by, "employee_id", None)},
+                         "reviewer": {"id": req.reviewed_by_id,
+                                      "email": getattr(req.reviewed_by, "email", None),
+                                      "employee_id": getattr(req.reviewed_by, "employee_id", None)},
+                         "reviewed_at": req.reviewed_at,
+                         "review_decision": req.review_decision,
+                         "review_reason": req.review_reason,
+                         "executed_by": {"id": req.executed_by_id,
+                                         "email": getattr(req.executed_by, "email", None)},
+                         "executed_at": req.executed_at,
+                         "cancellation_reason": req.cancellation_reason,
+                         "created_at": req.created_at,
+                         "decided_at": req.decided_at,
+                         "result": req.result,
+                         "dependency_check": check,
+                         "audit_history": AuditLogSerializer(audit, many=True).data})
 
-    # ---------------- approve ----------------
+    def _partial_update(self, request, pk=None):
+        """Scope/reason edits only while pending review.
+
+        Changing scope/reason on an approved request invalidates the
+        independent approval (back to pending review, reviewer cleared) so
+        the request must be re-approved before execution.
+        """
+        req = self.get_object()
+        scope_fields = ("scope", "reason")
+        update_data = {k: v for k, v in request.data.items()
+                       if k in scope_fields}
+        if not update_data:
+            return Response({"detail": "Only scope and reason may be updated here."},
+                            status=400)
+        with transaction.atomic():
+            req = (PrivacyErasureRequest.objects
+                   .select_for_update().get(pk=req.pk))
+            if req.status in ("executing", "completed", "failed"):
+                return Response({"detail": f"Cannot modify a {req.status} request."},
+                                status=409)
+            if req.status == "approved":
+                # Invalidate the independent approval: scope/reason changed.
+                req.status = "pending_review"
+                req.reviewed_by = None
+                req.reviewed_at = None
+                req.review_decision = ""
+                req.review_reason = ""
+                req.decided_at = None
+                req.save(update_fields=[
+                    "status", "reviewed_by", "reviewed_at", "review_decision",
+                    "review_reason", "decided_at",
+                ])
+                AuditLog.objects.create(
+                    actor=request.user, action="update",
+                    entity_type="common.PrivacyErasureRequest",
+                    object_id=str(req.pk),
+                    object_repr=f"erasure approval invalidated {req.pk}",
+                    reason="Scope/reason changed after approval; re-review required.",
+                    details={"target": f"{req.entity_type}:{req.object_id}"})
+            for k, v in update_data.items():
+                setattr(req, k, v)
+            req.save(update_fields=list(update_data))
+            AuditLog.objects.create(
+                actor=request.user, action="update",
+                entity_type="common.PrivacyErasureRequest",
+                object_id=str(req.pk),
+                object_repr=f"erasure request updated {req.pk}",
+                reason="Scope/reason updated.",
+                details={"target": f"{req.entity_type}:{req.object_id}",
+                         "changes": list(update_data)})
+        return Response({"updated": True, "request_id": req.pk,
+                         "status": req.status})
+
+    def update(self, request, pk=None):
+        return self._partial_update(request, pk)
+
+    def partial_update(self, request, pk=None):
+        return self._partial_update(request, pk)
+
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
         req = self.get_object()
-        if req.status not in ("pending_review",):
-            return Response(
-                {"detail": f"Cannot approve a {req.status} request."},
-                status=409)
-        if request.user.pk == req.requested_by_id:
-            return Response(
-                {"detail": "The requester cannot approve their own request."},
-                status=403)
-        decision = request.data.get("decision")
-        if decision != "approved":
-            return Response(
-                {"detail": "Decision must be 'approved'."}, status=400)
-        review_reason = request.data.get("reason", "").strip()
-        if not review_reason:
-            return Response(
-                {"detail": "A review reason is required."}, status=400)
-        check, _ = dependency_check(req.entity_type, req.object_id)
-        assessment = _snapshot_assessment(check)
-        with transaction.atomic():
-            req = PrivacyErasureRequest.objects.select_for_update().get(pk=req.pk)
-            if req.status != "pending_review":
-                return Response(
-                    {"detail": f"Request is now {req.status}."}, status=409)
-            req.reviewed_by = request.user
-            req.reviewed_at = timezone.now()
-            req.review_decision = "approved"
-            req.review_reason = review_reason
-            req.decided_at = timezone.now()
-            req.status = "approved"
-            req.impact_assessment = assessment
-            req.impact_assessed_at = timezone.now()
-            req.save(update_fields=[
-                "reviewed_by", "reviewed_at", "review_decision", "review_reason",
-                "decided_at", "status", "impact_assessment",
-                "impact_assessed_at"])
-            AuditLog.objects.create(
-                actor=request.user, action="update",
-                entity_type="common.PrivacyErasureRequest",
-                object_id=str(req.pk),
-                object_repr=f"erasure approved {req.pk}",
-                reason=review_reason,
-                details={"target": f"{req.entity_type}:{req.object_id}",
-                         "scope": req.scope,
-                         "impact_assessment": assessment,
-                         "review_decision": "approved"})
+        serializer = PrivacyErasureReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        if serializer.validated_data.get("decision") != "approve":
+            return Response({"detail": "The approve endpoint requires decision='approve'."},
+                            status=400)
+        ok, error = approve_erasure(req, request.user,
+                                    serializer.validated_data.get("reason", ""))
+        if not ok:
+            return Response({"detail": error}, status=409)
         return Response({"approved": True, "request_id": req.pk,
-                         "status": req.status,
-                         "impact_assessment": assessment})
+                         "status": req.status})
 
-    # ---------------- reject ----------------
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
         req = self.get_object()
-        if req.status not in ("pending_review",):
-            return Response(
-                {"detail": f"Cannot reject a {req.status} request."},
-                status=409)
-        if request.user.pk == req.requested_by_id:
-            return Response(
-                {"detail": "The requester cannot reject their own request."},
-                status=403)
-        decision = request.data.get("decision")
-        if decision != "rejected":
-            return Response(
-                {"detail": "Decision must be 'rejected'."}, status=400)
-        review_reason = request.data.get("reason", "").strip()
-        if not review_reason:
-            return Response(
-                {"detail": "A review reason is required."}, status=400)
-        with transaction.atomic():
-            req = PrivacyErasureRequest.objects.select_for_update().get(pk=req.pk)
-            if req.status != "pending_review":
-                return Response(
-                    {"detail": f"Request is now {req.status}."}, status=409)
-            req.reviewed_by = request.user
-            req.reviewed_at = timezone.now()
-            req.review_decision = "rejected"
-            req.review_reason = review_reason
-            req.decided_at = timezone.now()
-            req.status = "rejected"
-            req.save(update_fields=[
-                "reviewed_by", "reviewed_at", "review_decision", "review_reason",
-                "decided_at", "status"])
-            AuditLog.objects.create(
-                actor=request.user, action="update",
-                entity_type="common.PrivacyErasureRequest",
-                object_id=str(req.pk),
-                object_repr=f"erasure rejected {req.pk}",
-                reason=review_reason,
-                details={"target": f"{req.entity_type}:{req.object_id}",
-                         "scope": req.scope,
-                         "review_decision": "rejected"})
+        serializer = PrivacyErasureReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        if serializer.validated_data.get("decision") != "reject":
+            return Response({"detail": "The reject endpoint requires decision='reject'."},
+                            status=400)
+        ok, error = reject_erasure(req, request.user,
+                                   serializer.validated_data.get("reason", ""))
+        if not ok:
+            return Response({"detail": error}, status=409)
         return Response({"rejected": True, "request_id": req.pk,
                          "status": req.status})
 
-    # ---------------- cancel ----------------
-    @action(detail=True, methods=["post"])
-    def cancel(self, request, pk=None):
-        req = self.get_object()
-        if req.status in ("completed", "failed", "cancelled", "rejected"):
-            return Response(
-                {"detail": f"Cannot cancel a {req.status} request."}, status=409)
-        review_reason = request.data.get("reason", "").strip()
-        with transaction.atomic():
-            req = PrivacyErasureRequest.objects.select_for_update().get(pk=req.pk)
-            if req.status in ("completed", "failed", "cancelled", "rejected"):
-                return Response(
-                    {"detail": f"Cannot cancel a {req.status} request."},
-                    status=409)
-            req.status = "cancelled"
-            req.review_decision = "cancelled"
-            req.review_reason = review_reason or "Cancelled."
-            req.decided_at = timezone.now()
-            req.save(update_fields=["status", "review_decision",
-                                    "review_reason", "decided_at"])
-            AuditLog.objects.create(
-                actor=request.user, action="update",
-                entity_type="common.PrivacyErasureRequest",
-                object_id=str(req.pk),
-                object_repr=f"erasure cancelled {req.pk}",
-                reason=review_reason or "",
-                details={"target": f"{req.entity_type}:{req.object_id}",
-                         "scope": req.scope,
-                         "review_decision": "cancelled"})
-        return Response({"cancelled": True, "request_id": req.pk,
-                         "status": req.status})
-
-    # ---------------- execute ----------------
     @action(detail=True, methods=["post"])
     def execute(self, request, pk=None):
         req = self.get_object()
-        if request.data.get("confirm") != str(req.object_id):
-            return Response({"detail": "Re-enter the record ID to confirm."},
-                            status=400)
-        if req.status != "approved":
-            return Response(
-                {"detail": f"Execution requires an approved request "
-                           f"(current: {req.status})."}, status=409)
-        if req.entity_type != "accounts.User":
-            return Response(
-                {"detail": "Automated execution currently supports "
-                           "accounts.User only; others need manual review."},
-                status=400)
-        # Prevent concurrent execution via row lock + execution_lock flag.
-        try:
-            with transaction.atomic():
-                req = (PrivacyErasureRequest.objects
-                       .select_for_update().get(pk=req.pk))
-                if req.status != "approved":
-                    return Response(
-                        {"detail": f"Request is now {req.status}."}, status=409)
-                if req.execution_lock:
-                    return Response(
-                        {"detail": "An execution is already in progress."},
-                        status=409)
-                # Recalculate impact assessment immediately before execution.
-                check, _ = dependency_check(req.entity_type, req.object_id)
-                live_assessment = _snapshot_assessment(check)
-                # Invalidate approval if material fields changed since approval.
-                # Compare the stored impact-assessment snapshot against the
-                # live recalculation.
-                if _assessment_changed(req.impact_assessment or {},
-                                       live_assessment):
-                    req.status = "pending_review"
-                    req.review_decision = ""
-                    req.reviewed_by = None
-                    req.reviewed_at = None
-                    req.decided_at = None
-                    req.impact_assessment = live_assessment
-                    req.impact_assessed_at = timezone.now()
-                    req.save(update_fields=[
-                        "status", "review_decision", "reviewed_by",
-                        "reviewed_at", "decided_at", "impact_assessment",
-                        "impact_assessed_at"])
-                    AuditLog.objects.create(
-                        actor=request.user, action="update",
-                        entity_type="common.PrivacyErasureRequest",
-                        object_id=str(req.pk),
-                        object_repr=f"approval invalidated {req.pk}",
-                        reason="Impact assessment changed after approval",
-                        details={"target": f"{req.entity_type}:{req.object_id}",
-                                 "scope": req.scope,
-                                 "impact_assessment": live_assessment})
-                    return Response(
-                        {"detail": "Impact assessment changed since approval. "
-                                   "Request returned to pending_review for "
-                                   "re-review before execution.",
-                         "status": "pending_review"}, status=409)
-                # Mark execution in flight.
-                req.execution_lock = True
-                req.execution_started_at = timezone.now()
-                req.status = "executing"
-                req.execution_outcome = ""
-                req.execution_error = ""
-                req.save(update_fields=[
-                    "execution_lock", "execution_started_at", "status",
-                    "execution_outcome", "execution_error"])
-                AuditLog.objects.create(
-                    actor=request.user, action="status_change",
-                    entity_type="common.PrivacyErasureRequest",
-                    object_id=str(req.pk),
-                    object_repr=f"erasure executing {req.pk}",
-                    reason="Execution started",
-                    details={"target": f"{req.entity_type}:{req.object_id}",
-                             "scope": req.scope})
-        except PrivacyErasureRequest.DoesNotExist:
-            return Response({"detail": "Request not found."}, status=404)
-
-        # Perform the anonymization outside the lock-holding transaction but
-        # inside its own transaction so partial failure is retry-safe.
-        try:
-            target = User.objects.with_deleted().get(pk=req.object_id)
-        except (User.DoesNotExist, ValueError):
-            self._mark_failed(req.pk, "Target not found.", request.user)
-            return Response({"detail": "Target not found."}, status=404)
-
-        try:
-            with transaction.atomic():
-                target.email = f"erased_{target.pk}@erased.local"
-                target.username = f"erased_{target.pk}"
-                target.first_name = ""
-                target.last_name = ""
-                target.phone = ""
-                target.job_title = ""
-                target.set_unusable_password()
-                target.is_active = False
-                target.email_verified = False
-                target.save()
-                if not target.is_deleted:
-                    target.soft_delete(by_user=request.user,
-                                       reason=f"privacy erasure #{req.pk}")
-                req = PrivacyErasureRequest.objects.get(pk=req.pk)
-                req.execution_lock = False
-                req.status = "completed"
-                req.execution_outcome = "completed"
-                req.executed_at = timezone.now()
-                req.result = {"anonymized_fields": [
-                    "email", "username", "first_name", "last_name",
-                    "phone", "job_title"], "history_preserved": True}
-                req.save(update_fields=[
-                    "execution_lock", "status", "execution_outcome",
-                    "executed_at", "result"])
-                AuditLog.objects.create(
-                    actor=request.user, action="hard_delete",
-                    entity_type="common.PrivacyErasureRequest",
-                    object_id=str(req.pk),
-                    object_repr=f"erasure executed for "
-                                f"{req.entity_type}:{req.object_id}",
-                    reason=req.reason,
-                    details={"target": f"{req.entity_type}:{req.object_id}",
-                             "scope": req.scope,
-                             "result": req.result})
-        except Exception as exc:  # noqa: BLE001 - sanitize and record failure
-            sanitized = str(exc)[:200]
-            self._mark_failed(req.pk, sanitized, request.user)
-            logger.exception("Privacy erasure execution failed for request %s",
-                             req.pk)
-            return Response(
-                {"detail": "Execution failed. See execution_error.",
-                 "request_id": req.pk}, status=500)
-
+        serializer = PrivacyErasureExecuteSerializer(
+            data=request.data, context={"view": self, "object_id": req.object_id})
+        serializer.is_valid(raise_exception=True)
+        ok, error, result = execute_erasure(req, request.user)
+        if not ok:
+            return Response({"detail": error}, status=409)
         return Response({"executed": True, "request_id": req.pk,
-                         "status": "completed"})
+                         "status": req.status, "result": result})
 
-    def _mark_failed(self, pk, error_text, actor):
-        try:
-            req = PrivacyErasureRequest.objects.get(pk=pk)
-            req.execution_lock = False
-            req.status = "failed"
-            req.execution_outcome = "failed"
-            req.execution_error = error_text
-            req.save(update_fields=[
-                "execution_lock", "status", "execution_outcome",
-                "execution_error"])
-            AuditLog.objects.create(
-                actor=actor, action="status_change",
-                entity_type="common.PrivacyErasureRequest",
-                object_id=str(pk),
-                object_repr=f"erasure failed {pk}",
-                reason="Execution failed",
-                details={"error": error_text})
-        except PrivacyErasureRequest.DoesNotExist:
-            pass
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        req = self.get_object()
+        reason = request.data.get("reason", "")
+        ok, error = cancel_erasure(req, request.user, reason)
+        if not ok:
+            return Response({"detail": error}, status=409)
+        return Response({"cancelled": True, "request_id": req.pk,
+                         "status": req.status})
 
-    # ---------------- history ----------------
+    @action(detail=True, methods=["get"])
+    def dependency_preview(self, request, pk=None):
+        req = self.get_object()
+        check, errors = analyze_dependencies(req.entity_type, req.object_id)
+        return Response({"request_id": req.pk, "status": req.status,
+                         "dependency_check": check})
+
     @action(detail=True, methods=["get"])
     def history(self, request, pk=None):
-        self.get_object()  # enforce existence/permission
+        self.get_object()  # enforce existence / object permissions
         qs = (AuditLog.objects
               .filter(entity_type="common.PrivacyErasureRequest",
                       object_id=str(pk))
-              .order_by("timestamp"))
+              .order_by("-timestamp"))
         page = self.paginate_queryset(qs)
         if page is not None:
             ser = AuditLogSerializer(page, many=True)
             return self.get_paginated_response(ser.data)
         ser = AuditLogSerializer(qs, many=True)
         return Response(ser.data)
+
+
+class DataRetentionPolicyViewSet(viewsets.ModelViewSet):
+    queryset = DataRetentionPolicy.objects.all().order_by("-created_at")
+    serializer_class = DataRetentionPolicySerializer
+    permission_classes = [IsSystemAdmin]
+
+    @action(detail=True, methods=["get"])
+    def preview(self, request, pk=None):
+        policy = self.get_object()
+        return Response(preview_retention(policy))
+
+    @action(detail=True, methods=["post"])
+    def execute(self, request, pk=None):
+        policy = self.get_object()
+        ok, error, summary = execute_retention(policy, request.user)
+        if not ok:
+            return Response({"detail": error, **summary}, status=409)
+        return Response({"executed": True, **summary})
+
+
+class DataRetentionExecutionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = (DataRetentionExecution.objects.all()
+                .select_related("policy")
+                .order_by("-started_at"))
+    serializer_class = DataRetentionExecutionSerializer
+    permission_classes = [IsSystemAdmin]

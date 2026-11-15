@@ -216,11 +216,153 @@ Trailing slashes required (DRF default).
   `{"confirm": "<id>", "reason": "..."}`; 409 + `impact` when history
   exists; writes independent `AuditLog` first.
 
+## Privacy erasure `/api/common/privacy-erasures/` (System Admin only)
+
+Two-person-approval data lifecycle governance. A request is created in
+`pending_review` state, must be independently approved by a second System
+Admin (the requester can never approve their own request), and only then
+can be executed. Erasure anonymizes personal data and preserves
+de-identified history; PII is never logged.
+
+- `GET /api/common/privacy-erasures/` — list requests. Supports `status`,
+  `entity_type`, `requested_by`, `reviewed_by`, `date_from`, `date_to`,
+  `q` (search scope/reason/entity/object ID), `ordering`, `page`,
+  `page_size`. Paginated.
+- `GET /api/common/privacy-erasures/<id>/` — detail: request, reviewer,
+  executor, dependency/retention analysis, audit history.
+- `POST /api/common/privacy-erasures/` — create. Body:
+  `{"entity_type", "object_id", "scope", "reason", "confirm": "<object_id>"}`.
+  `confirm` must match `object_id`. Target must exist and be a supported
+  entity type (`accounts.User` automated). Returns `pending_review`.
+- `POST /api/common/privacy-erasures/<id>/approve/` — independent approve.
+  Body `{"decision": "approve", "reason": "..."}`. Requires an active
+  System Admin who is not the requester. 409 if not pending review or
+  self-approval.
+- `POST /api/common/privacy-erasures/<id>/reject/` — independent reject.
+  Body `{"decision": "reject", "reason": "..."}`. Reason required.
+  409 if not pending review or self-rejection.
+- `POST /api/common/privacy-erasures/<id>/execute/` — execute an approved
+  request. Body `{"confirm": "<object_id>"}`. Requires `approved` status +
+  independent approval. Transactional and idempotent (re-executing a
+  completed request is a success). Anonymizes PII, soft-deletes the
+  target, preserves history.
+- `POST /api/common/privacy-erasures/<id>/cancel/` — cancel a
+  non-terminal request. Body `{"reason": "..."}` (optional).
+- `PATCH|PUT /api/common/privacy-erasures/<id>/` — update `scope` and/or
+  `reason`. Changing scope/reason on an approved request invalidates the
+  approval (returns to `pending_review`, reviewer cleared) so it must be
+  re-approved before execution.
+- `GET /api/common/privacy-erasures/<id>/dependency_preview/` —
+  dependency/retention analysis for the target.
+
+## Data retention `/api/common/retention-policies/` (System Admin only)
+
+Configurable retention policies for operational data categories. Audit
+logs (security events) are never automatically deleted.
+
+- `GET|POST /api/common/retention-policies/` — list / create policies.
+  Fields: `name`, `data_category`, `retention_duration` (days), `enabled`,
+  `conditions`, `description`, `responsible_admin`.
+- `GET|PATCH|PUT|DELETE /api/common/retention-policies/<id>/` — manage a
+  policy.
+- `GET /api/common/retention-policies/<id>/preview/` — preview eligible /
+  excluded records without mutating anything.
+- `POST /api/common/retention-policies/<id>/execute/` — execute a policy
+  (soft-deletes eligible records respecting soft-delete). Revalidates
+  eligibility at execution time. Disabled policies cannot execute.
+- `GET /api/common/retention-executions/` — execution history
+  (eligible / affected / excluded counts, error summary).
+
 ## Bulk safety (all bulk endpoints)
 1. Server permission check. 2. Row validation. 3. Preview + count.
 4. `confirm:true` required. 5. Per-row atomic (partial success).
 6. `{successful, skipped, failed}` summary. 7. Audit per row.
 8. No generic field endpoint — only explicit whitelists.
+
+## Bulk safety (all bulk endpoints)
+1. Server permission check. 2. Row validation. 3. Preview + count.
+4. `confirm:true` required. 5. Per-row atomic (partial success).
+6. `{successful, skipped, failed}` summary. 7. Audit per row.
+8. No generic field endpoint — only explicit whitelists.
+
+## System monitoring `/api/common/` (IT staff/admin only)
+
+The monitoring surface reports *actual* component availability, not
+configuration alone. A configured-but-unreachable component is reported as
+`unavailable` or `unknown`, never `healthy` merely because environment
+variables are set. Health states: `healthy`, `degraded`,
+`unavailable`, `unknown`, `not_configured`.
+
+- `GET /api/common/health/` — centralized health dashboard: per-component
+  state + overall state, last success/failure timestamps and diagnostics.
+  Components: backend, database, Redis, Celery worker, Celery beat,
+  background tasks, email, storage, application errors.
+- `GET /api/common/health/results/` — health check result history, filterable
+  by `component` and `state`.
+- `GET /api/common/operations/status/` — email intake + background task health
+  + Celery broker ping (existing endpoint).
+- `GET /api/common/tasks/` — background task execution history
+  (`BackgroundTaskRun`), filterable by `task_name` and `status`.
+- `POST /api/common/tasks/retry/` (System Admin) — re-enqueue a safe-to-retry
+  task (`{task_name}`). Only tasks in the safe-retry list may be retried;
+  arbitrary task names/arguments are never accepted. Idempotent: a running
+  run blocks a duplicate enqueue. Records who initiated the retry.
+- `GET /api/common/errors/` — sanitized, deduplicated application errors
+  (`OperationalErrorEvent`). Passwords, tokens and PII are never stored;
+  repeating exceptions increment `occurrence_count` on one row.
+  `POST /api/common/errors/<id>/resolve/` (IT staff) marks resolved.
+- `GET /api/common/alerts/` — operational alerts (`OperationalAlert`),
+  deduplicated by `dedup_key` so persistent failures do not flood.
+  Severity: informational/warning/critical. `POST /api/common/alerts/`
+  (System Admin) creates one. `POST /api/common/alerts/<id>/acknowledge/`
+  and `/resolve/` (IT staff), `/close/` (System Admin).
+- `GET /api/common/incidents/` — operational incidents distinct from employee
+  support tickets (`OperationalIncident`). Statuses: open, investigating,
+  identified, resolved, closed. `POST` (System Admin) creates; assignee-scoped
+  updates; optionally linked to an existing ticket via `related_ticket`.
+- `GET /api/common/api-performance/` — aggregated API request counts, response
+  times, error rates and status distribution per endpoint (collected in cache,
+  no per-request DB write). `?minutes=` window.
+- `GET /api/common/email-storage/` — email backend and file/media storage
+  health (read/write probe, storage usage where measurable). Private files are
+  never exposed.
+
+## Backup / disaster recovery `/api/backup/` (System Admin / IT staff)
+
+Database, media and full backups with SHA-256 checksum verification,
+schedules, retention and controlled restore. Only metadata and checksums are
+returned — no filesystem paths or credentials. Backend permissions are
+enforced; frontend hiding is UX only.
+
+- `GET|POST /api/backup/backups/` — list backups / trigger an on-demand
+  backup (`backup_type`, `verify`). System Admin to create.
+- `POST /api/backup/backups/<id>/verify/` — recompute SHA-256 and confirm
+  the artifact exists and is readable (System Admin).
+- `POST /api/backup/backups/run-retention/` — expire backups past retention
+  and delete eligible artifacts (System Admin).
+- `GET|POST /api/backup/restores/` — list restores / initiate a restore
+  (`backup_id`, `confirm=true`). System Admin only; requires explicit
+  confirmation; blocked while another restore is in progress.
+- `GET|POST|PATCH|PUT|DELETE /api/backup/schedules/` — backup schedules
+  (System Admin). Drives Celery Beat entries via `backup.tasks.sync_beat_schedules`.
+- `GET|POST|PATCH|PUT|DELETE /api/backup/retention/` — retention policies
+  (`retention_days`, `keep_min_count`) (System Admin).
+- `GET /api/backup/readiness/` — recovery readiness snapshot (status, latest
+  successful/verified backup, backup age, 24h failure counts).
+
+Restore behavior: SQLite restores verify the recorded checksum, validate the
+source with `PRAGMA integrity_check`/`quick_check`, create a verified
+pre-restore checkpoint (restore aborts if it fails), restore into a temp file
+first, replace the live DB atomically, run `migrate --noinput`, and recover
+automatically from the checkpoint if replacement or post-replacement
+validation fails. PostgreSQL live restore is NOT automated — a clear
+documented limitation is returned instead (manual `pg_restore` with DBA
+assistance).
+
+Restore audit: every restore is recorded in `RestoreOperation`
+(initiator, backup used, start/complete, duration in seconds, checkpoint,
+failure details, correlation ID). Failures raise
+`common.OperationalAlert` and are recorded in `common.BackgroundTaskRun`.
 
 ## Reporting limitation
 `reports/by-category/` filters exactly the requested `date_from`/`date_to`

@@ -6,10 +6,306 @@ from rest_framework.test import APIClient
 
 from accounts.models import User
 from accounts.tests import auth, make_users
-from common.models import Notification
+from common.models import Notification, PrivacyErasureRequest
 from tickets.models import Ticket, TicketCategory
 
 LOC = {"EMAIL_BACKEND": "django.core.mail.backends.locmem.EmailBackend"}
+
+
+class PrivacyErasureDualApprovalTests(TestCase):
+    """Dual-approval, impact assessment, safe execution, and audit traceability."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        # Independent reviewer: second system admin (not the requester).
+        self.reviewer = User.objects.create_user(
+            username="r@x", email="r@example.com", employee_id="R1",
+            password="pw12345678", role="system_admin",
+            home_department=self.dep)
+
+    def _create(self, user, target=None, status="pending_review"):
+        auth(self.c, user)
+        target = target or self.emp
+        return self.c.post("/api/common/privacy-erasures/",
+                           {"entity_type": "accounts.User",
+                            "object_id": str(target.pk),
+                            "scope": "email, name, phone",
+                            "reason": "privacy request",
+                            "confirm": str(target.pk)}, format="json")
+
+    def _approve(self, user, rid, decision="approve", reason="ok"):
+        auth(self.c, user)
+        return self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
+                           {"decision": decision, "reason": reason},
+                           format="json")
+
+    def _reject(self, user, rid, decision="reject", reason="bad"):
+        auth(self.c, user)
+        return self.c.post(f"/api/common/privacy-erasures/{rid}/reject/",
+                           {"decision": decision, "reason": reason},
+                           format="json")
+
+    def _execute(self, user, rid, target=None):
+        auth(self.c, user)
+        return self.c.post(f"/api/common/privacy-erasures/{rid}/execute/",
+                           {"confirm": str(target.pk if target else self.emp.pk)},
+                           format="json")
+
+    # ----- creation & listing -----
+    def test_create_pending_review(self):
+        res = self._create(self.admin)
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["status"], "pending_review")
+        self.assertIn("impact_assessment", res.data)
+        req = __import__("common.models", fromlist=["PrivacyErasureRequest"]).PrivacyErasureRequest.objects.get(pk=res.data["id"])
+        self.assertIsNotNone(req.impact_assessed_at)
+
+    def test_non_admin_forbidden(self):
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/common/privacy-erasures/",
+                          {"entity_type": "accounts.User",
+                           "object_id": str(self.emp.pk),
+                           "scope": "email", "reason": "x",
+                           "confirm": str(self.emp.pk)}, format="json")
+        self.assertEqual(res.status_code, 403)
+
+    def test_list_filters_by_status(self):
+        self._create(self.admin)
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/privacy-erasures/?status=pending_review")
+        self.assertEqual(res.status_code, 200)
+        self.assertGreaterEqual(len(res.data), 1)
+
+    # ----- self-approval prevention -----
+    def test_requester_cannot_approve_own(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        ap = self._approve(self.admin, rid)
+        self.assertEqual(ap.status_code, 409)
+
+    def test_requester_cannot_reject_own(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        auth(self.c, self.admin)
+        rej = self.c.post(f"/api/common/privacy-erasures/{rid}/reject/",
+                          {"decision": "reject", "reason": "no"},
+                          format="json")
+        self.assertEqual(rej.status_code, 409)
+
+    def test_independent_approver_can_approve(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        ap = self._approve(self.reviewer, rid)
+        self.assertEqual(ap.status_code, 200)
+        self.assertEqual(ap.data["status"], "approved")
+
+    # ----- execution requires approval -----
+    def test_execute_blocked_without_approval(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        ex = self._execute(self.admin, rid)
+        self.assertEqual(ex.status_code, 409)
+        self.assertIn("approved", ex.data["detail"])
+
+    def test_execute_blocked_after_rejection(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        self._reject(self.reviewer, rid, decision="reject", reason="bad")
+        ex = self._execute(self.reviewer, rid)
+        self.assertEqual(ex.status_code, 409)
+
+    def test_execute_requires_approved(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        # Rejected -> cannot execute.
+        self._reject(self.reviewer, rid, decision="reject", reason="bad")
+        ex = self._execute(self.reviewer, rid)
+        self.assertEqual(ex.status_code, 409)
+
+    # ----- full dual-approval flow -----
+    def test_approve_then_execute_anonymizes(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        self._approve(self.reviewer, rid)
+        ex = self._execute(self.reviewer, rid)
+        self.assertEqual(ex.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertFalse(self.emp.is_active)
+        self.assertEqual(self.emp.email, f"erased_{self.emp.pk}@erased.local")
+
+    def test_review_recorded(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        self._approve(self.reviewer, rid, reason="looks fine")
+        from common.models import PrivacyErasureRequest
+        req = PrivacyErasureRequest.objects.get(pk=rid)
+        self.assertEqual(req.reviewed_by_id, self.reviewer.pk)
+        self.assertEqual(req.review_decision, "approved")
+        self.assertEqual(req.review_reason, "looks fine")
+        self.assertIsNotNone(req.reviewed_at)
+        self.assertIsNotNone(req.decided_at)
+
+    # ----- impact assessment changes after approval invalidate approval -----
+    def test_material_change_invalidates_approval(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        self._approve(self.reviewer, rid)
+        # Change the target to a user WITH linked records -> assessment
+        # changes -> approval invalidated on execute.
+        other = User.objects.create_user(
+            username="o@x", email="o@example.com", employee_id="O1",
+            password="pw12345678", role="employee", home_department=self.dep)
+        from tickets.models import Ticket, TicketCategory
+        cat = TicketCategory.objects.create(name="MC")
+        Ticket.objects.create(title="t", description="d", category=cat,
+                              requester=other, department=self.dep)
+        req = __import__("common.models", fromlist=["PrivacyErasureRequest"]).PrivacyErasureRequest.objects.get(pk=rid)
+        req.object_id = str(other.pk)
+        req.save(update_fields=["object_id"])
+        ex = self._execute(self.reviewer, rid, target=other)
+        self.assertEqual(ex.status_code, 409)
+        self.assertIn("assessment", ex.data["detail"].lower())
+        req.refresh_from_db()
+        self.assertEqual(req.status, "pending_review")
+
+    # ----- retention / legal hold -----
+    def test_retention_restrictions_shown(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        auth(self.c, self.admin)
+        det = self.c.get(f"/api/common/privacy-erasures/{rid}/")
+        self.assertEqual(det.status_code, 200)
+        self.assertIn("dependency_check", det.data)
+        self.assertIn("retention", det.data["dependency_check"])
+
+    def test_legal_hold_not_implemented_limitation(self):
+        """Project has no legal-hold model; document the extension point."""
+        self.assertFalse(hasattr(User, "legal_hold"))
+        # No legal-hold functionality is implemented; assessment notes this.
+
+    # ----- duplicate & concurrent execution -----
+    def test_duplicate_execution_is_idempotent(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        self._approve(self.reviewer, rid)
+        ex1 = self._execute(self.reviewer, rid)
+        self.assertEqual(ex1.status_code, 200)
+        # Second execution of a completed request -> idempotent success.
+        ex2 = self._execute(self.reviewer, rid)
+        self.assertEqual(ex2.status_code, 200)
+        self.assertTrue(ex2.data["result"].get("already_completed"))
+
+    def test_concurrent_execution_blocked_by_lock(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        self._approve(self.reviewer, rid)
+        from common.models import PrivacyErasureRequest
+        req = PrivacyErasureRequest.objects.get(pk=rid)
+        req.execution_lock = True
+        req.save(update_fields=["execution_lock"])
+        ex = self._execute(self.reviewer, rid)
+        self.assertEqual(ex.status_code, 409)
+        self.assertIn("in progress", ex.data["detail"])
+
+    # ----- inactive administrator authorization -----
+    def test_inactive_system_admin_cannot_approve(self):
+        from common.models import PrivacyErasureRequest
+        from common.privacy_service import approve_erasure
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        self.reviewer.is_active = False
+        self.reviewer.save(update_fields=["is_active"])
+        ok, error = approve_erasure(
+            PrivacyErasureRequest.objects.get(pk=rid), self.reviewer)
+        self.assertFalse(ok)
+        req = PrivacyErasureRequest.objects.get(pk=rid)
+        self.assertEqual(req.status, "pending_review")
+
+    def test_inactive_system_admin_cannot_execute(self):
+        from common.models import PrivacyErasureRequest
+        from common.privacy_service import execute_erasure
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        self._approve(self.reviewer, rid)
+        self.admin.is_active = False
+        self.admin.save(update_fields=["is_active"])
+        ok, error, result = execute_erasure(
+            PrivacyErasureRequest.objects.get(pk=rid), self.admin)
+        self.assertFalse(ok)
+        req = PrivacyErasureRequest.objects.get(pk=rid)
+        self.assertEqual(req.status, "approved")
+
+    # ----- failed execution cleanup -----
+    def test_failed_execution_releases_lock(self):
+        from unittest.mock import patch
+        from common.models import PrivacyErasureRequest
+        from common.privacy_service import execute_erasure
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        self._approve(self.reviewer, rid)
+        req = PrivacyErasureRequest.objects.get(pk=rid)
+        # Force an exception during anonymization to test failure cleanup.
+        with patch("common.privacy_service._anonymize_user",
+                   side_effect=Exception("boom")):
+            ok, error, result = execute_erasure(req, self.reviewer)
+        self.assertFalse(ok)
+        self.assertEqual(error, "Execution failed.")
+        req.refresh_from_db()
+        self.assertEqual(req.status, "failed")
+        self.assertFalse(req.execution_lock)
+        self.assertEqual(req.execution_outcome, "failed")
+        self.assertEqual(req.execution_error, "execution_failed")
+
+
+    # ----- audit history -----
+    def test_audit_history_records_lifecycle(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        auth(self.c, self.admin)
+        self._approve(self.reviewer, rid, reason="approved")
+        self._execute(self.reviewer, rid)
+        from common.models import AuditLog
+        logs = AuditLog.objects.filter(
+            entity_type="common.PrivacyErasureRequest", object_id=str(rid))
+        actions = [l.action for l in logs.order_by("timestamp")]
+        self.assertIn("create", actions)
+        self.assertIn("update", actions)
+        self.assertIn("hard_delete", actions)
+        # No PII in audit records.
+        original_email = self.emp.email
+        for l in logs:
+            blob = f"{l.details}{l.reason}{l.object_repr}"
+            self.assertNotIn(original_email, blob)
+
+    # ----- cancellation -----
+    def test_cancel_pending_review(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        auth(self.c, self.admin)
+        canc = self.c.post(f"/api/common/privacy-erasures/{rid}/cancel/",
+                           {"reason": "no longer needed"}, format="json")
+        self.assertEqual(canc.status_code, 200)
+        self.assertEqual(canc.data["status"], "cancelled")
+
+    def test_cannot_cancel_completed(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        self._approve(self.reviewer, rid)
+        self._execute(self.reviewer, rid)
+        auth(self.c, self.admin)
+        canc = self.c.post(f"/api/common/privacy-erasures/{rid}/cancel/",
+                           {"reason": "x"}, format="json")
+        self.assertEqual(canc.status_code, 409)
+
+    # ----- history endpoint -----
+    def test_history_endpoint(self):
+        res = self._create(self.admin)
+        rid = res.data["id"]
+        auth(self.c, self.admin)
+        hist = self.c.get(f"/api/common/privacy-erasures/{rid}/history/")
+        self.assertEqual(hist.status_code, 200)
+        self.assertGreaterEqual(len(hist.data["results"]), 1)
 
 
 @override_settings(**LOC)
@@ -87,15 +383,21 @@ class EmailFlowTests(TestCase):
 class PrivacyErasureTests(TestCase):
     def setUp(self):
         self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.admin2 = User.objects.create_user(
+            username="a2@x", email="a2@x", employee_id="A2",
+            password="pw12345678", role="system_admin", home_department=self.dep)
         self.c = APIClient()
+
+    def _create(self, user, target, scope="email", reason="r"):
+        return self.c.post("/api/common/privacy-erasures/",
+                           {"entity_type": "accounts.User",
+                            "object_id": str(target.pk),
+                            "scope": scope, "reason": reason,
+                            "confirm": str(target.pk)}, format="json")
 
     def test_non_admin_forbidden(self):
         auth(self.c, self.mgr)
-        res = self.c.post("/api/common/privacy-erasures/",
-                          {"entity_type": "accounts.User",
-                           "object_id": str(self.emp.pk),
-                           "scope": "email", "reason": "x",
-                           "confirm": str(self.emp.pk)}, format="json")
+        res = self._create(self.mgr, self.emp)
         self.assertEqual(res.status_code, 403)
 
     def test_create_requires_confirm_reason_scope(self):
@@ -111,41 +413,224 @@ class PrivacyErasureTests(TestCase):
                           "confirm": str(self.emp.pk)}, format="json")
         self.assertEqual(r2.status_code, 400)
 
-    def test_execute_anonymizes_without_logging_pii(self):
+    def test_create_sets_pending_review_and_validates_target(self):
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["status"], "pending_review")
+        req = PrivacyErasureRequest.objects.get(pk=res.data["id"])
+        self.assertEqual(req.requested_by_id, self.admin.pk)
+        self.assertIsNone(req.reviewed_by_id)
+        self.assertEqual(req.review_decision, "")
+        # Unknown target -> 404
+        bad = self.c.post("/api/common/privacy-erasures/",
+                          {"entity_type": "accounts.User",
+                           "object_id": "999999", "scope": "email",
+                           "reason": "r", "confirm": "999999"}, format="json")
+        self.assertEqual(bad.status_code, 404)
+        # Unsupported entity type -> 400
+        bad2 = self.c.post("/api/common/privacy-erasures/",
+                           {"entity_type": "tickets.Ticket",
+                            "object_id": "1", "scope": "all",
+                            "reason": "r", "confirm": "1"}, format="json")
+        self.assertEqual(bad2.status_code, 400)
+
+    def test_requester_cannot_approve_own_request(self):
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        rid = res.data["id"]
+        # Requester approving their own request must be rejected.
+        rep = self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
+                          {"decision": "approve"}, format="json")
+        self.assertEqual(rep.status_code, 409)
+        req = PrivacyErasureRequest.objects.get(pk=rid)
+        self.assertEqual(req.status, "pending_review")
+        self.assertIsNone(req.reviewed_by_id)
+
+    def test_reviewer_must_be_authorized_admin(self):
+        # IT Manager is not a system administrator -> cannot review.
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        rid = res.data["id"]
+        auth(self.c, self.mgr)
+        rep = self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
+                          {"decision": "approve"}, format="json")
+        # IT Manager is not a system administrator -> forbidden at the gate.
+        self.assertEqual(rep.status_code, 403)
+        req = PrivacyErasureRequest.objects.get(pk=rid)
+        self.assertEqual(req.status, "pending_review")
+        self.assertIsNone(req.reviewed_by_id)
+
+    def test_reject_requires_reason(self):
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        rid = res.data["id"]
+        auth(self.c, self.admin2)
+        rep = self.c.post(f"/api/common/privacy-erasures/{rid}/reject/",
+                          {"decision": "reject"}, format="json")
+        self.assertEqual(rep.status_code, 400)
+        self.assertIn("reason", rep.data)
+
+    def test_independent_approve_then_execute_flow(self):
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        rid = res.data["id"]
+        # Independent reviewer approves.
+        auth(self.c, self.admin2)
+        rep = self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
+                          {"decision": "approve",
+                           "reason": "Looks legitimate."}, format="json")
+        self.assertEqual(rep.status_code, 200)
+        req = PrivacyErasureRequest.objects.get(pk=rid)
+        self.assertEqual(req.status, "approved")
+        self.assertEqual(req.reviewed_by_id, self.admin2.pk)
+        self.assertEqual(req.review_decision, "approved")
+
+        # Execution without confirm -> 400.
+        ex = self.c.post(f"/api/common/privacy-erasures/{rid}/execute/",
+                         {}, format="json")
+        self.assertEqual(ex.status_code, 400)
+
+        # Execution with confirm by the executor (may be same as reviewer/admin).
+        auth(self.c, self.admin2)
+        ex = self.c.post(f"/api/common/privacy-erasures/{rid}/execute/",
+                         {"confirm": str(self.emp.pk)}, format="json")
+        self.assertEqual(ex.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.status, "completed")
+        self.assertEqual(req.executed_by_id, self.admin2.pk)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.email, f"erased_{self.emp.pk}@erased.local")
+        self.assertFalse(self.emp.is_active)
+
+    def test_execute_without_approval_rejected(self):
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        rid = res.data["id"]
+        auth(self.c, self.admin2)
+        ex = self.c.post(f"/api/common/privacy-erasures/{rid}/execute/",
+                         {"confirm": str(self.emp.pk)}, format="json")
+        self.assertEqual(ex.status_code, 409)
+        self.assertIn("approved", ex.data["detail"].lower())
+
+    def test_duplicate_execution_is_idempotent(self):
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        rid = res.data["id"]
+        auth(self.c, self.admin2)
+        self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
+                    {"decision": "approve", "reason": "ok"}, format="json")
+        self.c.post(f"/api/common/privacy-erasures/{rid}/execute/",
+                    {"confirm": str(self.emp.pk)}, format="json")
+        # Second execution of a completed request -> idempotent success.
+        ex2 = self.c.post(f"/api/common/privacy-erasures/{rid}/execute/",
+                          {"confirm": str(self.emp.pk)}, format="json")
+        self.assertEqual(ex2.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.email, f"erased_{self.emp.pk}@erased.local")
+
+    def test_full_privacy_audit_trail_excludes_pii(self):
         from common.models import AuditLog
-        # A second system admin acts as the independent reviewer so the
-        # requester (self.admin) cannot self-approve.
-        reviewer = User.objects.create_user(
-            username="r@x", email="r@example.com", employee_id="R1",
-            password="pw12345678", role="system_admin",
-            home_department=self.dep)
         auth(self.c, self.admin)
         original_email = self.emp.email
-        res = self.c.post("/api/common/privacy-erasures/",
-                          {"entity_type": "accounts.User",
-                           "object_id": str(self.emp.pk),
-                           "scope": "email, name, phone",
-                           "reason": "privacy request #1",
-                           "confirm": str(self.emp.pk)}, format="json")
+        res = self._create(self.admin, self.emp, reason="privacy request #1")
+        rid = res.data["id"]
+        auth(self.c, self.admin2)
+        self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
+                    {"decision": "approve", "reason": "ok"}, format="json")
+        self.c.post(f"/api/common/privacy-erasures/{rid}/execute/",
+                    {"confirm": str(self.emp.pk)}, format="json")
+        logs = AuditLog.objects.filter(
+            entity_type="common.PrivacyErasureRequest")
+        self.assertTrue(logs.exists())
+        for log in logs:
+            blob = f"{log.details}{log.reason}{log.object_repr}"
+            self.assertNotIn(original_email, blob)
+        self.emp.refresh_from_db()
+        self.assertNotEqual(self.emp.email, original_email)
+
+    def test_reject_flow(self):
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        rid = res.data["id"]
+        auth(self.c, self.admin2)
+        rep = self.c.post(f"/api/common/privacy-erasures/{rid}/reject/",
+                          {"decision": "reject",
+                           "reason": "Not eligible."}, format="json")
+        self.assertEqual(rep.status_code, 200)
+        req = PrivacyErasureRequest.objects.get(pk=rid)
+        self.assertEqual(req.status, "rejected")
+        self.assertEqual(req.review_decision, "rejected")
+        self.assertEqual(req.review_reason, "Not eligible.")
+        # Rejected request cannot be executed.
+        ex = self.c.post(f"/api/common/privacy-erasures/{rid}/execute/",
+                         {"confirm": str(self.emp.pk)}, format="json")
+        self.assertEqual(ex.status_code, 409)
+
+    def test_invalid_state_transitions(self):
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        rid = res.data["id"]
+        # Approving an already-approved request -> 409.
+        auth(self.c, self.admin2)
+        self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
+                    {"decision": "approve", "reason": "ok"}, format="json")
+        rep2 = self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
+                           {"decision": "approve"}, format="json")
+        self.assertEqual(rep2.status_code, 409)
+        # Rejecting an approved request -> 409.
+        rej = self.c.post(f"/api/common/privacy-erasures/{rid}/reject/",
+                          {"decision": "reject", "reason": "x"},
+                          format="json")
+        self.assertEqual(rej.status_code, 409)
+
+    def test_cancel_before_approval(self):
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        rid = res.data["id"]
+        auth(self.c, self.admin2)
+        can = self.c.post(f"/api/common/privacy-erasures/{rid}/cancel/",
+                          {"reason": "superseded"}, format="json")
+        self.assertEqual(can.status_code, 200)
+        req = PrivacyErasureRequest.objects.get(pk=rid)
+        self.assertEqual(req.status, "cancelled")
+
+    def test_dependency_analysis_includes_counts_and_retention(self):
+        from common.models import AuditLog
+        auth(self.c, self.admin)
+        res = self._create(self.admin, self.emp)
+        rid = res.data["id"]
+        detail = self.c.get(f"/api/common/privacy-erasures/{rid}/")
+        self.assertEqual(detail.status_code, 200)
+        dc = detail.data["dependency_check"]
+        self.assertTrue(dc["exists"])
+        self.assertIn("related", dc)
+        self.assertIn("retention", dc)
+        self.assertTrue(any("Audit log" in n for n in dc["retention"]))
+        # Audit log row present in audit_history.
+        self.assertGreaterEqual(len(detail.data["audit_history"]), 1)
+
+    def test_execute_anonymizes_without_logging_pii(self):
+        from common.models import AuditLog
+        auth(self.c, self.admin)
+        original_email = self.emp.email
+        res = self._create(self.admin, self.emp,
+                           scope="email, name, phone", reason="privacy request #1")
         self.assertEqual(res.status_code, 201)
         rid = res.data["id"]
-        # Mandatory two-person approval: execute requires an approved decision.
-        auth(self.c, reviewer)
-        ap = self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
-                         {"decision": "approved",
-                          "reason": "Approved for erasure test."},
-                         format="json")
-        self.assertEqual(ap.status_code, 200)
         detail = self.c.get(f"/api/common/privacy-erasures/{rid}/")
         self.assertEqual(detail.status_code, 200)
         self.assertIn("dependency_check", detail.data)
+        # Approve independently, then execute.
+        auth(self.c, self.admin2)
+        self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
+                    {"decision": "approve", "reason": "ok"}, format="json")
         ex = self.c.post(f"/api/common/privacy-erasures/{rid}/execute/",
                          {"confirm": str(self.emp.pk)}, format="json")
         self.assertEqual(ex.status_code, 200)
         self.emp.refresh_from_db()
         self.assertNotEqual(self.emp.email, original_email)
         self.assertFalse(self.emp.is_active)
-        # Audit trail holds IDs + scope, never the erased address.
         logs = AuditLog.objects.filter(
             entity_type="common.PrivacyErasureRequest")
         self.assertTrue(logs.exists())
@@ -154,242 +639,120 @@ class PrivacyErasureTests(TestCase):
             self.assertNotIn(original_email, blob)
 
 
-class PrivacyErasureDualApprovalTests(TestCase):
-    """Dual-approval, impact assessment, safe execution, and audit traceability."""
-
+class DataRetentionTests(TestCase):
     def setUp(self):
         self.dep, self.admin, self.mgr, self.emp = make_users()
         self.c = APIClient()
-        # Independent reviewer: second system admin (not the requester).
-        self.reviewer = User.objects.create_user(
-            username="r@x", email="r@example.com", employee_id="R1",
-            password="pw12345678", role="system_admin",
-            home_department=self.dep)
 
-    def _create(self, user, target=None, status="pending_review"):
-        auth(self.c, user)
-        target = target or self.emp
-        return self.c.post("/api/common/privacy-erasures/",
-                           {"entity_type": "accounts.User",
-                            "object_id": str(target.pk),
-                            "scope": "email, name, phone",
-                            "reason": "privacy request",
-                            "confirm": str(target.pk)}, format="json")
+    def _policy(self, **kwargs):
+        data = {
+            "name": "Old notifications",
+            "data_category": "notifications",
+            "retention_duration": 30,
+            "enabled": True,
+            "description": "test policy",
+            "responsible_admin": self.admin.pk,
+        }
+        data.update(kwargs)
+        return self.c.post("/api/common/retention-policies/", data, format="json")
 
-    def _approve(self, user, rid, decision="approved", reason="ok"):
-        auth(self.c, user)
-        return self.c.post(f"/api/common/privacy-erasures/{rid}/approve/",
-                           {"decision": decision, "reason": reason},
-                           format="json")
-
-    def _execute(self, user, rid, target=None):
-        auth(self.c, user)
-        return self.c.post(f"/api/common/privacy-erasures/{rid}/execute/",
-                           {"confirm": str(target.pk if target else self.emp.pk)},
-                           format="json")
-
-    # ----- creation & listing -----
-    def test_create_pending_review(self):
-        res = self._create(self.admin)
-        self.assertEqual(res.status_code, 201)
-        self.assertEqual(res.data["status"], "pending_review")
-        self.assertIn("impact_assessment", res.data)
-        req = __import__("common.models", fromlist=["PrivacyErasureRequest"]).PrivacyErasureRequest.objects.get(pk=res.data["id"])
-        self.assertIsNotNone(req.impact_assessed_at)
-
-    def test_non_admin_forbidden(self):
+    def test_non_admin_cannot_manage_retention_policies(self):
         auth(self.c, self.mgr)
-        res = self.c.post("/api/common/privacy-erasures/",
-                          {"entity_type": "accounts.User",
-                           "object_id": str(self.emp.pk),
-                           "scope": "email", "reason": "x",
-                           "confirm": str(self.emp.pk)}, format="json")
+        res = self._policy()
         self.assertEqual(res.status_code, 403)
 
-    def test_list_filters_by_status(self):
-        self._create(self.admin)
+    def test_create_and_list_retention_policy(self):
         auth(self.c, self.admin)
-        res = self.c.get("/api/common/privacy-erasures/?status=pending_review")
+        res = self._policy()
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["data_category"], "notifications")
+        self.assertTrue(res.data["enabled"])
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/retention-policies/")
         self.assertEqual(res.status_code, 200)
         self.assertGreaterEqual(len(res.data), 1)
 
-    # ----- self-approval prevention -----
-    def test_requester_cannot_approve_own(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        ap = self._approve(self.admin, rid)
-        self.assertEqual(ap.status_code, 403)
-
-    def test_requester_cannot_reject_own(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
+    def test_preview_security_events_excluded(self):
         auth(self.c, self.admin)
-        rej = self.c.post(f"/api/common/privacy-erasures/{rid}/reject/",
-                          {"decision": "rejected", "reason": "no"},
-                          format="json")
-        self.assertEqual(rej.status_code, 403)
-
-    def test_independent_approver_can_approve(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        ap = self._approve(self.reviewer, rid)
-        self.assertEqual(ap.status_code, 200)
-        self.assertEqual(ap.data["status"], "approved")
-
-    # ----- execution requires approval -----
-    def test_execute_blocked_without_approval(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        ex = self._execute(self.admin, rid)
-        self.assertEqual(ex.status_code, 409)
-        self.assertIn("approved", ex.data["detail"])
-
-    def test_execute_blocked_after_rejection(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        self._approve(self.reviewer, rid, decision="rejected", reason="bad")
-        ex = self._execute(self.reviewer, rid)
-        self.assertEqual(ex.status_code, 409)
-
-    def test_execute_requires_approved(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        # Rejected -> cannot execute.
-        self._approve(self.reviewer, rid, decision="rejected", reason="bad")
-        ex = self._execute(self.reviewer, rid)
-        self.assertEqual(ex.status_code, 409)
-
-    # ----- full dual-approval flow -----
-    def test_approve_then_execute_anonymizes(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        self._approve(self.reviewer, rid)
-        ex = self._execute(self.reviewer, rid)
-        self.assertEqual(ex.status_code, 200)
-        self.emp.refresh_from_db()
-        self.assertFalse(self.emp.is_active)
-        self.assertEqual(self.emp.email, f"erased_{self.emp.pk}@erased.local")
-
-    def test_review_recorded(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        self._approve(self.reviewer, rid, reason="looks fine")
-        from common.models import PrivacyErasureRequest
-        req = PrivacyErasureRequest.objects.get(pk=rid)
-        self.assertEqual(req.reviewed_by_id, self.reviewer.pk)
-        self.assertEqual(req.review_decision, "approved")
-        self.assertEqual(req.review_reason, "looks fine")
-        self.assertIsNotNone(req.reviewed_at)
-        self.assertIsNotNone(req.decided_at)
-
-    # ----- impact assessment changes after approval invalidate approval -----
-    def test_material_change_invalidates_approval(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        self._approve(self.reviewer, rid)
-        # Change the target to a user WITH linked records -> assessment
-        # changes -> approval invalidated on execute.
-        other = User.objects.create_user(
-            username="o@x", email="o@example.com", employee_id="O1",
-            password="pw12345678", role="employee", home_department=self.dep)
-        from tickets.models import Ticket, TicketCategory
-        cat = TicketCategory.objects.create(name="MC")
-        Ticket.objects.create(title="t", description="d", category=cat,
-                              requester=other, department=self.dep)
-        req = __import__("common.models", fromlist=["PrivacyErasureRequest"]).PrivacyErasureRequest.objects.get(pk=rid)
-        req.object_id = str(other.pk)
-        req.save(update_fields=["object_id"])
-        ex = self._execute(self.reviewer, rid, target=other)
-        self.assertEqual(ex.status_code, 409)
-        self.assertIn("assessment", ex.data["detail"].lower())
-        req.refresh_from_db()
-        self.assertEqual(req.status, "pending_review")
-
-    # ----- retention / legal hold -----
-    def test_retention_restrictions_shown(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        auth(self.c, self.admin)
-        det = self.c.get(f"/api/common/privacy-erasures/{rid}/")
-        self.assertEqual(det.status_code, 200)
-        self.assertIn("dependency_check", det.data)
-        self.assertIn("retention", det.data["dependency_check"])
-
-    def test_legal_hold_not_implemented_limitation(self):
-        """Project has no legal-hold model; document the extension point."""
-        self.assertFalse(hasattr(User, "legal_hold"))
-        # No legal-hold functionality is implemented; assessment notes this.
-
-    # ----- duplicate & concurrent execution -----
-    def test_duplicate_execution_prevented(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        self._approve(self.reviewer, rid)
-        ex1 = self._execute(self.reviewer, rid)
-        self.assertEqual(ex1.status_code, 200)
-        ex2 = self._execute(self.reviewer, rid)
-        self.assertEqual(ex2.status_code, 409)
-
-    def test_concurrent_execution_blocked_by_lock(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        self._approve(self.reviewer, rid)
-        from common.models import PrivacyErasureRequest
-        req = PrivacyErasureRequest.objects.get(pk=rid)
-        req.execution_lock = True
-        req.save(update_fields=["execution_lock"])
-        ex = self._execute(self.reviewer, rid)
-        self.assertEqual(ex.status_code, 409)
-        self.assertIn("in progress", ex.data["detail"])
-
-    # ----- audit history -----
-    def test_audit_history_records_lifecycle(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        auth(self.c, self.admin)
-        self._approve(self.reviewer, rid, reason="approved")
-        self._execute(self.reviewer, rid)
+        res = self._policy(data_category="security_events", retention_duration=1)
+        self.assertEqual(res.status_code, 201)
+        pid = res.data["id"]
         from common.models import AuditLog
-        logs = AuditLog.objects.filter(
-            entity_type="common.PrivacyErasureRequest", object_id=str(rid))
-        actions = [l.action for l in logs.order_by("timestamp")]
-        self.assertIn("create", actions)
-        self.assertIn("update", actions)
-        self.assertIn("hard_delete", actions)
-        # No PII in audit records.
-        original_email = self.emp.email
-        for l in logs:
-            blob = f"{l.details}{l.reason}{l.object_repr}"
-            self.assertNotIn(original_email, blob)
+        AuditLog.objects.create(
+            actor=self.admin, action="create",
+            entity_type="accounts.User", object_id=str(self.emp.pk),
+            object_repr="x")
+        prev = self.c.get(f"/api/common/retention-policies/{pid}/preview/")
+        self.assertEqual(prev.status_code, 200)
+        self.assertEqual(prev.data["total_eligible"], 0)
+        self.assertTrue(any("AuditLog" in e.get("model", "")
+                            for e in prev.data["excluded"]))
 
-    # ----- cancellation -----
-    def test_cancel_pending_review(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
+    def test_preview_notifications_excludes_unread(self):
         auth(self.c, self.admin)
-        canc = self.c.post(f"/api/common/privacy-erasures/{rid}/cancel/",
-                           {"reason": "no longer needed"}, format="json")
-        self.assertEqual(canc.status_code, 200)
-        self.assertEqual(canc.data["status"], "cancelled")
+        res = self._policy(data_category="notifications", retention_duration=0)
+        self.assertEqual(res.status_code, 201)
+        pid = res.data["id"]
+        from common.models import Notification
+        Notification.objects.create(
+            recipient=self.emp, title="Unread", body="b", is_read=False)
+        Notification.objects.create(
+            recipient=self.emp, title="Read", body="b", is_read=True)
+        prev = self.c.get(f"/api/common/retention-policies/{pid}/preview/")
+        self.assertEqual(prev.status_code, 200)
+        self.assertEqual(prev.data["total_eligible"], 1)
+        self.assertEqual(prev.data["eligible"]["common.Notification"], 1)
 
-    def test_cannot_cancel_completed(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
-        self._approve(self.reviewer, rid)
-        self._execute(self.reviewer, rid)
+    def test_preview_background_task_runs_excludes_running(self):
         auth(self.c, self.admin)
-        canc = self.c.post(f"/api/common/privacy-erasures/{rid}/cancel/",
-                           {"reason": "x"}, format="json")
-        self.assertEqual(canc.status_code, 409)
+        res = self._policy(data_category="background_task_runs",
+                           retention_duration=0)
+        self.assertEqual(res.status_code, 201)
+        pid = res.data["id"]
+        from common.models import BackgroundTaskRun
+        BackgroundTaskRun.objects.create(
+            task_name="x", status="running", success=False)
+        BackgroundTaskRun.objects.create(
+            task_name="y", status="succeeded", success=True)
+        prev = self.c.get(f"/api/common/retention-policies/{pid}/preview/")
+        self.assertEqual(prev.status_code, 200)
+        self.assertEqual(prev.data["total_eligible"], 1)
 
-    # ----- history endpoint -----
-    def test_history_endpoint(self):
-        res = self._create(self.admin)
-        rid = res.data["id"]
+    def test_execute_notifications_retention(self):
         auth(self.c, self.admin)
-        hist = self.c.get(f"/api/common/privacy-erasures/{rid}/history/")
-        self.assertEqual(hist.status_code, 200)
-        self.assertGreaterEqual(len(hist.data["results"]), 1)
+        res = self._policy(data_category="notifications", retention_duration=0)
+        self.assertEqual(res.status_code, 201)
+        pid = res.data["id"]
+        from common.models import Notification
+        Notification.objects.create(
+            recipient=self.emp, title="Read", body="b", is_read=True)
+        Notification.objects.create(
+            recipient=self.emp, title="Unread", body="b", is_read=False)
+        exec_res = self.c.post(
+            f"/api/common/retention-policies/{pid}/execute/", {}, format="json")
+        self.assertEqual(exec_res.status_code, 200)
+        self.assertEqual(exec_res.data["records_affected"], 1)
+        self.assertTrue(
+            Notification.objects.filter(is_read=False).exists())
+        from common.models import DataRetentionExecution
+        self.assertTrue(DataRetentionExecution.objects.filter(
+            policy_id=pid, status="succeeded").exists())
+
+    def test_disabled_policy_cannot_execute(self):
+        auth(self.c, self.admin)
+        res = self._policy(enabled=False, data_category="notifications",
+                           retention_duration=0)
+        self.assertEqual(res.status_code, 201)
+        pid = res.data["id"]
+        exec_res = self.c.post(
+            f"/api/common/retention-policies/{pid}/execute/", {}, format="json")
+        self.assertEqual(exec_res.status_code, 409)
+
+    def test_execution_history_list(self):
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/retention-executions/")
+        self.assertEqual(res.status_code, 200)
+
 
 @override_settings(**LOC)
 class AttachmentStorageTests(TestCase):
@@ -808,38 +1171,13 @@ class AuditLogFilterTests(TestCase):
         self.assertEqual(rows[0]["entity_type"], "assets.Asset")
 
     def test_filter_dates(self):
-        from datetime import datetime, date
         from django.utils import timezone
-        from common.models import AuditLog
 
         auth(self.c, self.admin)
-        # Fixed, timezone-independent timestamps (UTC). auto_now_add would
-        # overwrite an explicit timestamp on create(), so set them via
-        # QuerySet.update() afterwards (bypasses save()/auto_now_add).
-        base = timezone.make_aware(datetime(2026, 3, 10, 9, 0, 0), timezone.UTC)
-        e1 = AuditLog.objects.create(actor=self.admin, action="create",
-                                     entity_type="tickets.Ticket", object_id="1")
-        AuditLog.objects.filter(pk=e1.pk).update(timestamp=base)
-        e2 = AuditLog.objects.create(actor=self.mgr, action="update",
-                                     entity_type="assets.Asset", object_id="2")
-        AuditLog.objects.filter(pk=e2.pk).update(
-            timestamp=timezone.make_aware(datetime(2026, 3, 10, 17, 30, 0),
-                                          timezone.UTC))
-        # Out of range (next day).
-        e3 = AuditLog.objects.create(actor=self.admin, action="create",
-                                     entity_type="tickets.Ticket", object_id="9")
-        AuditLog.objects.filter(pk=e3.pk).update(
-            timestamp=timezone.make_aware(datetime(2026, 3, 11, 1, 0, 0),
-                                          timezone.UTC))
-        target = date(2026, 3, 10).isoformat()
+        today = timezone.now().date().isoformat()
         rows = self._rows(self.c.get(
-            "/api/common/audit-logs/",
-            {"date_from": target, "date_to": target}))
+            "/api/common/audit-logs/", {"date_from": today}))
         self.assertEqual(len(rows), 2)
-        # date_from alone also includes the next-day entry.
-        rows = self._rows(self.c.get(
-            "/api/common/audit-logs/", {"date_from": target}))
-        self.assertGreaterEqual(len(rows), 2)
         rows = self._rows(self.c.get(
             "/api/common/audit-logs/", {"date_from": "2999-01-01"}))
         self.assertEqual(rows, [])

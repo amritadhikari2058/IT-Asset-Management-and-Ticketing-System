@@ -184,7 +184,7 @@ export function ChangeDetail({ match }) {
     )}
   </div>;
 
-  const { scheduled_at, planned_start, planned_end, expected_downtime_minutes } = change;
+  const { scheduled_at, expected_downtime_minutes } = change;
 
   const renderSchedule = () =>
   <div>

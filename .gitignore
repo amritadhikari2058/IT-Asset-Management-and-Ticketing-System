@@ -35,3 +35,6 @@ Thumbs.db
 
 goose-windows.zip
 goose-extracted/
+
+# Generated backup test artifacts (not source code)
+backend/backups/

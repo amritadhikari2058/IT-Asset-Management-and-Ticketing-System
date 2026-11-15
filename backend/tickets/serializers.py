@@ -56,6 +56,7 @@ class TicketSerializer(serializers.ModelSerializer):
                   "department_name", "on_behalf_reason", "asset",
                   "resolution_notes", "resolved_at", "closed_at",
                   "sla_due_at", "sla_breached", "is_overdue",
+                  "source_service_request",
                   "created_at", "updated_at"]
         read_only_fields = ["id", "requester", "resolved_at", "closed_at",
                             "sla_due_at", "sla_breached", "is_overdue",

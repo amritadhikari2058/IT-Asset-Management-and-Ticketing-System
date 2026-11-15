@@ -9,7 +9,7 @@ from rest_framework.routers import DefaultRouter
 from . import views
 
 router = DefaultRouter()
-router.register(r"changes", views.ChangeRequestViewSet, basename="change")
+router.register(r"", views.ChangeRequestViewSet, basename="change")
 router.register(r"templates", views.ChangeTemplateViewSet, basename="changetemplate")
 router.register(r"tasks", views.ChangeTaskViewSet, basename="changetask")
 router.register(r"assets", views.ChangeAssetImpactViewSet, basename="changeassetimpact")

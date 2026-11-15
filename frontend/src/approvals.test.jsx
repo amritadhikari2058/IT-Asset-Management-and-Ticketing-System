@@ -1,44 +1,53 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
-import { ApprovalCenter } from './approvals';
-import { useAuth } from './auth';
-import api from './api';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, cleanup } from '@testing-library/react';
 
-vi.mock('./auth', () => ({
-  useAuth: vi.fn(),
+const { mockGet, mockAuth } = vi.hoisted(() => ({
+  mockGet: vi.fn(),
+  mockAuth: vi.fn(),
 }));
 
 vi.mock('./api', () => ({
-  get: vi.fn().mockResolvedValue({ data: { approvals: [], total: 0 } }),
+  default: {
+    get: (...args) => mockGet(...args),
+  },
 }));
+
+vi.mock('./auth', () => ({ useAuth: (...args) => mockAuth(...args) }));
+
+import { ApprovalCenter } from './approvals';
+
+beforeEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+  mockAuth.mockReturnValue({ isStaff: false });
+  mockGet.mockResolvedValue({ data: { approvals: [], total: 0 } });
+});
+
+afterEach(() => cleanup());
 
 describe('ApprovalCenter', () => {
   it('shows empty state when not staff', () => {
-    useAuth.mockReturnValue({ isStaff: false });
     render(<ApprovalCenter />);
-    expect(screen.getByText('Approvals')).toBeInTheDocument();
-    expect(screen.getByText('Only staff can access approvals.')).toBeInTheDocument();
+    expect(screen.getByText('Approvals')).toBeTruthy();
+    expect(screen.getByText('Only staff can access approvals.')).toBeTruthy();
   });
 
   it('loads and renders approval list when staff', async () => {
-    useAuth.mockReturnValue({ isStaff: true });
-    const getSpy = vi.spyOn(api, 'get');
-    getSpy.mockResolvedValueOnce({ data: { approvals: [] } });
-    getSpy.mockResolvedValueOnce({ data: { total: 0 } });
+    mockAuth.mockReturnValue({ isStaff: true });
+    mockGet.mockResolvedValueOnce({ data: { approvals: [] } });
+    mockGet.mockResolvedValueOnce({ data: { total: 0 } });
 
     render(<ApprovalCenter />);
-    await waitFor(() => expect(screen.queryByText('No pending approvals')).toBeInTheDocument());
-    expect(api.get).toHaveBeenCalledWith('/api/approvals/');
-    expect(api.get).toHaveBeenCalledWith('/api/approvals/counts/');
+    await waitFor(() => expect(screen.queryByText('No pending approvals')).toBeTruthy());
+    expect(mockGet).toHaveBeenCalledWith('/api/approvals/');
+    expect(mockGet).toHaveBeenCalledWith('/api/approvals/counts/');
   });
 
   it('shows error state when request fails', async () => {
-    useAuth.mockReturnValue({ isStaff: true });
-    api.get.mockRejectedValueOnce(new Error('network error'));
-    vi.spyOn(api, 'get').mockRejectedValueOnce(new Error('network error'));
-
+    mockAuth.mockReturnValue({ isStaff: true });
+    mockGet.mockRejectedValueOnce(new Error('network error'));
 
     render(<ApprovalCenter />);
-    await waitFor(() => expect(screen.getByText('Could not load pending approvals.')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Could not load pending approvals.')).toBeTruthy());
   });
 });

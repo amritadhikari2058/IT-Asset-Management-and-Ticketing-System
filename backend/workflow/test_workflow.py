@@ -282,15 +282,15 @@ class RuleEngineTests(WorkflowApiTestCase):
     def test_invalid_status_action_marks_failure(self):
         rule = self._rule(
             trigger="status_changed",
-            actions=[{"type": "status", "value": "archived"}])
-        # in_progress -> archived is not an allowed transition.
+            actions=[{"type": "status", "value": "reopened"}])
+        # in_progress -> reopened is not an allowed transition.
         ticket = _ticket(self.emp, self.dep)
         auth(self.c, self.support)
         self.c.patch(f"/api/tickets/{ticket.pk}/",
                      {"status": "in_progress"}, format="json")
         ex = RuleExecution.objects.get(rule=rule, ticket=ticket)
         self.assertFalse(ex.success)
-        self.assertIn("invalid transition in_progress -> archived", ex.detail)
+        self.assertIn("invalid transition in_progress -> reopened", ex.detail)
         ticket.refresh_from_db()
         self.assertEqual(ticket.status, "in_progress")
 
@@ -496,7 +496,7 @@ class ApprovalApiTests(WorkflowApiTestCase):
         obj = self._pending()
         auth(self.c, self.mgr)
         self.c.post(f"{self.URL}{obj.pk}/approve/", {}, format="json")
-        auth(self.c, self.support)
+        auth(self.c, self.admin)
         res = self.c.post(f"{self.URL}{obj.pk}/approve/", {}, format="json")
         self.assertEqual(res.status_code, 409)
         # The second decision must not have overwritten the first.

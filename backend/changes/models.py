@@ -508,6 +508,12 @@ class ChangeDependency(models.Model):
     class Meta:
         ordering = ["-created_at"]
         unique_together = [("predecessor", "successor")]
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(predecessor=models.F("successor")),
+                name="change_dependency_no_self_ref",
+            ),
+        ]
         indexes = [
             models.Index(fields=["predecessor"], name="dependency_predecessor_idx"),
             models.Index(fields=["successor"], name="dependency_successor_idx"),

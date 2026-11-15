@@ -1,7 +1,12 @@
 from rest_framework import serializers
 
-from common.models import (AuditLog, Notification, SavedReport,
-                           ScheduledReport, ScheduledReportRun,
+from common.models import (AuditLog, DataRetentionExecution,
+                           DataRetentionPolicy, HealthCheckResult,
+                           OperationalAlert, OperationalErrorEvent,
+                           OperationalIncident, Notification,
+                           PrivacyErasureRequest,
+                           SavedReport, ScheduledReport,
+                           ScheduledReportRun,
                            UserNotificationPreference)
 
 
@@ -136,3 +141,186 @@ class UserNotificationPreferenceSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     f"Unknown category '{k}'. Allowed: {sorted(allowed)}.")
         return value
+
+
+class PrivacyErasureRequestSerializer(serializers.ModelSerializer):
+    """Read serializer for privacy erasure requests (list + detail)."""
+
+    requested_by_email = serializers.CharField(
+        source="requested_by.email", read_only=True)
+    requested_by_id = serializers.CharField(
+        source="requested_by.employee_id", read_only=True)
+    reviewer_email = serializers.CharField(
+        source="reviewed_by.email", read_only=True, allow_null=True)
+    reviewer_id = serializers.CharField(
+        source="reviewed_by.employee_id", read_only=True, allow_null=True)
+    executor_email = serializers.CharField(
+        source="executed_by.email", read_only=True, allow_null=True)
+
+    class Meta:
+        model = PrivacyErasureRequest
+        fields = [
+            "id", "entity_type", "object_id", "scope", "reason", "status",
+            "requested_by", "requested_by_email", "requested_by_id",
+            "reviewed_by", "reviewer_email", "reviewer_id",
+            "reviewed_at", "review_decision", "review_reason",
+            "executed_by", "executor_email", "executed_at",
+            "cancellation_reason", "created_at", "decided_at", "result",
+        ]
+        read_only_fields = fields
+
+
+class PrivacyErasureCreateSerializer(serializers.Serializer):
+    """Create serializer for a new erasure request."""
+
+    entity_type = serializers.CharField()
+    object_id = serializers.CharField()
+    scope = serializers.CharField(trim_whitespace=True)
+    reason = serializers.CharField(trim_whitespace=True)
+    confirm = serializers.CharField()
+
+    def validate_confirm(self, value):
+        object_id = self.initial_data.get("object_id")
+        if value != str(object_id):
+            raise serializers.ValidationError(
+                "Confirmation required: re-enter the record ID.")
+        return value
+
+    def validate(self, attrs):
+        if not attrs.get("scope") or not attrs.get("scope").strip():
+            raise serializers.ValidationError(
+                {"scope": "Scope is required."})
+        if not attrs.get("reason") or not attrs.get("reason").strip():
+            raise serializers.ValidationError(
+                {"reason": "Reason is required."})
+        return attrs
+
+
+class PrivacyErasureReviewSerializer(serializers.Serializer):
+    """Approve / reject serializer (independent reviewer)."""
+
+    decision = serializers.ChoiceField(choices=["approve", "reject"])
+    reason = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        if attrs.get("decision") == "reject" and not attrs.get("reason"):
+            raise serializers.ValidationError(
+                {"reason": "A reason is required when rejecting."})
+        return attrs
+
+
+class PrivacyErasureExecuteSerializer(serializers.Serializer):
+    """Execution confirmation serializer."""
+
+    confirm = serializers.CharField()
+
+    def validate_confirm(self, value):
+        object_id = self.context.get("object_id")
+        if value != str(object_id):
+            raise serializers.ValidationError(
+                "Re-enter the record ID to confirm execution.")
+        return value
+
+
+class DataRetentionPolicySerializer(serializers.ModelSerializer):
+    """Serializer for data-retention policies."""
+
+    responsible_admin_email = serializers.CharField(
+        source="responsible_admin.email", read_only=True, allow_null=True)
+
+    class Meta:
+        model = DataRetentionPolicy
+        fields = [
+            "id", "name", "data_category", "retention_duration", "enabled",
+            "conditions", "description", "last_run_at", "next_run_at",
+            "responsible_admin", "responsible_admin_email",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "last_run_at", "next_run_at",
+                            "created_at", "updated_at"]
+
+    def validate_retention_duration(self, value):
+        if value < 0:
+            raise serializers.ValidationError(
+                "Retention duration must be zero or more days.")
+        return value
+
+
+class DataRetentionExecutionSerializer(serializers.ModelSerializer):
+    """Serializer for retention execution history."""
+
+    class Meta:
+        model = DataRetentionExecution
+        fields = [
+            "id", "policy", "status", "started_at", "finished_at",
+            "records_eligible", "records_affected", "records_excluded",
+            "exclusion_reasons", "error_summary", "result", "created_at",
+        ]
+        read_only_fields = fields
+
+
+class HealthCheckResultSerializer(serializers.ModelSerializer):
+    """Serializer for health check result history."""
+
+    class Meta:
+        model = HealthCheckResult
+        fields = [
+            "id", "component", "state", "evaluated_at",
+            "last_successful_at", "last_failure_at", "diagnostic", "details",
+        ]
+        read_only_fields = fields
+
+
+class OperationalErrorEventSerializer(serializers.ModelSerializer):
+    """Serializer for sanitized operational error events."""
+
+    resolved_by_email = serializers.CharField(
+        source="resolved_by.email", read_only=True, allow_null=True)
+
+    class Meta:
+        model = OperationalErrorEvent
+        fields = [
+            "id", "dedup_key", "component", "severity", "title", "message",
+            "correlation_id", "endpoint", "status_code", "occurrence_count",
+            "first_occurred", "last_occurred", "resolved", "resolved_at",
+            "resolved_by", "resolved_by_email", "details",
+        ]
+        read_only_fields = fields
+
+
+class OperationalAlertSerializer(serializers.ModelSerializer):
+    """Serializer for operational alerts."""
+
+    acknowledged_by_email = serializers.CharField(
+        source="acknowledged_by.email", read_only=True, allow_null=True)
+    resolved_by_email = serializers.CharField(
+        source="resolved_by.email", read_only=True, allow_null=True)
+
+    class Meta:
+        model = OperationalAlert
+        fields = [
+            "id", "dedup_key", "component", "severity", "status", "title",
+            "description", "created_at", "last_occurred",
+            "occurrence_count", "acknowledged", "acknowledged_at",
+            "acknowledged_by", "acknowledged_by_email", "resolved",
+            "resolved_at", "resolved_by", "resolved_by_email", "details",
+        ]
+        read_only_fields = fields
+
+
+class OperationalIncidentSerializer(serializers.ModelSerializer):
+    """Serializer for operational incidents."""
+
+    assigned_to_email = serializers.CharField(
+        source="assigned_to.email", read_only=True, allow_null=True)
+
+    class Meta:
+        model = OperationalIncident
+        fields = [
+            "id", "title", "description", "severity", "status",
+            "affected_component", "assigned_to", "assigned_to_email",
+            "created_at", "resolved_at", "closed_at", "related_ticket",
+            "related_alerts", "internal_notes",
+        ]
+        read_only_fields = ["id", "created_at", "assigned_to_email"]
+

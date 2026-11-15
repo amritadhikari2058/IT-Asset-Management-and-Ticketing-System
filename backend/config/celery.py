@@ -41,6 +41,8 @@ app.autodiscover_tasks()
 import tickets.tasks  # noqa: F401
 import assets.tasks  # noqa: F401
 import common.tasks  # noqa: F401
+import common.monitoring_tasks  # noqa: F401
+import backup.tasks  # noqa: F401
 
 
 @app.task(bind=True)

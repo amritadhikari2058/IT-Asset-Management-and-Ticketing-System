@@ -87,7 +87,8 @@ class NoApprovalTicketCreationTests(TestCase):
 
     def test_creates_exactly_one_ticket(self):
         req = self._make_request()
-        ticket, created = ensure_ticket_for_service_request(req, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            ticket, created = ensure_ticket_for_service_request(req, self.mgr)
         self.assertTrue(created)
         self.assertEqual(ticket.requester, self.emp)
         self.assertEqual(ticket.department, self.dep)
@@ -112,7 +113,7 @@ class NoApprovalTicketCreationTests(TestCase):
         self.assertTrue(ServiceRequestHistory.objects.filter(
             request=req, event="ticket_created").exists())
         self.assertTrue(AuditLog.objects.filter(
-            entity_type="tickets.Ticket", object_id=str(ticket.pk)).exists())
+            entity_type="tickets.ticket", object_id=str(ticket.pk)).exists())
         # In-app notification to requester.
         self.assertTrue(Notification.objects.filter(
             recipient=self.emp, entity_type="tickets.Ticket",

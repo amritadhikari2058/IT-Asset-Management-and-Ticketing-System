@@ -124,6 +124,11 @@ export function isEditableStatus(status) {
   return editable.includes(status);
 }
 
+export function safeResults(arr) {
+  if (!arr) return [];
+  return arr;
+}
+
 export function buildChangeListUrl(filters = {}) {
   const params = new URLSearchParams();
   const orderedKeys = [
@@ -222,17 +227,12 @@ export function actionAvailability(role, status, action) {
 }
 
 // Export all constants and helpers
-export default {
+export const ChangeUtils = {
   STATUS_LABELS,
   CHANGE_TYPE_LABELS,
   CATEGORY_LABELS,
   PRIORITY_LABELS,
   RISK_LEVEL_LABELS,
-  TASK_STATUS_LABELS,
-  CONFLICT_SEVERITY_LABELS,
-  DOCUMENT_TYPE_LABELS,
-  COMMUNICATION_TYPE_LABELS,
-  PIR_OUTCOME_LABELS,
   formatDate,
   formatDateTime,
   formatDuration,
@@ -246,3 +246,7 @@ export default {
   parseFieldErrors,
   actionAvailability,
 };
+
+export default ChangeUtils;
+// Shared API helpers used by change-management components
+export { fetchPage, parseApiError } from './api-utils';

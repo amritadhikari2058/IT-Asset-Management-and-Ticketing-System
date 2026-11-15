@@ -191,6 +191,7 @@ class Notification(SoftDeleteModel):
         return f"To {self.recipient_id}: {self.title[:60]}"
 
 
+
 class PrivacyErasureRequest(models.Model):
     """Privacy erasure workflow with mandatory two-person approval.
 
@@ -202,14 +203,9 @@ class PrivacyErasureRequest(models.Model):
             -> execute (confirmation) -> executing -> completed/failed
             -> reject (reviewer != requester) -> rejected
 
-    Any state -> cancelled. Execution requires an *approved* decision.
-    The audit log records request + outcome WITHOUT the erased personal data
-    (IDs + scope only). Impact assessment is stored (IDs/counts only, no PII)
-    and is recalculated immediately before execution; a material change after
-    approval invalidates the approval.
-
-    Additive fields preserve the existing schema (pending/executed/rejected
-    keep working); new statuses are opt-in via the approve/execute actions.
+    Execution requires an approved decision. The audit log records request
+    and outcome without erased personal data. Impact assessment is recalculated
+    before execution to detect stale approvals.
     """
 
     STATUS_CHOICES = [
@@ -221,60 +217,229 @@ class PrivacyErasureRequest(models.Model):
         ("completed", "Completed"),
         ("failed", "Failed"),
         ("cancelled", "Cancelled"),
-        # Legacy statuses retained for backward compatibility with existing
-        # requests created before dual approval was mandatory.
+        # Legacy statuses retained for backward compatibility.
         ("pending", "Pending (legacy)"),
         ("executed", "Executed (legacy)"),
     ]
 
+    # Request details
     entity_type = models.CharField(max_length=100)
     object_id = models.CharField(max_length=100)
-    scope = models.TextField()  # which data to erase, e.g. "email, name, phone"
+    scope = models.TextField()
     reason = models.TextField()
+
     status = models.CharField(
-        max_length=20, choices=STATUS_CHOICES, default="pending_review")
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="pending_review",
+    )
+
     requested_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="erasure_requests")
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="erasure_requests",
+    )
+
+    # Independent review (two-person approval)
     reviewed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="erasure_reviews")
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="erasure_reviews",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_decision = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="approved | rejected | cancelled",
+    )
+    review_reason = models.TextField(
+        blank=True,
+        default="",
+        help_text="Reviewer's decision reason.",
+    )
+
+    # Execution details
+    executed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="erasure_executions",
+    )
+    executed_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.TextField(blank=True, default="")
+
     created_at = models.DateTimeField(auto_now_add=True)
     decided_at = models.DateTimeField(null=True, blank=True)
     result = models.JSONField(default=dict, blank=True)
 
-    # ---- Dual approval fields ----
-    review_decision = models.CharField(
-        max_length=20, blank=True, default="",
-        help_text="approved | rejected | cancelled")
-    review_reason = models.TextField(blank=True, default="",
-                                     help_text="Reviewer's decision reason.")
-    reviewed_at = models.DateTimeField(null=True, blank=True)
-    # Snapshot of the impact assessment taken at approval time. Used to
-    # detect material changes before execution so a stale approval can be
-    # invalidated.
+    # Impact assessment snapshot
     impact_assessment = models.JSONField(default=dict, blank=True)
     impact_assessed_at = models.DateTimeField(null=True, blank=True)
 
-    # ---- Safe execution fields ----
+    # Safe execution and concurrency tracking
     execution_started_at = models.DateTimeField(null=True, blank=True)
-    executed_at = models.DateTimeField(null=True, blank=True)
     execution_outcome = models.CharField(
-        max_length=20, blank=True, default="",
-        help_text="completed | failed | cancelled")
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="completed | failed | cancelled",
+    )
     execution_error = models.TextField(
-        blank=True, default="",
-        help_text="Sanitized failure details (no PII).")
+        blank=True,
+        default="",
+        help_text="Sanitized failure details (no PII).",
+    )
     execution_lock = models.BooleanField(
         default=False,
-        help_text="Set while an execution is in flight to prevent concurrency.")
+        help_text="Set while an execution is in flight to prevent concurrency.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status"], name="erasure_status_idx"),
+            models.Index(fields=["requested_by"], name="erasure_requester_idx"),
+            models.Index(fields=["reviewed_by"], name="erasure_reviewer_idx"),
+            models.Index(fields=["created_at"], name="erasure_created_idx"),
+        ]
 
     def __str__(self):
-        return (f"Erasure {self.entity_type}:{self.object_id} "
-                f"[{self.status}]")
+        return (
+            f"Erasure {self.entity_type}:{self.object_id} "
+            f"[{self.status}]"
+        )
+
+    # Lifecycle helpers
+
+    def can_be_reviewed_by(self, user):
+        """Prevent requesters from reviewing their own erasure requests."""
+        if not user or not user.is_authenticated or not user.is_active:
+            return False
+
+        if self.requested_by_id and self.requested_by_id == user.pk:
+            return False
+
+        if getattr(self, "is_deleted", False):
+            return False
+
+        return bool(
+            getattr(user, "is_system_admin", False)
+            or getattr(user, "is_superuser", False)
+            or getattr(user, "role", "") == "system_admin"
+        )
+
+    def is_terminal(self):
+        return self.status in (
+            "completed",
+            "failed",
+            "rejected",
+            "cancelled",
+        )
+
+    def is_executable(self):
+        return self.status == "approved"
+
+    def is_reviewable(self):
+        return self.status == "pending_review"
+
+
+class DataRetentionPolicy(models.Model):
+    """Configurable data-retention policy for an operational data category.
+
+    Policies define how long records of a category are kept before they are
+    eligible for retention (anonymization / soft-delete / permanent delete
+    where safe). Execution is gated: a preview must be shown first, and the
+    policy must be re-validated at execution time. Audit-log records are
+    explicitly excluded from generic retention operations.
+
+    Not a GDPR-compliance claim.
+    """
+
+    DATA_CATEGORY_CHOICES = [
+        ("security_events", "Security events"),
+        ("notifications", "Notifications"),
+        ("background_task_runs", "Background task execution records"),
+        ("temporary_import_reports", "Temporary import reports"),
+        ("expired_temporary_records", "Expired temporary records"),
+        ("other", "Other operational data"),
+    ]
+
+    name = models.CharField(max_length=150)
+    data_category = models.CharField(
+        max_length=40, choices=DATA_CATEGORY_CHOICES, db_index=True)
+    retention_duration = models.PositiveIntegerField(
+        help_text="Retention duration in days. Records older than this are "
+                  "eligible for retention when the policy runs.")
+    enabled = models.BooleanField(default=True, db_index=True)
+    conditions = models.JSONField(
+        default=dict, blank=True,
+        help_text="Additional record-level conditions (JSON) that narrow "
+                  "which records of the category are eligible.")
+    description = models.TextField(blank=True, default="")
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    next_run_at = models.DateTimeField(null=True, blank=True)
+    responsible_admin = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="retention_policies")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["data_category"], name="retention_category_idx"),
+            models.Index(fields=["enabled", "next_run_at"], name="retention_due_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_data_category_display()})"
+
+
+class DataRetentionExecution(models.Model):
+    """Execution history for a data-retention policy run.
+
+    One row per execution attempt: eligible / affected / excluded counts,
+    exclusion reasons, and a non-sensitive error summary. Used for the
+    execution-history view and failure reporting.
+    """
+
+    STATUS_CHOICES = [
+        ("running", "Running"),
+        ("succeeded", "Succeeded"),
+        ("failed", "Failed"),
+        ("skipped", "Skipped"),
+    ]
+
+    policy = models.ForeignKey(
+        DataRetentionPolicy, on_delete=models.CASCADE,
+        related_name="executions")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES,
+                              default="running")
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    records_eligible = models.PositiveIntegerField(default=0)
+    records_affected = models.PositiveIntegerField(default=0)
+    records_excluded = models.PositiveIntegerField(default=0)
+    exclusion_reasons = models.JSONField(default=list, blank=True)
+    error_summary = models.TextField(blank=True, default="")
+    result = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [
+            models.Index(fields=["policy", "status"], name="retentexec_policy_idx"),
+            models.Index(fields=["started_at"], name="retentexec_started_idx"),
+        ]
+
+    def __str__(self):
+        return f"Retention {self.policy_id} {self.status} @ {self.started_at:%Y-%m-%d %H:%M}"
 
 
 class EmailProcessing(models.Model):
@@ -345,6 +510,9 @@ class BackgroundTaskRun(models.Model):
     success = models.BooleanField(default=False)
     error_summary = models.TextField(blank=True, default="")
     payload = models.JSONField(default=dict, blank=True)
+    correlation_id = models.CharField(
+        max_length=64, blank=True, default="", db_index=True,
+        help_text="Request/flow correlation ID propagated from the caller.")
 
     class Meta:
         ordering = ["-started_at"]
@@ -518,3 +686,253 @@ class UserNotificationPreference(SoftDeleteModel):
             return False
         return bool(self.categories.get(category, True))
 
+
+# ---------------------------------------------------------------------------
+# Phase 26 — Observability, monitoring and operational governance models.
+# ---------------------------------------------------------------------------
+
+HEALTH_STATE_CHOICES = [
+    ("healthy", "Healthy"),
+    ("degraded", "Degraded"),
+    ("unavailable", "Unavailable"),
+    ("unknown", "Unknown"),
+    ("not_configured", "Not configured"),
+]
+
+
+class HealthCheckResult(models.Model):
+    """Result of a component health check.
+
+    One row per check run: which component was checked, the resulting health
+    state, when it was evaluated, the last successful check timestamp, the
+    last failure timestamp and a non-sensitive diagnostic summary. Used by
+    the system health dashboard and by scheduled monitoring tasks.
+
+    Credentials, connection strings, tokens and request bodies are never
+    stored here.
+    """
+
+    COMPONENT_CHOICES = [
+        ("backend", "Django backend"),
+        ("database", "Database"),
+        ("redis", "Redis"),
+        ("celery_worker", "Celery worker"),
+        ("celery_beat", "Celery beat"),
+        ("background_tasks", "Background tasks"),
+        ("email", "Email infrastructure"),
+        ("storage", "File/media storage"),
+        ("application_errors", "Application errors"),
+    ]
+
+    component = models.CharField(max_length=40, choices=COMPONENT_CHOICES,
+                                 db_index=True)
+    state = models.CharField(max_length=20, choices=HEALTH_STATE_CHOICES,
+                             db_index=True)
+    evaluated_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    last_successful_at = models.DateTimeField(null=True, blank=True)
+    last_failure_at = models.DateTimeField(null=True, blank=True)
+    diagnostic = models.TextField(blank=True, default="",
+                                  help_text="Non-sensitive diagnostic summary.")
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-evaluated_at"]
+        indexes = [
+            models.Index(fields=["component", "state"], name="health_comp_state_idx"),
+            models.Index(fields=["component", "evaluated_at"],
+                         name="health_comp_eval_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.get_component_display()} {self.get_state_display()} @ {self.evaluated_at:%Y-%m-%d %H:%M}"
+
+
+class OperationalErrorEvent(models.Model):
+    """Structured, sanitized record of an operational error.
+
+    Captures API failures, authentication failures, database errors, email
+    delivery failures, storage failures and integration failures. Deduplicated
+    by ``dedup_key`` so a repeating exception does not create a new row each
+    time — instead ``occurrence_count`` and ``last_occurred`` are updated.
+
+    Passwords, tokens, personal data and sensitive request bodies are never
+    stored.
+    """
+
+    SEVERITY_CHOICES = [
+        ("low", "Low"),
+        ("medium", "Medium"),
+        ("high", "High"),
+        ("critical", "Critical"),
+    ]
+
+    COMPONENT_CHOICES = [
+        ("api", "API request"),
+        ("auth", "Authentication"),
+        ("database", "Database"),
+        ("background_task", "Background task"),
+        ("email", "Email"),
+        ("storage", "Storage"),
+        ("integration", "Integration"),
+        ("monitoring", "Monitoring"),
+        ("other", "Other"),
+    ]
+
+    dedup_key = models.CharField(max_length=128, db_index=True,
+                                 help_text="Stable hash identifying the same error class.")
+    component = models.CharField(max_length=30, choices=COMPONENT_CHOICES,
+                                 db_index=True)
+    severity = models.CharField(max_length=10, choices=SEVERITY_CHOICES,
+                                default="medium")
+    title = models.CharField(max_length=200)
+    message = models.TextField(blank=True, default="",
+                               help_text="Sanitized error summary — no secrets.")
+    correlation_id = models.CharField(max_length=64, blank=True, default="",
+                                      db_index=True)
+    endpoint = models.CharField(max_length=200, blank=True, default="")
+    status_code = models.PositiveIntegerField(null=True, blank=True)
+    occurrence_count = models.PositiveIntegerField(default=1)
+    first_occurred = models.DateTimeField(auto_now_add=True)
+    last_occurred = models.DateTimeField(auto_now=True)
+    resolved = models.BooleanField(default=False)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="resolved_errors")
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-last_occurred"]
+        indexes = [
+            models.Index(fields=["component", "resolved"], name="err_comp_resolved_idx"),
+            models.Index(fields=["dedup_key"], name="err_dedup_idx"),
+            models.Index(fields=["last_occurred"], name="err_last_occurred_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.title} [{self.component}] x{self.occurrence_count}"
+
+
+class OperationalAlert(models.Model):
+    """Operational alert for an ongoing or recurring infrastructure issue.
+
+    Alerts are deduplicated by ``dedup_key`` so a persistent failure does not
+    flood notifications. Severity drives urgency; acknowledgement and
+    resolution track the human response.
+    """
+
+    SEVERITY_CHOICES = [
+        ("informational", "Informational"),
+        ("warning", "Warning"),
+        ("critical", "Critical"),
+    ]
+
+    STATUS_CHOICES = [
+        ("open", "Open"),
+        ("acknowledged", "Acknowledged"),
+        ("resolved", "Resolved"),
+        ("closed", "Closed"),
+    ]
+
+    COMPONENT_CHOICES = [
+        ("database", "Database"),
+        ("redis", "Redis"),
+        ("celery_worker", "Celery worker"),
+        ("celery_beat", "Celery beat"),
+        ("background_tasks", "Background tasks"),
+        ("email", "Email"),
+        ("storage", "Storage"),
+        ("application_errors", "Application errors"),
+        ("other", "Other"),
+    ]
+
+    dedup_key = models.CharField(max_length=128, unique=True, db_index=True,
+                                 help_text="Stable key preventing alert floods.")
+    component = models.CharField(max_length=30, choices=COMPONENT_CHOICES,
+                                 db_index=True)
+    severity = models.CharField(max_length=20, choices=SEVERITY_CHOICES,
+                                db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES,
+                              default="open", db_index=True)
+    title = models.CharField(max_length=200)
+    description = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_occurred = models.DateTimeField(auto_now=True)
+    occurrence_count = models.PositiveIntegerField(default=1)
+    acknowledged = models.BooleanField(default=False)
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    acknowledged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="acknowledged_alerts")
+    resolved = models.BooleanField(default=False)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="resolved_alerts")
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["component", "status"], name="alert_comp_status_idx"),
+            models.Index(fields=["severity", "status"], name="alert_sev_status_idx"),
+            models.Index(fields=["last_occurred"], name="alert_last_occurred_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.get_severity_display()} {self.title} [{self.get_status_display()}]"
+
+
+class OperationalIncident(models.Model):
+    """Lightweight operational incident tracking.
+
+    Distinct from employee support tickets: incidents track system-level
+    operational issues (outages, repeated failures, degraded components) and
+    may optionally be linked to an existing ticket for customer-facing
+    coordination.
+    """
+
+    SEVERITY_CHOICES = [
+        ("informational", "Informational"),
+        ("warning", "Warning"),
+        ("critical", "Critical"),
+    ]
+
+    STATUS_CHOICES = [
+        ("open", "Open"),
+        ("investigating", "Investigating"),
+        ("identified", "Identified"),
+        ("resolved", "Resolved"),
+        ("closed", "Closed"),
+    ]
+
+    title = models.CharField(max_length=200)
+    description = models.TextField()
+    severity = models.CharField(max_length=20, choices=SEVERITY_CHOICES,
+                                db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES,
+                              default="open", db_index=True)
+    affected_component = models.CharField(max_length=80, blank=True, default="")
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="assigned_incidents")
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    related_ticket = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Optional existing ticket id linked for coordination.")
+    related_alerts = models.JSONField(default=list, blank=True,
+                                      help_text="Related alert ids.")
+    internal_notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "severity"], name="incident_status_sev_idx"),
+            models.Index(fields=["assigned_to"], name="incident_assigned_idx"),
+            models.Index(fields=["created_at"], name="incident_created_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.title} [{self.get_status_display()}]"

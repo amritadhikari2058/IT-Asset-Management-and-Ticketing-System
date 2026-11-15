@@ -2284,7 +2284,6 @@ class DisposalViewSet(viewsets.ModelViewSet):
     def complete(self, request, pk=None):
         role = getattr(request.user, "role", "")
         if role == "it_support":
-            from rest_framework.response import Response
             return Response({"detail": "Forbidden"}, status=403)
         obj = self.get_object()
         if obj.approval_status != "approved":

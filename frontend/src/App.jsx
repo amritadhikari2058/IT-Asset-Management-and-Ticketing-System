@@ -28,6 +28,10 @@ import { SelfService } from "./self-service";
 import { SavedReports } from './saved-reports';
 import { ScheduledReports } from './scheduled-reports';
 import { NotificationSettings } from './settings';
+import { Privacy } from './privacy';
+import { Monitoring } from './monitoring';
+import { Retention } from './retention';
+import { Backup } from './backup';
 import { ServicesCatalogue, MyServiceRequests, ServiceRequestDetail } from './services';
 import Inventory, { InventoryItems, StockItemDetail, StockItemForm } from './inventory';
 import { ReceiveStock, Reservations, TransactionHistory, FulfilServiceRequest } from './inventory-ops';
@@ -49,6 +53,8 @@ const NAV = [
   { hash: '#/assets', label: 'Assets' },
   { section: 'Operations', staffOnly: true },
   { hash: '#/workflow', label: 'Workflow', staffOnly: true },
+  { hash: '#/monitoring', label: 'Monitoring', staffOnly: true },
+  { hash: '#/backup', label: 'Backup &amp; DR', staffOnly: true },
   { hash: '#/maintenance', label: 'Maintenance', staffOnly: true },
   { hash: '#/disposals', label: 'Disposals', staffOnly: true },
   { hash: '#/inventory', label: 'Inventory', staffOnly: true },
@@ -118,6 +124,10 @@ const TITLES = {
   '#/settings/notifications': 'Notification settings',
   '#/recycle': 'Recycle Bin',
   '#/audit': 'Audit Log',
+  '#/privacy': 'Privacy erasure',
+  '#/retention': 'Data retention',
+  '#/monitoring': 'Monitoring',
+  '#/backup': 'Backup &amp; DR',
   '#/sla-config': 'SLA config',
   '#/kb': 'Knowledge Base',
   '#/users': 'Employees',
@@ -138,6 +148,14 @@ function crumbs(hash) {
   if (h === '#/assets/new') return ['Assets', 'New'];
   if (h === '#/vendors/new') return ['Vendors', 'New'];
   if (h === '#/recycle' || h === '#/audit') return ['Administration', TITLES[h]];
+  if (h === '#/privacy') return ['Administration', 'Privacy erasure'];
+  if (h.startsWith('#/privacy/')) return ['Administration', 'Privacy erasure'];
+  if (h === '#/monitoring') return ['Administration', 'Monitoring'];
+  if (h.startsWith('#/monitoring/')) return ['Administration', 'Monitoring'];
+  if (h === '#/backup') return ['Administration', 'Backup & DR'];
+  if (h.startsWith('#/backup/')) return ['Administration', 'Backup & DR'];
+  if (h === '#/retention') return ['Administration', 'Data retention'];
+  if (h.startsWith('#/retention/')) return ['Administration', 'Data retention'];
   if (h.startsWith('#/workflow')) return ['Workflow'];
   if (h.startsWith('#/reports/')) return ['Reports', TITLES[h]];
   if (h.startsWith('#/settings/')) return ['Settings', TITLES[h]];
@@ -187,25 +205,26 @@ function matchRoute(hash) {
   if (route === '#/workflow/rules') return <Workflow tab="rules" />;
   if (route === '#/workflow/approvals') return <Workflow tab="approvals" />;
   if (route === '#/workflow/executions') return <Workflow tab="executions" />;
-   if ((m = route.match(/^#\/service-requests\/(\d+)$/))) return <ServiceRequestDetail id={m[1]} />;
-   if (route === '#/inventory') return <Inventory />;
-   if (route === '#/inventory/items') return <InventoryItems />;
-   if ((m = route.match(/^#\/inventory\/items\/(\d+)\/edit$/))) return <StockItemForm id={m[1]} />;
-   if (route === '#/inventory/items/new') return <StockItemForm />;
-   if ((m = route.match(/^#\/inventory\/items\/(\d+)$/))) return <StockItemDetail id={m[1]} />;
-   if (route === '#/inventory/receive') return <ReceiveStock />;
-   if (route === '#/inventory/reservations') return <Reservations />;
-   if (route === '#/inventory/transactions') return <TransactionHistory />;
-   if (route === '#/inventory/fulfil') return <FulfilServiceRequest />;
-    const routes = {
-
+  if (route === '#/privacy' || route.startsWith('#/privacy/')) return <Privacy />;
+  if (route === '#/retention' || route.startsWith('#/retention/')) return <Retention />;
+  if (route === '#/monitoring' || route.startsWith('#/monitoring/')) return <Monitoring />;
+  if (route === '#/backup' || route.startsWith('#/backup/')) return <Backup />;
+  if ((m = route.match(/^#\/service-requests\/(\d+)$/))) return <ServiceRequestDetail id={m[1]} />;
+  if ((m = route.match(/^#\/inventory\/items\/(\d+)\/edit$/))) return <StockItemForm id={m[1]} />;
+  if ((m = route.match(/^#\/inventory\/items\/(\d+)$/))) return <StockItemDetail id={m[1]} />;
+  const routes = {
     '#/dashboard': <Dashboard />,
     '#/tickets': <Tickets />,
-     '#/kb': <KnowledgeBase />,
-     '#/services': <ServicesCatalogue />,    '#/inventory': <Inventory />,
+    '#/inventory': <Inventory />,
+    '#/inventory/items': <InventoryItems />,
+    '#/inventory/items/new': <StockItemForm />,
+    '#/inventory/receive': <ReceiveStock />,
+    '#/inventory/reservations': <Reservations />,
+    '#/inventory/transactions': <TransactionHistory />,
+    '#/inventory/fulfil': <FulfilServiceRequest />,
+    '#/services': <ServicesCatalogue />,
     '#/workflow': <Workflow />,
     '#/service-requests': <MyServiceRequests />,
-
     '#/reports/sla': <SLAReport />,
     '#/reports/departments': <DepartmentReports />,
     '#/reports/saved': <SavedReports />,
@@ -288,6 +307,12 @@ function Shell() {
               </a>
               <a href="#/audit" className={active('#/audit')} aria-current={isActive(hash, '#/audit') ? 'page' : undefined}>
                 <span className="nav-label">Audit Log</span>
+              </a>
+              <a href="#/privacy" className={active('#/privacy')} aria-current={isActive(hash, '#/privacy') ? 'page' : undefined}>
+                <span className="nav-label">Privacy erasure</span>
+              </a>
+              <a href="#/retention" className={active('#/retention')} aria-current={isActive(hash, '#/retention') ? 'page' : undefined}>
+                <span className="nav-label">Data retention</span>
               </a>
               <a href="#/sla-config" className={active('#/sla-config')} aria-current={isActive(hash, '#/sla-config') ? 'page' : undefined}>
                 <span className="nav-label">SLA config</span>

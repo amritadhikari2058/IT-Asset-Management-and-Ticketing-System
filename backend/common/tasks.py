@@ -15,11 +15,14 @@ from django.conf import settings
 from django.utils import timezone
 
 from common import inbound
-from common.models import BackgroundTaskRun, EmailProcessing
+from common.models import BackgroundTaskRun, DataRetentionPolicy, EmailProcessing
+from common.retention_service import execute_retention, preview_retention
 
 logger = logging.getLogger(__name__)
 
 TASK_NAME = "common.tasks.process_inbound_mailbox"
+RETENTION_EVAL_TASK = "common.tasks.evaluate_retention_policies"
+RETENTION_EXECUTE_TASK = "common.tasks.execute_retention_policy"
 
 
 def record_task_run(task_name, status, error_summary="", payload=None):
@@ -289,3 +292,69 @@ def _render_report(payload, fmt):
     # Fallback to CSV.
     from common.exports import _csv_bytes
     return _csv_bytes(rows, fields)
+
+
+@shared_task(bind=True, max_retries=2, retry_backoff=300)
+def evaluate_retention_policies(self):
+    """Scheduled retention evaluation (Celery beat).
+
+    Finds enabled policies whose ``next_run_at`` is due and dispatches a
+    per-policy execution task. Independent per-policy tasks isolate failures:
+    one category's failure does not prevent another category's run.
+    """
+    from common.models import BackgroundTaskRun
+    now = timezone.now()
+    due = [p for p in DataRetentionPolicy.objects.filter(enabled=True)
+           if p.next_run_at is None or p.next_run_at <= now]
+
+    results = {"checked": 0, "dispatched": 0, "failed": 0}
+    for policy in due:
+        results["checked"] += 1
+        try:
+            execute_retention_policy.delay(policy.pk)
+            results["dispatched"] += 1
+        except Exception as exc:  # broker unavailable: run inline as fallback
+            logger.exception("Retention dispatch failed for %s", policy.pk)
+            try:
+                execute_retention_policy(policy.pk)
+                results["dispatched"] += 1
+            except Exception as exc2:
+                results["failed"] += 1
+                _record_retention_run(policy.pk, "failed",
+                                      type(exc2).__name__)
+    return results
+
+
+@shared_task(bind=True, max_retries=2, retry_backoff=300)
+def execute_retention_policy(self, policy_id):
+    """Execute one retention policy (authorization-reentrant).
+
+    The task independently re-verifies that the policy is still enabled and
+    due before mutating anything, so a queued task can never execute a
+    disabled or already-run policy outside its approval window.
+    """
+    from common.models import DataRetentionPolicy
+    policy = DataRetentionPolicy.objects.filter(pk=policy_id).first()
+    if not policy:
+        return {"policy_id": policy_id, "error": "policy_not_found"}
+    if not policy.enabled:
+        return {"policy_id": policy_id, "status": "skipped",
+                "reason": "policy_disabled"}
+    preview = preview_retention(policy)
+    if not preview.get("can_execute"):
+        return {"policy_id": policy_id, "status": "skipped",
+                "reason": preview["notes"][0] if preview["notes"] else
+                "not_executable"}
+    ok, error, summary = execute_retention(policy, None)
+    return {"policy_id": policy_id, "ok": ok, "error": error,
+            "summary": summary}
+
+
+def _record_retention_run(policy_id, status, error_summary=""):
+    run = DataRetentionExecution.objects.filter(pk=policy_id).first()
+    if run:
+        run.status = status
+        run.error_summary = error_summary or ""
+        run.finished_at = timezone.now()
+        run.save(update_fields=["status", "error_summary", "finished_at"])
+

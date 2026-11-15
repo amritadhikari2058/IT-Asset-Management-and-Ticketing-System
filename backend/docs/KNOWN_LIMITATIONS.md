@@ -34,11 +34,64 @@ scope decisions that operators should be aware of before go-live.
 ## Background jobs
 
 - **Celery required in production**: The SLA escalation, maintenance
-  reminder, and email intake tasks run via Celery worker + beat. Without
-  Redis + Celery, these tasks do not run (SLA notifications, maintenance
-  reminders, and inbound email processing are silent no-ops).
+  reminder, email intake, and retention-evaluation tasks run via Celery
+  worker + beat. Without Redis + Celery, scheduled retention evaluation does
+  not run. Retention policies can still be executed on demand via the API.
+- **Retention production verification**: Redis, workers, and beat are not
+  assumed operational in production without actual deployment verification.
+  Test retention execution against a real Redis/Celery deployment before
+  relying on scheduled retention.
 - **Task retries**: `check_sla_escalations` retries on exception with
   backoff. Other tasks may not have retry configured.
+
+## Privacy / data lifecycle
+
+- **Not a compliance claim**: Privacy erasure and data retention are
+  operational controls (anonymization, soft-delete, two-person approval,
+  audit logging). They do **not** independently establish GDPR or any other
+  regulatory compliance.
+- **Audit logs are never auto-deleted**: `common.AuditLog` is excluded from
+  all generic retention operations and must remain available for
+  accountability.
+- **Two-person approval is backend-enforced but UI-mediated**: Separation of
+  duties is enforced in the backend/service layer; the frontend hides
+  actions from unauthorized roles but is not the control boundary.
+- **Automated erasure scope**: Automated execution currently supports
+  `accounts.User` only. Other entity types require manual review and are
+  not executed by the automated flow.
+- **No tamper-evident audit log**: Audit log entries are append-only via the
+  API but the log itself is not signed/chained.
+
+## Monitoring and observability (Phase 26)
+
+- **Health checks reflect best-effort availability**: Redis and Celery
+  worker/beat health cannot always be confirmed from the API side; when they
+  cannot be determined, the component is reported as `Unknown` rather than
+  assumed healthy. A configured component (Redis URL, SMTP credentials, S3
+  bucket) is not reported healthy until a real round-trip succeeds.
+- **Celery-dependent monitoring**: Scheduled health evaluation, repeated
+  failure detection and missed-task detection require Redis + Celery worker
+  + beat to be operational in production. Without them, on-demand API checks
+  still work but scheduled evaluation does not. Verify against a real
+  deployment before relying on scheduled monitoring.
+- **No Flower or external observability platform**: Monitoring is
+  Django/Celery-native. No distributed tracing, metrics backend, or
+  alerting manager is introduced.
+- **API performance metrics are in-memory**: Aggregated API metrics live in
+  Django cache (LocMem in dev, Redis in prod) and are not persisted per
+  request; they are lost when the cache is cleared and are approximate under
+  multiple workers.
+- **Alert deduplication**: Alerts are deduplicated by component + title, so
+  distinct failures that happen to share a title are merged. Review alert
+  titles for specificity.
+- **Incidents are separate from tickets**: Operational incidents track
+  system-level issues and are not employee support tickets; linking to an
+  existing ticket (`related_ticket`) is manual and optional.
+- **Pre-go-live verification**: SMTP, Redis, PostgreSQL, and S3 integrations
+  are not assumed operational until tested against the production-like
+  environment; health endpoints report `Unknown`/`not_configured` until then.
+
+
 
 ## Attachments / media
 
@@ -65,6 +118,32 @@ scope decisions that operators should be aware of before go-live.
   all assets including soft-deleted ones) is enforced by vendor-portable
   triggers created in assets.0003 and re-created after SQLite table
   rebuilds in assets.0006.
+
+## Backup / disaster recovery (Phase 27)
+
+- **PostgreSQL live restore is not automated**: restoring a PostgreSQL
+  backup requires DBA-assisted manual `pg_restore` with connection
+  termination; the API returns a documented limitation instead of attempting
+  a destructive live restore. Validate the manual restore procedure against
+  a production-like PostgreSQL deployment before relying on it.
+- **Backup artifacts are not encrypted at rest**: protect `BACKUP_ROOT`
+  (default `backend/backups/`) via operating-system/file-system permissions.
+  Only metadata and checksums are returned through the API.
+- **Distributed backup locking requires a shared cache**: backup locks use
+  `cache.add` tokens plus a shared-DB "already running" guard. `LocMemCache`
+  (the dev default) is per-process only; multi-worker production
+  deployments must configure `CACHE_LOCATION` to a Redis URL so the cache
+  lock is shared across workers.
+- **No production validation**: no backup/restore has been executed against
+  a live PostgreSQL/Redis/S3 deployment. SQLite backup/restore and media
+  backup/restore are covered by automated tests, but production readiness
+  (pg_dump/gzip availability, S3 artifact handling, concurrent workers) must
+  be validated against the target deployment before go-live.
+- **Restore is destructive by nature**: database restore replaces the live
+  database file. A verified pre-restore checkpoint is created automatically
+  for SQLite and used for automatic recovery if replacement or post-replace
+  validation fails, but operators should still maintain an independent
+  verified copy before initiating a restore.
 
 ## Internationalization / localization
 

@@ -4,12 +4,18 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Badge, Form, Input } from './components';
-import { useAuth } from './auth';
+import { PageHeader } from './components';
 import { fetchPage, parseApiError } from './changes-utils';
 
+const Row = ({ children, className = '' }) => (
+  <div className={`row ${className}`}>{children}</div>
+);
+
+const Col = ({ children, sm = 12, className = '' }) => (
+  <div className={`col col-sm-${sm} ${className}`}>{children}</div>
+);
+
 export function ChangeApprovals({ match }) {
-  const { isStaff, role } = useAuth();
   const [approvals, setApprovals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -19,7 +25,7 @@ export function ChangeApprovals({ match }) {
     if (!id) return;
     fetchPage(`/changes/${id}/approvals/`)
       .then((data) => {
-        setApprovals(data);
+        setApprovals(data.items);
         setLoading(false);
       })
       .catch((e) => {
@@ -51,17 +57,16 @@ export function ChangeApprovals({ match }) {
                   <Col sm={3}><strong>Level:</strong> {a.approval_level}</Col>
                   <Col sm={3}><strong>Status:</strong> {a.status}</Col>
                   <Col sm={3}><strong>Requested From:</strong> {a.requested_from || ''}</Col>
-                  <Col sm={3}><strong>Decided By:</strong> {a.decided_by || '—'}</Col>
+                  <Col sm={3}><strong>Requested By:</strong> {a.requested_by_email || '—'}</Col>
                 </Row>
                 <Row className="mt-1">
-                  <Col sm={12}>
-                    <strong>Requested:</strong> {a.requested_date || ''}
-                    {a.decided_date && ` — Decided: ${a.decided_date}`}
-                  </Col>
+                  <Col sm={4}><strong>Requested:</strong> {a.requested_at || ''}</Col>
+                  <Col sm={4}><strong>Decided At:</strong> {a.decided_at || '—'}</Col>
+                  <Col sm={4}><strong>Decided By:</strong> {a.decided_by_email || '—'}</Col>
                 </Row>
                 {a.decision_reason && (
                   <Row className="mt-1">
-                    <Col sm={12}><em><strong>Decision Reason:</strong> {a.decision_reason}</em></p></Col>
+                    <Col sm={12}><em><strong>Decision Reason:</strong> {a.decision_reason}</em></Col>
                   </Row>
                 )}
               </div>

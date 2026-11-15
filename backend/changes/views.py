@@ -112,7 +112,6 @@ from changes.services import (
     request_pir,
     close_change,
     cancel_change,
-    convert_to_emergency,
     create_stakeholder,
     send_communication,
     link_ticket,
@@ -129,9 +128,9 @@ from changes.permissions import (
     IsChangeCloser,
     IsChangePIRWaiver,
     IsChangeConflictOverride,
-    is_system_admin,
-    is_staff as _is_staff,
+    _is_staff,
     _can_manage,
+    _can_approve,
 )
 from changes.conflicts import detect_conflicts, upsert_conflicts, resolve_conflicts_for_change
 
@@ -193,6 +192,10 @@ class ChangeRequestViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ("create",):
             return [permissions.IsAuthenticated()]
+        if self.action in ("approve", "reject"):
+            return [permissions.IsAuthenticated(), IsChangeApprover()]
+        if self.action == "close":
+            return [IsChangeCloser()]
         if self.action in ("destroy",):
             return [IsChangeManagerOrAdmin()]
         return [permissions.IsAuthenticated()]
@@ -345,6 +348,22 @@ class ChangeRequestViewSet(viewsets.ModelViewSet):
                 "change_status": change.status,
             }
         )
+
+    @action(detail=True, methods=["get"])
+    def approvals(self, request, pk=None):
+        """Return the approval history for this change only."""
+        change = self.get_object()
+        approvals = (
+            ChangeApproval.objects.filter(change=change)
+            .select_related("requester", "decided_by", "requested_from")
+            .order_by("-created_at")
+        )
+        page = self.paginate_queryset(approvals)
+        if page is not None:
+            serializer = ChangeApprovalSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = ChangeApprovalSerializer(approvals, many=True)
+        return Response(serializer.data)
 
     @action(detail=True, methods=["post"])
     def return_for_correction(self, request, pk=None):
@@ -740,35 +759,31 @@ class ChangeApprovalViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
         approval = self.get_object()
-        if approval.status != "pending":
-            raise ValidationError("Only pending approvals can be decided.")
-        if change.requester_id == request.user.pk:
-            raise ValidationError("Requester cannot approve their own change.")
+        serializer = ChangeApprovalDecisionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         if not _can_approve(request.user):
             raise PermissionDenied("IT Manager or System Admin authorization required.")
-        with transaction.atomic():
-            approval.status = "approved"
-            approval.decided_by = request.user
-            approval.decided_at = timezone.now()
-            approval.decision_reason = request.data.get("decision_reason", "")
-            approval.save()
+        # Operate on the exact approval instance; service validates it belongs
+        # to its change, is pending, enforces separation of duties and version.
+        approval = approve_change(
+            approval.change, request.user,
+            decision_reason=serializer.validated_data.get("decision_reason", ""),
+            approval=approval,
+        )
         return Response(self.get_serializer(approval).data)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
         approval = self.get_object()
-        if approval.status != "pending":
-            raise ValidationError("Only pending approvals can be decided.")
-        if approval.change.requester_id == request.user.pk:
-            raise ValidationError("Requester cannot reject their own change.")
+        serializer = ChangeApprovalDecisionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         if not _can_approve(request.user):
             raise PermissionDenied("IT Manager or System Admin authorization required.")
-        with transaction.atomic():
-            approval.status = "rejected"
-            approval.decided_by = request.user
-            approval.decided_at = timezone.now()
-            approval.decision_reason = request.data.get("decision_reason", "")
-            approval.save()
+        approval = reject_change(
+            approval.change, request.user,
+            decision_reason=serializer.validated_data.get("decision_reason", ""),
+            approval=approval,
+        )
         return Response(self.get_serializer(approval).data)
 
 

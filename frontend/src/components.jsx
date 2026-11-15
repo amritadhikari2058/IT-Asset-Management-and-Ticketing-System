@@ -489,18 +489,17 @@ export function Button({ kind = 'primary', size = 'medium', children, className 
   const sizeClass = {
     small: 'btn-small',
     medium: '',
-  }[size] || '';
-  return (
+  }[size] || ''; return (
     <button type={type} className={`${base} ${kindClass} ${sizeClass} ${className}`} disabled={disabled} onClick={onClick}>
       {children}
     </button>
   );
 }
-
-export function ConfirmDialog({ title, message, confirmLabel = 'Confirm', danger = false, busy = false, onConfirm, onCancel }) {
+export function ConfirmDialog({ title, message, children, confirmLabel = 'Confirm', danger = false, busy = false, onConfirm, onCancel }) {
   return (
     <Modal title={title} onClose={onCancel}>
       <p style={{ marginTop: 0 }}>{message}</p>
+      {children}
       <div className="row-end">
         <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>Cancel</button>
         <button
