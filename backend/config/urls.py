@@ -41,6 +41,7 @@ urlpatterns = [
     path("api/common/", include("common.urls")),
     path("api/lifecycle/", include("lifecycle.urls")),
     path("api/licensing/", include("licensing.urls")),
+    path("api/cmdb/", include("cmdb.urls")),
     path("api/backup/", include("backup.urls")),
     path("api/recycle-bin/", recycle_bin_list, name="recycle-bin-list"),
     path("api/recycle-bin/<str:entity_type>/<str:pk>/",

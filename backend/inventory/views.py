@@ -39,10 +39,9 @@ class StockItemViewSet(viewsets.ModelViewSet):
         cat = self.request.query_params.get("category")
         if cat:
             qs = qs.filter(category=cat)
-        low = self.request.query_params.get("low_stock")
-        if low:
-            from django.db.models import F
-            qs = qs.filter(quantity__lte=F("reorder_threshold"))
+        preferred_vendor = self.request.query_params.get("preferred_vendor")
+        if preferred_vendor:
+            qs = qs.filter(preferred_vendor_id=preferred_vendor)
         return qs
 
     def perform_create(self, serializer):

@@ -24,6 +24,10 @@ vi.mock('./auth', () => ({
 }));
 
 import App from './App';
+import { LifecycleDashboard } from './lifecycle-dashboard';
+import { LifecycleCases } from './lifecycle-cases';
+import { LifecycleForm } from './lifecycle-form';
+import { LifecycleDetail } from './lifecycle-detail';
 
 const TICKET = {
   id: 12, title: 'Laptop will not boot', description: 'Black screen on power-on',
@@ -65,6 +69,15 @@ function setupApi() {
     if (u === '/inventory/stock-items/1/') return { data: { id: 1, sku: 'AA-001', name: 'AA batteries', description: 'Alkaline', category: 'Consumables', unit: 'pcs', quantity: 50, reserved: 5, available: 45, reorder_threshold: 10, unit_cost: '0.50', preferred_vendor: null, preferred_vendor_name: null, is_active: true, is_deleted: false } };
     if (u.startsWith('/tickets/')) return paginated([TICKET]);
     if (u.startsWith('/assets/')) return paginated([ASSET]);
+    if (u.startsWith('/lifecycle/dashboard/')) return { data: { onboarding_in_progress: 0, overdue_tasks: 0, failed_automations: 0 } };
+    if (u.startsWith('/lifecycle/cases/')) return paginated([]);
+    if (u.startsWith('/lifecycle/templates/')) return paginated([]);
+    if (u.startsWith('/lifecycle/template-items/')) return paginated([]);
+    if (u.startsWith('/lifecycle/tasks/')) return paginated([]);
+    if (u.startsWith('/lifecycle/cases/') && u.includes('/summary/')) return { data: {} };
+    if (u.startsWith('/lifecycle/cases/') && u.includes('/history/')) return { data: { results: [], count: 0, next: null, previous: null } };
+    if (u.match(/\/lifecycle\/cases\/\d+\/$/)) return { data: { id: 1, case_number: 'ONB-2026-00001', case_type: 'onboarding', status: 'draft', version: 1, employee: 1, employee_email: 'admin@local', department: null, assigned_coordinator: null, planned_date: null, effective_date: null, completion_target: null, checklist_progress: 0, total_tasks: 0, completed_tasks: 0, overdue_tasks: 0, notes: '', created_at: '2026-11-01T10:00:00Z', updated_at: '2026-11-01T10:00:00Z' } };
+    if (u.match(/\/lifecycle\/cases\/\d+\/(plan|start|mark_ready|confirm_start|complete|block|unblock|cancel)\//)) return { data: { id: 1, case_number: 'ONB-2026-00001', status: 'in_progress', version: 2 } };
     return paginated([]);
   });
   mockPost.mockResolvedValue({ data: { id: 1, detail: 'ok' } });
@@ -93,6 +106,7 @@ const ROUTES = [
   '#/inventory', '#/inventory/items', '#/inventory/items/new', '#/inventory/items/1',
   '#/inventory/items/1/edit', '#/inventory/receive', '#/inventory/reservations',
   '#/inventory/transactions', '#/inventory/fulfil',
+  '#/lifecycle', '#/lifecycle/onboarding', '#/lifecycle/offboarding', '#/lifecycle/transfers', '#/lifecycle/new', '#/lifecycle/1',
 ];
 
 describe('route smoke', () => {

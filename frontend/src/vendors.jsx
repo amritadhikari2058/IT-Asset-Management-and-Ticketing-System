@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from './auth';
 import { useTableColumns, useSort } from './components';
 import { Badge, Field, ErrorSummary, LoadingRows, EmptyState, DataTable, Pager, PageHeader, ConfirmDialog, Modal, AccessDenied } from './components';
-import { parseApiError, fieldMsg } from './api-utils';
+import { parseApiError, fieldMsg, fetchPage } from './api-utils';
 import api from './api';
 
 /** Vendor list page with server-side data, search, filter, sorting, pagination. */
@@ -44,16 +44,16 @@ function VendorsPage() {
     ...(isStaff ? [
       { key: 'actions', label: 'Actions', thClass: 'table-actions', render: (v) => (
         <div style={{ display: 'flex', gap: '4px' }}>
-          <button className="btn btn-sm btn-outline secondary" onClick={() => openDetail(v.id)} title="View">
-            View
-          </button>
+            <button className="btn btn-sm btn-outline secondary" onClick={() => { location.hash = `#/vendors/${v.id}`; }} title="View">
+              View
+            </button>
           {isAdmin ? (
-            <button className="btn btn-sm btn-outline" onClick={() => setDeleteTarget(v.id)} title="Delete">
+            <button className="btn btn-sm btn-outline" onClick={() => openDeleteConfirm(v.id)} title="Delete">
               Delete
             </button>
           ) : null}
           {isAdmin ? (
-            <button className="btn btn-sm btn-outline" onClick={() => openActivateForm(v.id)} title={v.is_active ? 'Deactivate' : 'Activate'}>
+            <button className="btn btn-sm btn-outline" onClick={() => v.is_active ? handleDeactivate(v.id) : handleActivate(v.id)} title={v.is_active ? 'Deactivate' : 'Activate'}>
               {v.is_active ? 'Deactivate' : 'Activate'}
             </button>
           ) : null}
@@ -177,19 +177,14 @@ function VendorsPage() {
           hint="Search by name, code, contact, email, or phone"
           onChange={handleSearchChange}
         />
-        <Field
-          label="Active"
-          required={false}
-          hint="Filter by active status"
-          component="select"
-          onChange={handleFilterChange}
-          disabled={!isStaff}
-          options={[
-            { label: 'All', value: '' },
-            { label: 'Active', value: 'is_active=true' },
-            { label: 'Inactive', value: 'is_active=false' },
-          ]}
-        />
+        <div className="form-field">
+          <label className="form-label"><span>Active</span></label>
+          <select className="input" name="is_active" value={f.is_active} onChange={handleFilterChange} disabled={!isStaff}>
+            <option value="">All</option>
+            <option value="true">Active</option>
+            <option value="false">Inactive</option>
+          </select>
+        </div>
         {canManageVendors ? (
           <>
             <button
@@ -238,15 +233,17 @@ function VendorsPage() {
       </div>
 
       {/* Confirmation dialogs */}
+      {showDeleteConfirm && (
       <ConfirmDialog
         title="Confirm Deletion"
         message={`Are you sure you want to soft-delete this vendor? Existing records (assets, stock items) will remain linked, but the vendor will be removed from new selections.`}
         confirmLabel="Delete"
         danger={true}
         busy={deleteBusy}
-        onConfirm={() => { if (deleteTarget) handleDelete(deleteTarget); setShowDeleteConfirm(false);}}
-        onCancel={() => setShowDeleteConfirm(false)}
+        onConfirm={() => { if (deleteTarget) handleDelete(deleteTarget); }}
+        onCancel={() => { setShowDeleteConfirm(false); setDeleteTarget(null); }}
       />
+      )}
 
       {isStaff && exportOpen && (
         <div className="modal-backdrop">
@@ -282,29 +279,30 @@ function VendorForm({ onSave, onClose, vendorId }) {
 
   // Load existing vendor for edit
   useEffect(() => {
-    if (vendorId) {
-      api.get(`/api/assets/vendors/${vendorId}/`)
-        .then((r) => setVendor(r.data))
-        .then((d) => {
-          setForm({
-            name: d.name || '',
-            code: d.code || '',
-            contact_person: d.contact_person || '',
-            email: d.email || '',
-            phone: d.phone || '',
-            website: d.website || '',
-            address: d.address || '',
-            tax_registration: d.tax_registration || '',
-            notes: d.notes || '',
-            is_active: d.is_active !== false,
-          });
-        })
-        .catch((e) => {
-          setFormError('Could not load vendor data. ' + (e.response?.data?.global || e.response?.data?.detail || String(e)));
-        });
-    } else {
-      setVendor(null);
-    }
+     if (vendorId) {
+       api.get(`/api/assets/vendors/${vendorId}/`)
+         .then((r) => {
+           const d = r.data;
+           setVendor(d);
+           setForm({
+             name: d.name || '',
+             code: d.code || '',
+             contact_person: d.contact_person || '',
+             email: d.email || '',
+             phone: d.phone || '',
+             website: d.website || '',
+             address: d.address || '',
+             tax_registration: d.tax_registration || '',
+             notes: d.notes || '',
+             is_active: d.is_active !== false,
+           });
+         })
+         .catch((e) => {
+           setFormError('Could not load vendor data. ' + (e.response?.data?.global || e.response?.data?.detail || String(e)));
+         });
+     } else {
+       setVendor(null);
+     }
   }, [vendorId]);
 
   const handleChange = (e) => {
@@ -392,7 +390,7 @@ function VendorForm({ onSave, onClose, vendorId }) {
 }
 
 /** Vendor detail page with summary and usage information. */
-function VendorDetail({ match }) {
+function VendorDetail({ id }) {
   const { isStaff, isAdmin } = useAuth();
   const [vendor, setVendor] = useState(null);
   const [assets, setAssets] = useState([]);
@@ -406,13 +404,12 @@ function VendorDetail({ match }) {
 
   // Load vendor detail
   useEffect(() => {
-    const id = match?.params?.id;
     if (id) {
-      api.get(`/api/assets/vendors/${id}/`)
+       api.get(`/api/assets/vendors/${id}/`)
         .then((r) => setVendor(r.data))
         .then(() => {
           // Load related assets
-          return api.get(`/api/assets/vendors/${id}/assets/`);
+          return api.get(`/api/assets/?vendor=${id}`);
         })
         .then((r) => setAssets(r.data.results || r.data))
         .catch((e) => {
@@ -421,11 +418,11 @@ function VendorDetail({ match }) {
         .finally(() => setLoading(false));
 
       // Load related stock items
-      api.get(`/api/assets/vendors/${id}/stock-items/`)
+      api.get(`/api/inventory/stock-items/?preferred_vendor=${id}`)
         .then((r) => setStockItems(r.data.results || r.data))
         .catch(() => { /* ignore */ });
     }
-  }, [match]);
+  }, [id]);
 
   // Activate vendor
   const handleActivate = async () => {
@@ -677,8 +674,8 @@ function VendorDetail({ match }) {
 function buildVendorListUrl(filters, ordering, page) {
   const params = new URLSearchParams();
   if (filters.q) params.append('q', filters.q);
-  if (filters.is_active !== undefined) params.append('is_active', filters.is_active);
-  if (filters.is_deleted !== undefined) params.append('is_deleted', filters.is_deleted);
+  if (filters.is_active) params.append('is_active', filters.is_active);
+  if (filters.is_deleted) params.append('is_deleted', filters.is_deleted);
   if (ordering) params.append('ordering', ordering);
   if (page && page > 1) params.append('page', page);
   return `/api/assets/vendors/?${params.toString()}`;

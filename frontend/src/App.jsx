@@ -37,6 +37,11 @@ import Inventory, { InventoryItems, StockItemDetail, StockItemForm } from './inv
 import { ReceiveStock, Reservations, TransactionHistory, FulfilServiceRequest } from './inventory-ops';
 import Workflow from './workflow';
 import { ApprovalCenter } from './approvals';
+import {
+  LifecycleDashboard, LifecycleCases, LifecycleForm, LifecycleDetail,
+} from './lifecycle';
+import { ProcurementRouter } from './procurement';
+import { LicensingRouter } from './licensing';
 
 const NAV = [
   { section: 'Work' },
@@ -50,7 +55,23 @@ const NAV = [
   { hash: '#/tickets/canned-responses', label: 'Canned Responses', staffOnly: true },
   { hash: '#/tickets/templates', label: 'Ticket Templates', staffOnly: true },
   { hash: '#/self-service', label: 'Self-Service', staffOnly: false },
-  { hash: '#/assets', label: 'Assets' },
+  { hash: '#/lifecycle', label: 'Lifecycle', staffOnly: false },
+  { hash: '#/lifecycle/onboarding', label: 'Onboarding Cases', staffOnly: true },
+  { hash: '#/lifecycle/offboarding', label: 'Offboarding Cases', staffOnly: true },
+  { hash: '#/lifecycle/transfers', label: 'Transfers', staffOnly: true },
+  { hash: '#/lifecycle/new', label: 'New Case', staffOnly: true },
+   { hash: '#/assets', label: 'Assets' },
+  { section: 'Software' },
+  { hash: '#/software', label: 'Software Dashboard', staffOnly: true },
+  { hash: '#/software/products', label: 'Software Products', staffOnly: true },
+  { hash: '#/licenses', label: 'License Agreements', staffOnly: true },
+  { hash: '#/license-allocations', label: 'License Allocations', staffOnly: true },
+  { hash: '#/license-installations', label: 'Software Installations', staffOnly: true },
+  { hash: '#/license-renewals', label: 'License Renewals', staffOnly: true },
+  { hash: '#/license-compliance', label: 'License Compliance', staffOnly: true },
+  { hash: '#/license-calendar', label: 'Renewal Calendar', staffOnly: true },
+  { hash: '#/license-utilization', label: 'License Utilization', staffOnly: true },
+  { hash: '#/my-software', label: 'My Software', staffOnly: false },
   { section: 'Operations', staffOnly: true },
   { hash: '#/workflow', label: 'Workflow', staffOnly: true },
   { hash: '#/monitoring', label: 'Monitoring', staffOnly: true },
@@ -58,10 +79,15 @@ const NAV = [
   { hash: '#/maintenance', label: 'Maintenance', staffOnly: true },
   { hash: '#/disposals', label: 'Disposals', staffOnly: true },
   { hash: '#/inventory', label: 'Inventory', staffOnly: true },
+  { hash: '#/procurement', label: 'Procurement', staffOnly: true },
+  { hash: '#/procurement/requests', label: 'Purchase Requests', staffOnly: true },
+  { hash: '#/procurement/orders', label: 'Purchase Orders', staffOnly: true },
+  { hash: '#/procurement/receipts', label: 'Goods Receipts', staffOnly: true },
   { section: 'Reports' },  { hash: '#/reports/sla', label: 'SLA report', staffOnly: true },
   { hash: '#/reports/departments', label: 'Department reports', staffOnly: true },
   { hash: '#/reports/saved', label: 'Saved reports', staffOnly: false },
   { hash: '#/reports/schedules', label: 'Scheduled reports', cap: 'canManageScheduledReports' },
+  { hash: '#/procurement/reports', label: 'Procurement reports', cap: 'canViewProcurementReports' },
   { section: 'Approvals' },
   { hash: '#/approvals', label: 'Approvals', staffOnly: true },
   { section: 'Organize' },
@@ -132,6 +158,17 @@ const TITLES = {
   '#/kb': 'Knowledge Base',
   '#/users': 'Employees',
   '#/profile': 'My Profile',
+  '#/lifecycle': 'Lifecycle Dashboard',
+  '#/lifecycle/onboarding': 'Onboarding Cases',
+  '#/lifecycle/offboarding': 'Offboarding Cases',
+  '#/lifecycle/transfers': 'Transfers',
+  '#/lifecycle/new': 'New Lifecycle Case',
+  '#/procurement': 'Procurement',
+  '#/procurement/requests': 'Purchase Requests',
+  '#/procurement/orders': 'Purchase Orders',
+  '#/procurement/receipts': 'Goods Receipts',
+  '#/procurement/assets': 'Asset registration',
+  '#/procurement/reports': 'Procurement reports',
 };
 
 /** Sticky-header breadcrumb: parent → record → action, so the header
@@ -172,6 +209,18 @@ function crumbs(hash) {
   if (h.startsWith('#/inventory/fulfil')) return ['Inventory', 'Fulfil request'];
   if (h === '#/kb/pending') return ['Knowledge Base', 'Pending review'];
   if (h.startsWith('#/kb/')) return ['Knowledge Base', 'Article'];
+  if (h === '#/lifecycle') return ['Lifecycle', 'Dashboard'];
+  if (h === '#/lifecycle/onboarding') return ['Lifecycle', 'Onboarding'];
+  if (h === '#/lifecycle/offboarding') return ['Lifecycle', 'Offboarding'];
+  if (h === '#/lifecycle/transfers') return ['Lifecycle', 'Transfers'];
+  if (h === '#/lifecycle/new') return ['Lifecycle', 'New Case'];
+  if (h.startsWith('#/lifecycle/') && h.match(/\/(\d+)$/)) return ['Lifecycle', 'Case'];
+  if (h === '#/procurement') return ['Procurement', 'Dashboard'];
+  if (h.startsWith('#/procurement/requests')) return ['Procurement', 'Purchase Requests'];
+  if (h.startsWith('#/procurement/orders')) return ['Procurement', 'Purchase Orders'];
+  if (h.startsWith('#/procurement/receipts')) return ['Procurement', 'Goods Receipts'];
+  if (h.startsWith('#/procurement/assets')) return ['Procurement', 'Asset registration'];
+  if (h.startsWith('#/procurement/reports')) return ['Procurement', 'Reports'];
   return [TITLES[h] ?? 'Tickets'];
 }
 
@@ -192,6 +241,9 @@ function matchRoute(hash) {
   if ((m = route.match(/^#\/assets\/(\d+)\/edit$/))) return <AssetForm id={m[1]} />;
   if (route === '#/assets/new') return <AssetForm />;
   if ((m = route.match(/^#\/assets\/(\d+)$/))) return <AssetDetail id={m[1]} />;
+  if ((m = route.match(/^#\/vendors\/(\d+)\/edit$/))) return <VendorForm vendorId={m[1]} />;
+  if (route === '#/vendors/new') return <VendorForm />;
+  if ((m = route.match(/^#\/vendors\/(\d+)$/))) return <VendorDetail id={m[1]} />;
   if ((m = route.match(/^#\/users\/(\d+)\/?$/))) return <EmployeeDetail id={m[1]} />;
   if (route === '#/kb/pending') return <KnowledgeBaseReviewQueue />;
   if ((m = route.match(/^#\/kb\/(\d+)\/revisions\/(\d+)$/))) return <KnowledgeBaseRevisionDetail id={m[1]} number={m[2]} />;
@@ -212,6 +264,18 @@ function matchRoute(hash) {
   if ((m = route.match(/^#\/service-requests\/(\d+)$/))) return <ServiceRequestDetail id={m[1]} />;
   if ((m = route.match(/^#\/inventory\/items\/(\d+)\/edit$/))) return <StockItemForm id={m[1]} />;
   if ((m = route.match(/^#\/inventory\/items\/(\d+)$/))) return <StockItemDetail id={m[1]} />;
+  if (route === '#/lifecycle') return <LifecycleDashboard />;
+  if (route === '#/lifecycle/onboarding') return <LifecycleCases caseType="onboarding" />;
+  if (route === '#/lifecycle/offboarding') return <LifecycleCases caseType="offboarding" />;
+  if (route === '#/lifecycle/transfers') return <LifecycleCases caseType="transfer" />;
+  if (route === '#/lifecycle/new') return <LifecycleForm />;
+  if ((m = route.match(/^#\/lifecycle\/(\d+)$/))) return <LifecycleDetail id={m[1]} />;
+  if (route === '#/procurement' || route.startsWith('#/procurement/')) {
+    return <ProcurementRouter route={hash} />;
+  }
+  if (route === '#/software' || route.startsWith('#/software/') || route === '#/licenses' || route.startsWith('#/licenses/') || route === '#/license-allocations' || route.startsWith('#/license-allocations/') || route === '#/license-installations' || route.startsWith('#/license-installations/') || route === '#/license-renewals' || route.startsWith('#/license-renewals/') || route === '#/license-compliance' || route.startsWith('#/license-compliance/') || route === '#/license-calendar' || route === '#/license-utilization' || route === '#/my-software') {
+    return <LicensingRouter route={hash} />;
+  }
   const routes = {
     '#/dashboard': <Dashboard />,
     '#/tickets': <Tickets />,

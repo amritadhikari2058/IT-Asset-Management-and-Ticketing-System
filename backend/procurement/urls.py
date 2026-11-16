@@ -3,7 +3,9 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     ProcurementSettingViewSet, PurchaseRequestViewSet, PurchaseRequestItemViewSet,
     PurchaseQuotationViewSet, PurchaseOrderViewSet, PurchaseOrderItemViewSet,
-    GoodsReceiptViewSet, GoodsReceiptItemViewSet
+    GoodsReceiptViewSet, GoodsReceiptItemViewSet,
+    ProcurementAttachmentViewSet, ProcurementAssetReceiptItemViewSet,
+    procurement_dashboard,
 )
 
 router = DefaultRouter()
@@ -15,7 +17,13 @@ router.register("purchase-orders", PurchaseOrderViewSet, basename="purchase-orde
 router.register("purchase-order-items", PurchaseOrderItemViewSet, basename="purchase-order-item")
 router.register("goods-receipts", GoodsReceiptViewSet, basename="goods-receipt")
 router.register("goods-receipt-items", GoodsReceiptItemViewSet, basename="goods-receipt-item")
+router.register("attachments", ProcurementAttachmentViewSet, basename="procurement-attachment")
+router.register(
+    "asset-receipt-items", ProcurementAssetReceiptItemViewSet,
+    basename="procurement-asset-receipt-item",
+)
 
 urlpatterns = [
+    path("dashboard/", procurement_dashboard, name="procurement-dashboard"),
     path("", include(router.urls)),
 ]

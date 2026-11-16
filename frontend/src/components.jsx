@@ -852,6 +852,7 @@ export function UserSelect({ value, onChange, error, disabled, label }) {
       <div className="row-gap">
         <select
           className="input"
+          data-testid="employee-select"
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value ? Number(e.target.value) : '')}
           disabled={disabled}

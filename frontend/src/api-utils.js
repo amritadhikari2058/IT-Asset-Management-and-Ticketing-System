@@ -58,8 +58,8 @@ export function fieldMsg(fieldErrors, name) {
 }
 
 /** Paginated GET helper returning {items, count, next, previous}. */
-export async function fetchPage(url) {
-  const r = await api.get(url);
+export async function fetchPage(url, options) {
+  const r = options ? await api.get(url, options) : await api.get(url);
   const d = r.data;
   if (Array.isArray(d)) return { items: d, count: d.length, next: null, previous: null };
   return { items: d.results ?? [], count: d.count, next: d.next, previous: d.previous };

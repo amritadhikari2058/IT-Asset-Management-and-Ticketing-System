@@ -21,6 +21,9 @@ vi.mock('./auth', () => ({ useAuth: (...a) => mockAuth(...a) }));
 
 import { AccessDenied } from './components';
 import { VendorsPage, VendorForm } from './vendors';
+import { LifecycleDashboard } from './lifecycle-dashboard';
+import { LifecycleCases } from './lifecycle-cases';
+import { LifecycleForm } from './lifecycle-form';
 import { ServicesCatalogue, ServiceRequestDetail } from './services';
 import { RulesList, RuleDetail, ApprovalDetail } from './workflow';
 import { ScheduledReports } from './scheduled-reports';
@@ -383,5 +386,54 @@ describe('Knowledge Base role-aware UI', () => {
     render(<KnowledgeBaseDetail id="1" />);
     await screen.findByText('Article published');
     expect(screen.queryByRole('button', { name: /Archive/ })).toBeNull();
+  });
+});
+
+describe('Lifecycle role-aware UI', () => {
+  const LIFECYCLE_DASHBOARD = {
+    onboarding_in_progress: 2, onboarding_due_7d: 0, onboarding_blocked: 0,
+    offboarding_in_progress: 1, offboarding_effective_7d: 0,
+    offboarding_unresolved_assets: 0, offboarding_awaiting_deactivation: 0,
+    transfers_in_progress: 0, overdue_tasks: 3, failed_automations: 0,
+  };
+
+  it('system_admin sees lifecycle dashboard', async () => {
+    authFor('system_admin');
+    mockGet.mockResolvedValueOnce({ data: LIFECYCLE_DASHBOARD });
+    render(<LifecycleDashboard />);
+    await screen.findByText('Management KPIs');
+  });
+
+  it('employee sees own lifecycle dashboard, not management KPIs', async () => {
+    authFor('employee');
+    mockGet.mockResolvedValueOnce({ data: { ...LIFECYCLE_DASHBOARD, onboarding_in_progress: 1 } });
+    render(<LifecycleDashboard />);
+    await screen.findByText('Your Lifecycle Case');
+    expect(screen.queryByText('Management KPIs')).toBeNull();
+  });
+
+  it('it_manager sees onboarding case list with Create Case button', async () => {
+    authFor('it_manager');
+    mockGet.mockResolvedValueOnce({ data: { results: [], count: 0, next: null, previous: null } });
+    render(<LifecycleCases caseType="onboarding" />);
+    await screen.findByText('Onboarding');
+    expect(screen.getByRole('link', { name: /Create Case/i }) || screen.getByText(/Create Case/i)).toBeTruthy();
+  });
+
+  it('employee sees no Create Case button on lifecycle list', async () => {
+    authFor('employee');
+    mockGet.mockResolvedValueOnce({ data: { results: [], count: 0, next: null, previous: null } });
+    render(<LifecycleCases caseType="onboarding" />);
+    await screen.findByText('No cases');
+    expect(screen.queryByRole('button', { name: /Create Case/ })).toBeNull();
+  });
+
+  it('employee cannot access case creation form', async () => {
+    authFor('employee');
+    mockGet.mockResolvedValueOnce(EMPTY_PAGE);
+    mockGet.mockResolvedValueOnce(EMPTY_PAGE);
+    mockGet.mockResolvedValueOnce(EMPTY_PAGE);
+    render(<LifecycleForm />);
+    await screen.findByText(/Employees cannot create lifecycle cases/);
   });
 });

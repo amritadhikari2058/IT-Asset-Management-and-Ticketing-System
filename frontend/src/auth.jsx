@@ -81,8 +81,41 @@ export function AuthProvider({ children }) {
   const canAccessAudit = isSystemAdmin;
   const canAccessRecycleBin = isSystemAdmin;
   const canPerformPermanentDeletion = isSystemAdmin;
+  const canViewLifecycle = isAdmin || isManagerOrAdmin || isStaff || isEmployee;
+  const canCreateLifecycleCase = isStaff;
+  const canManageLifecycleCase = isManagerOrAdmin;
+  const canManageLifecycleTemplates = isManagerOrAdmin;
+  const canManageLifecycleTasks = isStaff;
+  const canCompleteLifecycleCase = isManagerOrAdmin;
+  const canViewLifecycleDashboard = isAdmin || isManagerOrAdmin || isStaff || isEmployee;
+  const canViewProcurement = isStaff;
+  const canCreatePurchaseRequest = isStaff;
+  const canApprovePurchaseRequest = isManagerOrAdmin;
+  const canManageQuotations = isStaff;
+  const canSelectProcurementVendor = isManagerOrAdmin;
+  const canCreatePurchaseOrder = isManagerOrAdmin;
+  const canApprovePurchaseOrder = isManagerOrAdmin;
+  const canIssuePurchaseOrder = isManagerOrAdmin;
+  const canCreateGoodsReceipt = isStaff;
+  const canPostGoodsReceipt = isStaff;
+  const canRegisterProcurementAssets = isStaff;
+  const canViewProcurementReports = isManagerOrAdmin;
+  const canViewLicensing = isStaff || isEmployee; // My Software for employees
+  const canManageSoftwareProducts = isManagerOrAdmin;
+  const canManageLicenseAgreements = isManagerOrAdmin;
+  const canViewLicenseCosts = isManagerOrAdmin;
+  const canManageLicenseAllocations = isStaff;
+  const canManageLicenseInstallations = isStaff;
+  const canManageLicenseRenewals = isStaff;
+  const canApproveLicenseRenewals = isManagerOrAdmin;
+  const canViewLicenseSecrets = isSupportOrAbove;
+  const canRevealLicenseSecrets = isSystemAdmin;
+  const canManageLicenseDocuments = isStaff;
+  const canManageLicenseCompliance = isManagerOrAdmin;
+  const canViewLicenseReports = isManagerOrAdmin;
+  const canViewMySoftware = isEmployee || isStaff;
   return (
-    <AuthCtx.Provider value={{ access, user, profileLoading, login, logout, isStaff, isAdmin, canCreateTickets, refreshProfile: fetchProfile, role, isSuperuser, isSystemAdmin, isITManager, isITSupport, isEmployee, isManagerOrAdmin, isSupportOrAbove, canManageUsers, canManageVendors, canViewVendors, canManageServiceCatalogue, canApproveServiceRequests, canConfigureWorkflow, canApproveDisposals, canManageInventory, canAdjustInventory, canPublishKnowledgeBase, canManageScheduledReports, canAccessAudit, canAccessRecycleBin, canPerformPermanentDeletion }}>
+    <AuthCtx.Provider value={{ access, user, profileLoading, login, logout, isStaff, isAdmin, canCreateTickets, refreshProfile: fetchProfile, role, isSuperuser, isSystemAdmin, isITManager, isITSupport, isEmployee, isManagerOrAdmin, isSupportOrAbove, canManageUsers, canManageVendors, canViewVendors, canManageServiceCatalogue, canApproveServiceRequests, canConfigureWorkflow, canApproveDisposals, canManageInventory, canAdjustInventory, canPublishKnowledgeBase, canManageScheduledReports, canAccessAudit, canAccessRecycleBin, canPerformPermanentDeletion, canViewLifecycle, canCreateLifecycleCase, canManageLifecycleCase, canManageLifecycleTemplates, canManageLifecycleTasks, canCompleteLifecycleCase, canViewLifecycleDashboard, canViewProcurement, canCreatePurchaseRequest, canApprovePurchaseRequest, canManageQuotations, canSelectProcurementVendor, canCreatePurchaseOrder, canApprovePurchaseOrder, canIssuePurchaseOrder, canCreateGoodsReceipt, canPostGoodsReceipt, canRegisterProcurementAssets, canViewProcurementReports, canViewLicensing, canManageSoftwareProducts, canManageLicenseAgreements, canViewLicenseCosts, canManageLicenseAllocations, canManageLicenseInstallations, canManageLicenseRenewals, canApproveLicenseRenewals, canViewLicenseSecrets, canRevealLicenseSecrets, canManageLicenseDocuments, canManageLicenseCompliance, canViewLicenseReports, canViewMySoftware }}>
       {children}
     </AuthCtx.Provider>
   );

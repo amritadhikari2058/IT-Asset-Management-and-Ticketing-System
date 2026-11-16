@@ -349,9 +349,8 @@ class AssetViewSet(viewsets.ModelViewSet):
             qs = qs.filter(category_id=params["category"])
         if params.get("department"):
             qs = qs.filter(department_id=params["department"])
-        if params.get("status"):
-            qs = qs.filter(status=params["status"])
-        return _apply_asset_ordering(qs, params.get("ordering"))
+        if params.get("vendor"):
+            qs = qs.filter(vendor_id=params["vendor"])
 
     def perform_create(self, serializer):
         """Create the asset; optionally attach an uploaded file atomically.
