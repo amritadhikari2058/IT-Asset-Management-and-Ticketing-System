@@ -83,6 +83,12 @@ const NAV = [
   { hash: '#/procurement/requests', label: 'Purchase Requests', staffOnly: true },
   { hash: '#/procurement/orders', label: 'Purchase Orders', staffOnly: true },
   { hash: '#/procurement/receipts', label: 'Goods Receipts', staffOnly: true },
+  { hash: '#/procurement/invoices', label: 'Supplier Invoices', cap: 'canViewProcurement' },
+  { hash: '#/procurement/exceptions', label: 'Invoice Exceptions', cap: 'canViewProcurement' },
+  { hash: '#/procurement/returns', label: 'Vendor Returns', cap: 'canViewProcurement' },
+  { hash: '#/procurement/credit-notes', label: 'Vendor Credit Notes', cap: 'canViewProcurement' },
+  { hash: '#/procurement/financial-dashboard', label: 'Procurement Financial Dashboard', cap: 'canViewProcurementReports' },
+  { hash: '#/procurement/vendor-performance', label: 'Vendor Performance', cap: 'canViewProcurementReports' },
   { section: 'Reports' },  { hash: '#/reports/sla', label: 'SLA report', staffOnly: true },
   { hash: '#/reports/departments', label: 'Department reports', staffOnly: true },
   { hash: '#/reports/saved', label: 'Saved reports', staffOnly: false },
@@ -167,6 +173,15 @@ const TITLES = {
   '#/procurement/requests': 'Purchase Requests',
   '#/procurement/orders': 'Purchase Orders',
   '#/procurement/receipts': 'Goods Receipts',
+  '#/procurement/invoices': 'Supplier Invoices',
+  '#/procurement/invoices/new': 'New Supplier Invoice',
+  '#/procurement/exceptions': 'Invoice Exceptions',
+  '#/procurement/returns': 'Vendor Returns',
+  '#/procurement/returns/new': 'New Vendor Return',
+  '#/procurement/credit-notes': 'Vendor Credit Notes',
+  '#/procurement/credit-notes/new': 'New Vendor Credit Note',
+  '#/procurement/financial-dashboard': 'Procurement Financial Dashboard',
+  '#/procurement/vendor-performance': 'Vendor Performance',
   '#/procurement/assets': 'Asset registration',
   '#/procurement/reports': 'Procurement reports',
 };
@@ -215,6 +230,19 @@ function crumbs(hash) {
   if (h === '#/lifecycle/transfers') return ['Lifecycle', 'Transfers'];
   if (h === '#/lifecycle/new') return ['Lifecycle', 'New Case'];
   if (h.startsWith('#/lifecycle/') && h.match(/\/(\d+)$/)) return ['Lifecycle', 'Case'];
+  if (h === '#/procurement/invoices/new') return ['Procurement', 'Supplier Invoices', 'New Supplier Invoice'];
+  if ((m = h.match(/^#\/procurement\/invoices\/(\d+)\/match$/))) return ['Procurement', 'Supplier Invoices', 'Supplier Invoice', 'Matching'];
+  if ((m = h.match(/^#\/procurement\/invoices\/(\d+)$/))) return ['Procurement', 'Supplier Invoices', 'Supplier Invoice'];
+  if (h === '#/procurement/invoices') return ['Procurement', 'Supplier Invoices'];
+  if (h === '#/procurement/exceptions') return ['Procurement', 'Invoice Exceptions'];
+  if (h === '#/procurement/returns/new') return ['Procurement', 'Vendor Returns', 'New Vendor Return'];
+  if ((m = h.match(/^#\/procurement\/returns\/(\d+)$/))) return ['Procurement', 'Vendor Returns', 'Vendor Return'];
+  if (h === '#/procurement/returns') return ['Procurement', 'Vendor Returns'];
+  if (h === '#/procurement/credit-notes/new') return ['Procurement', 'Vendor Credit Notes', 'New Vendor Credit Note'];
+  if ((m = h.match(/^#\/procurement\/credit-notes\/(\d+)$/))) return ['Procurement', 'Vendor Credit Notes', 'Vendor Credit Note'];
+  if (h === '#/procurement/credit-notes') return ['Procurement', 'Vendor Credit Notes'];
+  if (h === '#/procurement/financial-dashboard') return ['Procurement', 'Financial Dashboard'];
+  if (h === '#/procurement/vendor-performance') return ['Procurement', 'Vendor Performance'];
   if (h === '#/procurement') return ['Procurement', 'Dashboard'];
   if (h.startsWith('#/procurement/requests')) return ['Procurement', 'Purchase Requests'];
   if (h.startsWith('#/procurement/orders')) return ['Procurement', 'Purchase Orders'];
@@ -322,8 +350,8 @@ function isActive(hash, h) {
 }
 
 function Shell() {
-  const { access, logout, user, profileLoading, isAdmin, isStaff, canManageScheduledReports, canViewVendors } = useAuth();
-  const caps = { isStaff, isAdmin, canManageScheduledReports, canViewVendors };
+  const { access, logout, user, profileLoading, isAdmin, isStaff, canManageScheduledReports, canViewVendors, canViewProcurement, canViewProcurementReports } = useAuth();
+  const caps = { isStaff, isAdmin, canManageScheduledReports, canViewVendors, canViewProcurement, canViewProcurementReports };
   const [hash, setHash] = useState(location.hash || '#/tickets');
   const [navOpen, setNavOpen] = useState(false);
   useEffect(() => {
