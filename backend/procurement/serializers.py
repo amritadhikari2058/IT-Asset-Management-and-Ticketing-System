@@ -3,7 +3,9 @@ from .models import (
     ProcurementSetting, PurchaseRequest, PurchaseRequestItem, PurchaseQuotation,
     PurchaseOrder, PurchaseOrderItem, GoodsReceipt, GoodsReceiptItem,
     ProcurementHistory, ProcurementAttachment, ProcurementAssetReceiptItem,
-    derive_discrepancy_status,
+    SupplierInvoice, SupplierInvoiceLine, InvoiceMatchResult, InvoiceException,
+    VendorReturn, VendorReturnLine, VendorCreditNote, VendorCreditNoteLine,
+    ProcurementFinancialHistory, derive_discrepancy_status,
 )
 from assets.serializers import VendorSerializer
 
@@ -178,22 +180,12 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 
 class ProcurementAttachmentSerializer(serializers.ModelSerializer):
     uploaded_by_name = serializers.CharField(
-        source="uploaded_by.email", read_only=True)
+        source="uploaded_by.email", read_only=True, allow_null=True)
+    download_url = serializers.SerializerMethodField()
     parent_type = serializers.SerializerMethodField()
 
-    class Meta:
-        model = ProcurementAttachment
-        fields = [
-            "id", "purchase_request", "quotation", "purchase_order",
-            "goods_receipt", "document_type", "uploaded_by",
-            "uploaded_by_name", "original_filename", "file", "content_type",
-            "size", "description", "checksum", "status", "parent_type",
-            "created_at", "updated_at",
-        ]
-        read_only_fields = [
-            "uploaded_by", "original_filename", "content_type", "size",
-            "checksum", "created_at", "updated_at",
-        ]
+    def get_download_url(self, obj):
+        return f"/api/procurement/attachments/{obj.pk}/download/"
 
     def get_parent_type(self, obj):
         if obj.purchase_request_id:
@@ -204,7 +196,21 @@ class ProcurementAttachmentSerializer(serializers.ModelSerializer):
             return "purchase_order"
         if obj.goods_receipt_id:
             return "goods_receipt"
+        if obj.supplier_invoice_id:
+            return "supplier_invoice"
+        if obj.vendor_return_id:
+            return "vendor_return"
+        if obj.credit_note_id:
+            return "credit_note"
         return None
+
+    class Meta:
+        model = ProcurementAttachment
+        fields = "__all__"
+        read_only_fields = [
+            "uploaded_by", "original_filename", "file", "content_type", "size",
+            "checksum", "status", "created_at", "updated_at",
+        ]
 
     def validate_file(self, f):
         from tickets.serializers import validate_attachment_file
@@ -212,12 +218,15 @@ class ProcurementAttachmentSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         parents = [
-            attrs.get("purchase_request"),
-            attrs.get("quotation"),
-            attrs.get("purchase_order"),
-            attrs.get("goods_receipt"),
+            attrs.get("purchase_request") or getattr(self.instance, "purchase_request_id", None),
+            attrs.get("quotation") or getattr(self.instance, "quotation_id", None),
+            attrs.get("purchase_order") or getattr(self.instance, "purchase_order_id", None),
+            attrs.get("goods_receipt") or getattr(self.instance, "goods_receipt_id", None),
+            attrs.get("supplier_invoice") or getattr(self.instance, "supplier_invoice_id", None),
+            attrs.get("vendor_return") or getattr(self.instance, "vendor_return_id", None),
+            attrs.get("credit_note") or getattr(self.instance, "credit_note_id", None),
         ]
-        if sum(1 for p in parents if p is not None) != 1:
+        if sum(1 for p in parents if p) != 1:
             raise serializers.ValidationError({
                 "parent": "Attach the file to exactly one procurement record.",
             })
@@ -226,14 +235,10 @@ class ProcurementAttachmentSerializer(serializers.ModelSerializer):
 
 class ProcurementAssetReceiptItemSerializer(serializers.ModelSerializer):
     asset_tag = serializers.CharField(source="asset.asset_tag", read_only=True)
-    po_number = serializers.CharField(
-        source="purchase_order.po_number", read_only=True)
-    gr_number = serializers.CharField(
-        source="goods_receipt.gr_number", read_only=True)
-    item_name = serializers.CharField(
-        source="purchase_order_item.item_name", read_only=True)
-    vendor_name = serializers.CharField(
-        source="vendor.name", read_only=True, allow_null=True)
+    po_number = serializers.CharField(source="purchase_order.po_number", read_only=True)
+    gr_number = serializers.CharField(source="goods_receipt.gr_number", read_only=True)
+    item_name = serializers.CharField(source="purchase_order_item.item_name", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True, allow_null=True)
 
     class Meta:
         model = ProcurementAssetReceiptItem
@@ -250,19 +255,227 @@ class RegisterProcurementAssetSerializer(serializers.Serializer):
     """Only values the backend cannot safely infer are accepted here."""
 
     asset_tag = serializers.CharField(max_length=50)
-    serial_number = serializers.CharField(
-        max_length=100, required=False, allow_blank=True, default="")
+    serial_number = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
     name = serializers.CharField(max_length=200)
-    model = serializers.CharField(
-        max_length=200, required=False, allow_blank=True, default="")
-    manufacturer = serializers.CharField(
-        max_length=200, required=False, allow_blank=True, default="")
-    location = serializers.CharField(
-        max_length=200, required=False, allow_blank=True, default="")
+    model = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+    manufacturer = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+    location = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
     department = serializers.IntegerField(required=False, allow_null=True)
     category = serializers.IntegerField(required=False, allow_null=True)
     warranty_expiry = serializers.DateField(required=False, allow_null=True)
-    purchase_cost = serializers.DecimalField(
-        max_digits=12, decimal_places=2, required=False, allow_null=True)
-    notes = serializers.CharField(
-        required=False, allow_blank=True, default="")
+    purchase_cost = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+# ---------------------------------------------------------------------------
+# P3: Supplier invoicing, matching, returns, credit notes, financial control
+# ---------------------------------------------------------------------------
+
+class SupplierInvoiceLineSerializer(serializers.ModelSerializer):
+    po_item_name = serializers.CharField(source="purchase_order_item.item_name", read_only=True, default=None)
+    goods_receipt_number = serializers.CharField(source="goods_receipt_item.goods_receipt.gr_number", read_only=True, default=None)
+    class Meta:
+        model = SupplierInvoiceLine
+        fields = "__all__"
+        read_only_fields = [
+            "accepted_quantity_snapshot", "line_subtotal", "line_total",
+            "matched_quantity", "quantity_variance", "price_variance",
+            "tax_variance", "total_variance", "match_status", "exception_reason",
+            "created_at", "updated_at",
+        ]
+
+
+class SupplierInvoiceLineCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SupplierInvoiceLine
+        fields = [
+            "invoice", "purchase_order_item", "goods_receipt_item", "description",
+            "invoiced_quantity", "unit_price", "discount_amount", "tax_rate", "tax_amount",
+            "freight_allocation", "other_charge_allocation",
+        ]
+
+
+class SupplierInvoiceListSerializer(serializers.ModelSerializer):
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True, default=None)
+    po_number = serializers.CharField(source="purchase_order.po_number", read_only=True, default=None)
+    created_by_name = serializers.CharField(source="created_by.email", read_only=True, default=None)
+    latest_match = serializers.SerializerMethodField()
+    def get_latest_match(self, obj):
+        m = getattr(obj, '_prefetched_objects_cache', {}).get('match_results')
+        if m is not None:
+            m = m[0] if m else None
+        else:
+            m = obj.match_results.order_by('-match_version', '-created_at').first()
+        if not m:
+            return None
+        return {"overall_status": m.overall_status, "match_version": m.match_version, "total_variance": str(m.total_variance)}
+    class Meta:
+        model = SupplierInvoice
+        fields = "__all__"
+
+
+class SupplierInvoiceDetailSerializer(serializers.ModelSerializer):
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True, default=None)
+    po_number = serializers.CharField(source="purchase_order.po_number", read_only=True, default=None)
+    created_by_name = serializers.CharField(source="created_by.email", read_only=True, default=None)
+    lines = SupplierInvoiceLineSerializer(many=True, read_only=True)
+    latest_match = serializers.SerializerMethodField()
+    def get_latest_match(self, obj):
+        m = obj.match_results.order_by('-match_version', '-created_at').first()
+        if not m:
+            return None
+        return InvoiceMatchResultSerializer(m).data
+    class Meta:
+        model = SupplierInvoice
+        fields = "__all__"
+
+
+class SupplierInvoiceCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SupplierInvoice
+        fields = [
+            "invoice_number", "vendor", "purchase_order", "invoice_date", "received_date",
+            "due_date", "currency", "discount_total", "freight_total", "other_charge_total",
+            "external_accounting_reference", "notes",
+        ]
+
+class SupplierInvoiceUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SupplierInvoice
+        fields = [
+            "invoice_number", "vendor", "purchase_order", "invoice_date", "received_date",
+            "due_date", "currency", "discount_total", "freight_total", "other_charge_total",
+            "external_accounting_reference", "notes",
+        ]
+
+
+class SupplierInvoiceActionSerializer(serializers.Serializer):
+    version = serializers.IntegerField(required=False)
+    reason = serializers.CharField(required=False, allow_blank=True)
+
+class SupplierInvoiceSubmitSerializer(SupplierInvoiceActionSerializer): pass
+class SupplierInvoiceMatchSerializer(SupplierInvoiceActionSerializer): pass
+class SupplierInvoiceApproveSerializer(SupplierInvoiceActionSerializer): pass
+class SupplierInvoiceRejectSerializer(SupplierInvoiceActionSerializer):
+    reason = serializers.CharField(required=True)
+class SupplierInvoiceReturnSerializer(SupplierInvoiceActionSerializer):
+    reason = serializers.CharField(required=True)
+class SupplierInvoiceHoldSerializer(SupplierInvoiceActionSerializer):
+    reason = serializers.CharField(required=True)
+class SupplierInvoicePaymentReadySerializer(SupplierInvoiceActionSerializer): pass
+class SupplierInvoiceMarkPaidSerializer(SupplierInvoiceActionSerializer):
+    payment_reference = serializers.CharField(required=True)
+    payment_date = serializers.DateField(required=True)
+class SupplierInvoiceCancelSerializer(SupplierInvoiceActionSerializer):
+    reason = serializers.CharField(required=True)
+class SupplierInvoiceCloseSerializer(SupplierInvoiceActionSerializer): pass
+
+
+class InvoiceMatchResultSerializer(serializers.ModelSerializer):
+    matched_by_name = serializers.CharField(source="matched_by.email", read_only=True, default=None)
+
+    class Meta:
+        model = InvoiceMatchResult
+        fields = "__all__"
+        read_only_fields = [f.name for f in InvoiceMatchResult._meta.fields]
+
+class InvoiceMatchDetailSerializer(InvoiceMatchResultSerializer): pass
+
+class InvoiceReadinessSerializer(serializers.Serializer):
+    ready = serializers.BooleanField()
+    blockers = serializers.ListField()
+    invoice_status = serializers.CharField(required=False)
+    payment_status = serializers.CharField(required=False)
+
+
+class InvoiceExceptionSerializer(serializers.ModelSerializer):
+    invoice_number = serializers.CharField(source="invoice.invoice_number", read_only=True, default=None)
+    class Meta:
+        model = InvoiceException
+        fields = "__all__"
+
+class InvoiceExceptionActionSerializer(serializers.Serializer):
+    version = serializers.IntegerField(required=False)
+    reason = serializers.CharField(required=False, allow_blank=True)
+
+class InvoiceExceptionAcceptSerializer(InvoiceExceptionActionSerializer):
+    reason = serializers.CharField(required=True)
+class InvoiceExceptionResolveSerializer(InvoiceExceptionActionSerializer):
+    reason = serializers.CharField(required=True)
+    resolution = serializers.CharField(required=False, allow_blank=True)
+
+
+class VendorReturnLineSerializer(serializers.ModelSerializer):
+    asset_tag = serializers.CharField(source="asset.asset_tag", read_only=True, default=None)
+    class Meta:
+        model = VendorReturnLine
+        fields = "__all__"
+
+class VendorReturnListSerializer(serializers.ModelSerializer):
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True, default=None)
+    po_number = serializers.CharField(source="purchase_order.po_number", read_only=True, default=None)
+    gr_number = serializers.CharField(source="goods_receipt.gr_number", read_only=True, default=None)
+    invoice_number = serializers.CharField(source="supplier_invoice.invoice_number", read_only=True, default=None)
+    class Meta:
+        model = VendorReturn
+        fields = "__all__"
+
+class VendorReturnDetailSerializer(VendorReturnListSerializer):
+    lines = VendorReturnLineSerializer(many=True, read_only=True)
+
+class VendorReturnCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VendorReturn
+        fields = [
+            "vendor", "purchase_order", "goods_receipt", "supplier_invoice",
+            "return_date", "reason", "return_method", "authorization_reference",
+            "shipping_reference", "expected_resolution", "replacement_expected", "replacement_due_date",
+        ]
+
+class VendorReturnActionSerializer(serializers.Serializer):
+    version = serializers.IntegerField(required=False)
+    reason = serializers.CharField(required=False, allow_blank=True)
+    authorization_reference = serializers.CharField(required=False, allow_blank=True)
+class VendorReturnShipSerializer(VendorReturnActionSerializer):
+    shipping_reference = serializers.CharField(required=False, allow_blank=True)
+class VendorReturnReplacementSerializer(VendorReturnActionSerializer): pass
+class VendorReturnCompleteSerializer(VendorReturnActionSerializer): pass
+
+
+class VendorCreditNoteLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VendorCreditNoteLine
+        fields = "__all__"
+
+class VendorCreditNoteListSerializer(serializers.ModelSerializer):
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True, default=None)
+    invoice_number = serializers.CharField(source="supplier_invoice.invoice_number", read_only=True, default=None)
+    return_number = serializers.CharField(source="vendor_return.return_number", read_only=True, default=None)
+    class Meta:
+        model = VendorCreditNote
+        fields = "__all__"
+
+class VendorCreditNoteDetailSerializer(VendorCreditNoteListSerializer):
+    lines = VendorCreditNoteLineSerializer(many=True, read_only=True)
+
+class VendorCreditNoteCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VendorCreditNote
+        fields = [
+            "credit_note_number", "vendor", "supplier_invoice", "vendor_return",
+            "credit_date", "currency", "subtotal", "tax_total", "total", "reason", "external_reference",
+        ]
+
+class VendorCreditNoteActionSerializer(serializers.Serializer):
+    version = serializers.IntegerField(required=False)
+    reason = serializers.CharField(required=False, allow_blank=True)
+class VendorCreditNoteApplySerializer(VendorCreditNoteActionSerializer): pass
+
+
+class ProcurementFinancialHistorySerializer(serializers.ModelSerializer):
+    actor_name = serializers.CharField(source="actor.email", read_only=True, default=None)
+
+    class Meta:
+        model = ProcurementFinancialHistory
+        fields = "__all__"
+        read_only_fields = [f.name for f in ProcurementFinancialHistory._meta.fields]

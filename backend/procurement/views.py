@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Count, F, Q, Sum
+from django.db.models import Avg, Count, F, Max, Q, Sum
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -26,7 +26,9 @@ from .models import (
     ProcurementSetting, PurchaseRequest, PurchaseRequestItem, PurchaseQuotation,
     PurchaseOrder, PurchaseOrderItem, GoodsReceipt, GoodsReceiptItem,
     ProcurementHistory, ProcurementAttachment, ProcurementAssetReceiptItem,
-    derive_discrepancy_status,
+    SupplierInvoice, SupplierInvoiceLine, InvoiceMatchResult, InvoiceException,
+    VendorReturn, VendorReturnLine, VendorCreditNote, VendorCreditNoteLine,
+    ProcurementFinancialHistory, derive_discrepancy_status,
 )
 from .serializers import (
     ProcurementSettingSerializer, PurchaseRequestSerializer,
@@ -35,7 +37,30 @@ from .serializers import (
     GoodsReceiptSerializer, GoodsReceiptItemSerializer,
     ProcurementAttachmentSerializer, ProcurementAssetReceiptItemSerializer,
     RegisterProcurementAssetSerializer,
+    SupplierInvoiceListSerializer, SupplierInvoiceDetailSerializer,
+    SupplierInvoiceCreateSerializer, SupplierInvoiceUpdateSerializer,
+    SupplierInvoiceActionSerializer, SupplierInvoiceSubmitSerializer,
+    SupplierInvoiceMatchSerializer, SupplierInvoiceApproveSerializer,
+    SupplierInvoiceRejectSerializer, SupplierInvoiceReturnSerializer,
+    SupplierInvoiceHoldSerializer, SupplierInvoicePaymentReadySerializer,
+    SupplierInvoiceMarkPaidSerializer, SupplierInvoiceCancelSerializer,
+    SupplierInvoiceCloseSerializer,
+    SupplierInvoiceLineSerializer, SupplierInvoiceLineCreateSerializer,
+    InvoiceMatchResultSerializer, InvoiceMatchDetailSerializer, InvoiceReadinessSerializer,
+    InvoiceExceptionSerializer, InvoiceExceptionActionSerializer,
+    InvoiceExceptionAcceptSerializer, InvoiceExceptionResolveSerializer,
+    VendorReturnListSerializer, VendorReturnDetailSerializer, VendorReturnCreateSerializer,
+    VendorReturnActionSerializer, VendorReturnShipSerializer,
+    VendorReturnReplacementSerializer, VendorReturnCompleteSerializer,
+    VendorReturnLineSerializer,
+    VendorCreditNoteListSerializer, VendorCreditNoteDetailSerializer,
+    VendorCreditNoteCreateSerializer, VendorCreditNoteActionSerializer,
+    VendorCreditNoteApplySerializer, VendorCreditNoteLineSerializer,
+    ProcurementFinancialHistorySerializer,
 )
+from .permissions import CanViewProcurement, CanManageProcurementFinance, is_system_admin as p3_is_system_admin
+from . import invoice_services, matching_services, return_services
+
 
 
 def is_staff(user):
@@ -1266,6 +1291,17 @@ class ProcurementAttachmentViewSet(viewsets.ModelViewSet):
         if not upload:
             from rest_framework.exceptions import ValidationError
             raise ValidationError({"file": "No attachment file was provided."})
+        # Enforce shared upload policy (extension/size/executable blocking).
+        try:
+            from tickets.serializers import validate_attachment_file
+            validate_attachment_file(upload)
+        except Exception as exc:
+            from rest_framework.exceptions import ValidationError
+            detail = getattr(exc, "detail", None)
+            if detail is None:
+                detail = str(exc)
+            raise ValidationError({"file": detail})
+        upload.seek(0)
         parent = (
             serializer.validated_data.get("purchase_request")
             or serializer.validated_data.get("purchase_order")
@@ -1288,6 +1324,7 @@ class ProcurementAttachmentViewSet(viewsets.ModelViewSet):
 
         serializer.save(
             uploaded_by=self.request.user,
+            file=upload,
             original_filename=upload.name,
             content_type=upload.content_type or "application/octet-stream",
             size=upload.size,
@@ -1527,3 +1564,1050 @@ def procurement_dashboard(request):
         "receipt_discrepancies": discrepancies,
         "receipt_count": len(receipt_rows),
     })
+
+
+# ---------------------------------------------------------------------------
+# P3: Supplier invoicing, matching, returns, credit notes, financial control
+# ---------------------------------------------------------------------------
+
+def _stale_response():
+    return Response({"detail": "The record was modified by another user. Refresh and retry."},
+                    status=status.HTTP_409_CONFLICT)
+
+
+class SupplierInvoiceViewSet(viewsets.ModelViewSet):
+    permission_classes = [CanViewProcurement]
+    pagination_class = ProcurementPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = SupplierInvoice.objects.select_related(
+            "vendor", "purchase_order", "created_by").prefetch_related("lines", "match_results")
+        if not (is_manager_or_admin(user) or user.is_superuser):
+            qs = qs.filter(created_by=user)
+        r = self.request
+        if _param(r, "status"): qs = qs.filter(status=_param(r, "status"))
+        if _param(r, "payment_status"): qs = qs.filter(payment_status=_param(r, "payment_status"))
+        if _as_int(_param(r, "vendor")): qs = qs.filter(vendor_id=_as_int(_param(r, "vendor")))
+        if _as_int(_param(r, "purchase_order")): qs = qs.filter(purchase_order_id=_as_int(_param(r, "purchase_order")))
+        if _param(r, "currency"): qs = qs.filter(currency__iexact=_param(r, "currency"))
+        if _param(r, "created_by"): qs = qs.filter(created_by_id=_as_int(_param(r, "created_by")))
+        if _param(r, "payment_hold") is not None:
+            b = _as_bool(_param(r, "payment_hold"))
+            if b is not None: qs = qs.filter(payment_hold=b)
+        qs = _apply_date_range(qs, r, "invoice_date", "invoice_date_from", "invoice_date_to")
+        qs = _apply_date_range(qs, r, "due_date", "due_date_from", "due_date_to")
+        if _as_bool(_param(r, "overdue")):
+            qs = qs.filter(due_date__lt=timezone.now().date()).exclude(payment_status__in=["paid", "cancelled"])
+        match_status = _param(r, "match_status")
+        if match_status:
+            latest = InvoiceMatchResult.objects.filter(invoice_id=F("invoice_id")).order_by("-match_version")
+            # approximate: filter invoices whose latest match overall_status matches
+            qs = qs.filter(match_results__overall_status=match_status).distinct()
+        qs = _apply_search(qs, r, ["invoice_number", "normalized_invoice_number", "vendor__name", "purchase_order__po_number"])
+        return _apply_ordering(qs, r, {"created_at", "invoice_date", "due_date", "grand_total", "status", "payment_status", "updated_at"}, ["-created_at"])
+
+    def get_serializer_class(self):
+        if self.action == "list": return SupplierInvoiceListSerializer
+        if self.action == "create": return SupplierInvoiceCreateSerializer
+        if self.action in ("update", "partial_update"): return SupplierInvoiceUpdateSerializer
+        return SupplierInvoiceDetailSerializer
+
+    def perform_create(self, serializer):
+        obj = serializer.save(created_by=self.request.user)
+        invoice_services.recalculate_invoice_totals(obj)
+        matching_services.record_financial_event(invoice=obj, actor=self.request.user, event_type="invoice_created", new_status=obj.status)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        instance = getattr(serializer, "instance", None)
+        if instance is None:
+            # fallback: latest created by user
+            instance = SupplierInvoice.objects.filter(created_by=request.user).order_by("-id").first()
+        headers = self.get_success_headers(serializer.data)
+        return Response(SupplierInvoiceDetailSerializer(instance, context=self.get_serializer_context()).data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def perform_update(self, serializer):
+        obj = self.get_object()
+        if obj.status not in ("draft",):
+            raise PermissionDenied("Only Draft invoices can be edited.")
+        serializer.save()
+        invoice_services.recalculate_invoice_totals(obj)
+
+    def destroy(self, request, *args, **kwargs):
+        return Response({"detail": "Supplier invoices cannot be hard-deleted."}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def _lock(self, pk):
+        return SupplierInvoice.objects.select_for_update().get(pk=pk)
+
+    @action(detail=True, methods=["post"])
+    def submit(self, request, pk=None):
+        ser = SupplierInvoiceSubmitSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            if inv.status != "draft":
+                return Response({"detail": "Only Draft invoices can be submitted."}, status=status.HTTP_409_CONFLICT)
+            invoice_services.recalculate_invoice_totals(inv)
+            errors = invoice_services.validate_invoice_for_submit(inv, actor=request.user)
+            if errors:
+                return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+            prev = inv.status
+            inv.status = "submitted"
+            inv.submitted_by = request.user
+            inv.submitted_at = timezone.now()
+            inv.save(update_fields=["status", "submitted_by", "submitted_at", "updated_at"])
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="invoice_submitted", previous_status=prev, new_status=inv.status)
+        return Response(SupplierInvoiceDetailSerializer(inv).data)
+
+    @action(detail=True, methods=["post"])
+    def match(self, request, pk=None):
+        ser = SupplierInvoiceMatchSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            if inv.status in ("cancelled", "closed", "paid", "rejected"):
+                return Response({"detail": "Invoice cannot be matched in its current state."}, status=status.HTTP_409_CONFLICT)
+            invoice_services.recalculate_invoice_totals(inv)
+            prev = inv.status
+            result = matching_services.run_three_way_match(inv, actor=request.user)
+            inv.refresh_from_db()
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="invoice_matched", previous_status=prev, new_status=inv.status, detail={"match_version": result.match_version, "overall_status": result.overall_status})
+        return Response({"match": InvoiceMatchResultSerializer(result).data, "invoice": SupplierInvoiceDetailSerializer(inv).data})
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = SupplierInvoiceApproveSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            if inv.status not in ("matched", "exception"):
+                return Response({"detail": "Invoice must be matched or have accepted exceptions before approval."}, status=status.HTTP_409_CONFLICT)
+            if inv.created_by_id == request.user.id:
+                return Response({"detail": "Creator cannot approve their own invoice."}, status=status.HTTP_403_FORBIDDEN)
+            readiness = matching_services.compute_payment_readiness(inv)
+            # allow approval when exceptions accepted? require no open blocking exceptions
+            open_blocking = InvoiceException.objects.filter(invoice=inv, status="open").exists()
+            if open_blocking:
+                return Response({"detail": "Unresolved exceptions block approval.", "readiness": readiness}, status=status.HTTP_409_CONFLICT)
+            if invoice_services.requires_system_admin_approval(inv) and not p3_is_system_admin(request.user):
+                return Response({"detail": "System Admin approval is required for this invoice."}, status=status.HTTP_403_FORBIDDEN)
+            prev = inv.status
+            inv.status = "approved"
+            inv.approved_by = request.user
+            inv.approved_at = timezone.now()
+            inv.reviewed_by = request.user
+            inv.reviewed_at = timezone.now()
+            inv.save(update_fields=["status", "approved_by", "approved_at", "reviewed_by", "reviewed_at", "updated_at"])
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="invoice_approved", previous_status=prev, new_status=inv.status)
+        return Response(SupplierInvoiceDetailSerializer(inv).data)
+
+    @action(detail=True, methods=["post"], url_path="reject")
+    def reject_invoice(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = SupplierInvoiceRejectSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            if inv.status in ("paid", "closed", "cancelled"):
+                return Response({"detail": "Invoice cannot be rejected in its current state."}, status=status.HTTP_409_CONFLICT)
+            prev = inv.status
+            inv.status = "rejected"
+            inv.payment_status = "cancelled"
+            inv.save(update_fields=["status", "payment_status", "updated_at"])
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="invoice_rejected", previous_status=prev, new_status=inv.status, detail={"reason": ser.validated_data["reason"]})
+        return Response(SupplierInvoiceDetailSerializer(inv).data)
+
+    @action(detail=True, methods=["post"], url_path="return-for-correction")
+    def return_for_correction(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = SupplierInvoiceReturnSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            if inv.status in ("paid", "closed", "cancelled"):
+                return Response({"detail": "Invoice cannot be returned in its current state."}, status=status.HTTP_409_CONFLICT)
+            prev = inv.status
+            inv.status = "draft"
+            inv.payment_status = "not_ready"
+            inv.save(update_fields=["status", "payment_status", "updated_at"])
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="invoice_returned", previous_status=prev, new_status=inv.status, detail={"reason": ser.validated_data["reason"]})
+        return Response(SupplierInvoiceDetailSerializer(inv).data)
+
+    @action(detail=True, methods=["post"], url_path="place-hold")
+    def place_hold(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = SupplierInvoiceHoldSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            inv.payment_hold = True
+            inv.payment_hold_reason = ser.validated_data["reason"]
+            inv.payment_status = "on_hold"
+            inv.save(update_fields=["payment_hold", "payment_hold_reason", "payment_status", "updated_at"])
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="payment_hold_added", detail={"reason": ser.validated_data["reason"]})
+        return Response(SupplierInvoiceDetailSerializer(inv).data)
+
+    @action(detail=True, methods=["post"], url_path="release-hold")
+    def release_hold(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = SupplierInvoiceActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            inv.payment_hold = False
+            inv.payment_hold_reason = ""
+            if inv.payment_status == "on_hold":
+                inv.payment_status = "not_ready" if inv.status != "payment_ready" else "ready"
+            inv.save(update_fields=["payment_hold", "payment_hold_reason", "payment_status", "updated_at"])
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="payment_hold_released")
+        return Response(SupplierInvoiceDetailSerializer(inv).data)
+
+    @action(detail=True, methods=["post"], url_path="mark-payment-ready")
+    def mark_payment_ready(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = SupplierInvoicePaymentReadySerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            readiness = matching_services.compute_payment_readiness(inv)
+            if not readiness["ready"]:
+                return Response({"detail": "Invoice is not ready for payment.", "readiness": readiness}, status=status.HTTP_409_CONFLICT)
+            if inv.status != "approved":
+                # require approved state per spec flow
+                return Response({"detail": "Invoice must be approved before marking payment ready."}, status=status.HTTP_409_CONFLICT)
+            prev = inv.status
+            inv.status = "payment_ready"
+            inv.payment_status = "ready"
+            inv.payment_ready_at = timezone.now()
+            inv.save(update_fields=["status", "payment_status", "payment_ready_at", "updated_at"])
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="payment_ready", previous_status=prev, new_status=inv.status)
+        return Response({"invoice": SupplierInvoiceDetailSerializer(inv).data, "readiness": readiness})
+
+    @action(detail=True, methods=["post"], url_path="mark-paid")
+    def mark_paid(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = SupplierInvoiceMarkPaidSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            if inv.status != "payment_ready" or inv.payment_status != "ready":
+                return Response({"detail": "Invoice must be payment-ready before recording payment."}, status=status.HTTP_409_CONFLICT)
+            prev = inv.status
+            inv.status = "paid"
+            inv.payment_status = "paid"
+            inv.external_accounting_reference = ser.validated_data["payment_reference"][:120]
+            inv.save(update_fields=["status", "payment_status", "external_accounting_reference", "updated_at"])
+            matching_services.record_financial_event(
+                invoice=inv, actor=request.user, event_type="payment_recorded",
+                previous_status=prev, new_status=inv.status,
+                detail={"payment_reference": ser.validated_data["payment_reference"], "payment_date": str(ser.validated_data["payment_date"])}
+            )
+        return Response(SupplierInvoiceDetailSerializer(inv).data)
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel_invoice(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = SupplierInvoiceCancelSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            if inv.status in ("paid", "closed"):
+                return Response({"detail": "Paid or closed invoices cannot be cancelled."}, status=status.HTTP_409_CONFLICT)
+            prev = inv.status
+            inv.status = "cancelled"
+            inv.payment_status = "cancelled"
+            inv.save(update_fields=["status", "payment_status", "updated_at"])
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="invoice_cancelled", previous_status=prev, new_status=inv.status, detail={"reason": ser.validated_data["reason"]})
+        return Response(SupplierInvoiceDetailSerializer(inv).data)
+
+    @action(detail=True, methods=["post"], url_path="close")
+    def close_invoice(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = SupplierInvoiceCloseSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            inv = self._lock(pk)
+            if _check_version(inv, ser.validated_data): return _stale_response()
+            if inv.status != "paid":
+                return Response({"detail": "Only paid invoices can be closed."}, status=status.HTTP_409_CONFLICT)
+            prev = inv.status
+            inv.status = "closed"
+            inv.save(update_fields=["status", "updated_at"])
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="invoice_closed", previous_status=prev, new_status=inv.status)
+        return Response(SupplierInvoiceDetailSerializer(inv).data)
+
+    @action(detail=True, methods=["get"], url_path="readiness")
+    def readiness(self, request, pk=None):
+        inv = self.get_object()
+        data = matching_services.compute_payment_readiness(inv)
+        data["invoice_status"] = inv.status
+        data["payment_status"] = inv.payment_status
+        return Response(data)
+
+    @action(detail=True, methods=["get"], url_path="match-history")
+    def match_history(self, request, pk=None):
+        inv = self.get_object()
+        qs = inv.match_results.all().order_by("-match_version", "-created_at")
+        return Response(InvoiceMatchResultSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=["get"], url_path="exceptions")
+    def invoice_exceptions(self, request, pk=None):
+        inv = self.get_object()
+        qs = inv.exceptions.all().order_by("-created_at")
+        return Response(InvoiceExceptionSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=["get"], url_path="history")
+    def financial_history(self, request, pk=None):
+        inv = self.get_object()
+        qs = inv.financial_history.all().order_by("created_at")
+        return Response(ProcurementFinancialHistorySerializer(qs, many=True).data)
+
+
+
+class SupplierInvoiceLineViewSet(viewsets.ModelViewSet):
+    permission_classes = [CanViewProcurement]
+    pagination_class = ProcurementPagination
+
+    def get_queryset(self):
+        qs = SupplierInvoiceLine.objects.select_related("invoice", "purchase_order_item", "goods_receipt_item")
+        inv = _as_int(_param(self.request, "invoice"))
+        if inv: qs = qs.filter(invoice_id=inv)
+        return qs.order_by("id")
+
+    def get_serializer_class(self):
+        if self.action in ("create", "update", "partial_update"): return SupplierInvoiceLineCreateSerializer
+        return SupplierInvoiceLineSerializer
+
+    def perform_create(self, serializer):
+        inv = serializer.validated_data["invoice"]
+        if inv.status != "draft":
+            raise PermissionDenied("Invoice lines can only be added while invoice is Draft.")
+        line = serializer.save()
+        invoice_services.recalculate_invoice_totals(inv)
+
+    def perform_update(self, serializer):
+        inv = self.get_object().invoice
+        if inv.status != "draft":
+            raise PermissionDenied("Invoice lines can only be edited while invoice is Draft.")
+        serializer.save()
+        invoice_services.recalculate_invoice_totals(inv)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        if obj.invoice.status != "draft":
+            return Response({"detail": "Invoice lines can only be deleted while invoice is Draft."}, status=status.HTTP_409_CONFLICT)
+        inv = obj.invoice
+        resp = super().destroy(request, *args, **kwargs)
+        invoice_services.recalculate_invoice_totals(inv)
+        return resp
+
+
+class InvoiceMatchResultViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [CanViewProcurement]
+    serializer_class = InvoiceMatchResultSerializer
+    pagination_class = ProcurementPagination
+
+    def get_queryset(self):
+        qs = InvoiceMatchResult.objects.select_related("invoice", "matched_by")
+        inv = _as_int(_param(self.request, "invoice"))
+        if inv: qs = qs.filter(invoice_id=inv)
+        return qs.order_by("-match_version", "-created_at")
+
+
+class InvoiceExceptionViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [CanViewProcurement]
+    serializer_class = InvoiceExceptionSerializer
+    pagination_class = ProcurementPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = InvoiceException.objects.select_related("invoice", "invoice_line", "assigned_to")
+        if not (is_manager_or_admin(user) or user.is_superuser):
+            qs = qs.filter(invoice__created_by=user)
+        r = self.request
+        if _param(r, "status"): qs = qs.filter(status=_param(r, "status"))
+        if _param(r, "severity"): qs = qs.filter(severity=_param(r, "severity"))
+        if _param(r, "exception_type"): qs = qs.filter(exception_type=_param(r, "exception_type"))
+        if _as_int(_param(r, "invoice")): qs = qs.filter(invoice_id=_as_int(_param(r, "invoice")))
+        qs = _apply_search(qs, r, ["invoice__invoice_number", "reason", "exception_type"])
+        return _apply_ordering(qs, r, {"created_at", "detected_at", "severity", "status"}, ["-created_at"])
+
+    @action(detail=True, methods=["post"], url_path="acknowledge")
+    def acknowledge(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = InvoiceExceptionActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            exc = InvoiceException.objects.select_for_update().select_related("invoice").get(pk=pk)
+            if exc.status != "open":
+                return Response({"detail": "Only open exceptions can be acknowledged."}, status=status.HTTP_409_CONFLICT)
+            exc.status = "acknowledged"
+            exc.acknowledged_at = timezone.now()
+            exc.acknowledged_by = request.user
+            exc.save(update_fields=["status", "acknowledged_at", "acknowledged_by", "updated_at"])
+        return Response(InvoiceExceptionSerializer(exc).data)
+
+    @action(detail=True, methods=["post"], url_path="accept")
+    def accept_exception(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = InvoiceExceptionAcceptSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            exc = InvoiceException.objects.select_for_update().select_related("invoice").get(pk=pk)
+            inv = exc.invoice
+            if inv.created_by_id == request.user.id:
+                return Response({"detail": "Creator cannot accept exceptions on their own invoice."}, status=status.HTTP_403_FORBIDDEN)
+            if exc.status in ("resolved", "rejected", "superseded"):
+                return Response({"detail": "Exception cannot be accepted in its current state."}, status=status.HTTP_409_CONFLICT)
+            if exc.severity in ("high", "critical") and not p3_is_system_admin(request.user):
+                return Response({"detail": "High/critical exceptions require System Admin acceptance."}, status=status.HTTP_403_FORBIDDEN)
+            exc.status = "accepted"
+            exc.resolution = "authorized_variance"
+            exc.resolution_note = ser.validated_data.get("reason", "")
+            exc.resolved_at = timezone.now()
+            exc.resolved_by = request.user
+            exc.save(update_fields=["status", "resolution", "resolution_note", "resolved_at", "resolved_by", "updated_at"])
+            # reflect on line/invoice match status if applicable
+            if exc.invoice_line_id:
+                line = exc.invoice_line
+                line.match_status = "exception_accepted"
+                line.save(update_fields=["match_status", "updated_at"])
+            inv.refresh_from_db()
+            if inv.status == "exception" and not inv.exceptions.filter(status="open").exists():
+                inv.status = "matched"
+                inv.save(update_fields=["status", "updated_at"])
+            matching_services.record_financial_event(invoice=inv, actor=request.user, event_type="match_exception_accepted", detail={"exception_id": exc.pk, "reason": ser.validated_data.get("reason", "")})
+        return Response(InvoiceExceptionSerializer(exc).data)
+
+    @action(detail=True, methods=["post"], url_path="resolve")
+    def resolve_exception(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = InvoiceExceptionResolveSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            exc = InvoiceException.objects.select_for_update().select_related("invoice").get(pk=pk)
+            if exc.status in ("resolved", "rejected", "superseded"):
+                return Response({"detail": "Exception already closed."}, status=status.HTTP_409_CONFLICT)
+            exc.status = "resolved"
+            exc.resolution = ser.validated_data.get("resolution") or "other"
+            exc.resolution_note = ser.validated_data.get("reason", "")
+            exc.resolved_at = timezone.now()
+            exc.resolved_by = request.user
+            exc.save(update_fields=["status", "resolution", "resolution_note", "resolved_at", "resolved_by", "updated_at"])
+        return Response(InvoiceExceptionSerializer(exc).data)
+
+    @action(detail=True, methods=["post"], url_path="reject")
+    def reject_exception(self, request, pk=None):
+        if not is_manager_or_admin(request.user):
+            return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = InvoiceExceptionActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            exc = InvoiceException.objects.select_for_update().get(pk=pk)
+            if exc.status in ("resolved", "rejected", "superseded"):
+                return Response({"detail": "Exception already closed."}, status=status.HTTP_409_CONFLICT)
+            exc.status = "rejected"
+            exc.resolution = "rejected"
+            exc.resolution_note = ser.validated_data.get("reason", "")
+            exc.resolved_at = timezone.now()
+            exc.resolved_by = request.user
+            exc.save(update_fields=["status", "resolution", "resolution_note", "resolved_at", "resolved_by", "updated_at"])
+        return Response(InvoiceExceptionSerializer(exc).data)
+
+
+
+class VendorReturnViewSet(viewsets.ModelViewSet):
+    permission_classes = [CanViewProcurement]
+    pagination_class = ProcurementPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = VendorReturn.objects.select_related(
+            "vendor", "purchase_order", "goods_receipt", "supplier_invoice", "created_by"
+        ).prefetch_related("lines")
+        if not (is_manager_or_admin(user) or user.is_superuser):
+            qs = qs.filter(created_by=user)
+        r = self.request
+        if _param(r, "status"): qs = qs.filter(status=_param(r, "status"))
+        if _as_int(_param(r, "vendor")): qs = qs.filter(vendor_id=_as_int(_param(r, "vendor")))
+        if _as_int(_param(r, "purchase_order")): qs = qs.filter(purchase_order_id=_as_int(_param(r, "purchase_order")))
+        if _as_int(_param(r, "goods_receipt")): qs = qs.filter(goods_receipt_id=_as_int(_param(r, "goods_receipt")))
+        if _as_int(_param(r, "supplier_invoice")): qs = qs.filter(supplier_invoice_id=_as_int(_param(r, "supplier_invoice")))
+        if _param(r, "reason"): qs = qs.filter(reason=_param(r, "reason"))
+        if _param(r, "return_method"): qs = qs.filter(return_method=_param(r, "return_method"))
+        rep = _as_bool(_param(r, "replacement_expected"))
+        if rep is not None: qs = qs.filter(replacement_expected=rep)
+        qs = _apply_date_range(qs, r, "return_date", "return_date_from", "return_date_to")
+        qs = _apply_search(qs, r, ["return_number", "vendor__name", "purchase_order__po_number", "goods_receipt__gr_number", "supplier_invoice__invoice_number", "authorization_reference", "shipping_reference"])
+        return _apply_ordering(qs, r, {"created_at", "return_date", "status", "updated_at"}, ["-created_at"])
+
+    def get_serializer_class(self):
+        if self.action == "list": return VendorReturnListSerializer
+        if self.action == "create": return VendorReturnCreateSerializer
+        return VendorReturnDetailSerializer
+
+    def perform_create(self, serializer):
+        obj = serializer.save(created_by=self.request.user)
+        matching_services.record_financial_event(vendor_return=obj, actor=self.request.user, event_type="return_created", new_status=obj.status)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        instance = serializer.instance
+        headers = self.get_success_headers(serializer.data)
+        return Response(VendorReturnDetailSerializer(instance, context=self.get_serializer_context()).data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        if obj.status != "draft":
+            return Response({"detail": "Only draft returns can be edited."}, status=status.HTTP_409_CONFLICT)
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        if obj.status != "draft":
+            return Response({"detail": "Returns cannot be deleted after submission."}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+        return Response({"detail": "Hard delete is not allowed."}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def _lock(self, pk): return VendorReturn.objects.select_for_update().get(pk=pk)
+
+    @action(detail=True, methods=["post"])
+    def submit(self, request, pk=None):
+        ser = VendorReturnActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            vr = self._lock(pk)
+            if _check_version(vr, ser.validated_data): return _stale_response()
+            if vr.status != "draft": return Response({"detail": "Only draft returns can be submitted."}, status=status.HTTP_409_CONFLICT)
+            if not vr.lines.exists(): return Response({"detail": "At least one return line is required."}, status=status.HTTP_400_BAD_REQUEST)
+            prev = vr.status
+            vr.status = "pending_approval"
+            vr.save(update_fields=["status", "updated_at"])
+            matching_services.record_financial_event(vendor_return=vr, actor=request.user, event_type="return_created", previous_status=prev, new_status=vr.status, detail={"action":"submitted"})
+        return Response(VendorReturnDetailSerializer(vr).data)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        if not is_manager_or_admin(request.user): return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = VendorReturnActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            vr = self._lock(pk)
+            if _check_version(vr, ser.validated_data): return _stale_response()
+            if vr.status != "pending_approval": return Response({"detail": "Return is not pending approval."}, status=status.HTTP_409_CONFLICT)
+            if vr.created_by_id == request.user.id and not p3_is_system_admin(request.user):
+                return Response({"detail": "Creator cannot approve their own return."}, status=status.HTTP_403_FORBIDDEN)
+            prev = vr.status
+            vr.status = "approved"
+            vr.approved_by = request.user
+            vr.approved_at = timezone.now()
+            if ser.validated_data.get("authorization_reference"):
+                vr.authorization_reference = ser.validated_data["authorization_reference"]
+            vr.save(update_fields=["status", "approved_by", "approved_at", "authorization_reference", "updated_at"])
+            matching_services.record_financial_event(vendor_return=vr, actor=request.user, event_type="return_approved", previous_status=prev, new_status=vr.status)
+        return Response(VendorReturnDetailSerializer(vr).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        if not is_manager_or_admin(request.user): return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = VendorReturnActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            vr = self._lock(pk)
+            if _check_version(vr, ser.validated_data): return _stale_response()
+            if vr.status not in ("pending_approval", "approved"):
+                return Response({"detail": "Return cannot be rejected in current state."}, status=status.HTTP_409_CONFLICT)
+            prev = vr.status
+            vr.status = "rejected"
+            vr.save(update_fields=["status", "updated_at"])
+            matching_services.record_financial_event(vendor_return=vr, actor=request.user, event_type="return_approved", previous_status=prev, new_status=vr.status, detail={"rejected": True, "reason": ser.validated_data.get("reason", "")})
+        return Response(VendorReturnDetailSerializer(vr).data)
+
+    @action(detail=True, methods=["post"])
+    def ship(self, request, pk=None):
+        if not is_manager_or_admin(request.user): return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = VendorReturnShipSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            vr = self._lock(pk)
+            if _check_version(vr, ser.validated_data): return _stale_response()
+            if vr.status != "approved": return Response({"detail": "Only approved returns can be shipped."}, status=status.HTTP_409_CONFLICT)
+            prev = vr.status
+            vr.status = "shipped"
+            vr.shipped_by = request.user
+            vr.shipped_at = timezone.now()
+            if ser.validated_data.get("shipping_reference"):
+                vr.shipping_reference = ser.validated_data["shipping_reference"]
+            vr.save(update_fields=["status", "shipped_by", "shipped_at", "shipping_reference", "updated_at"])
+            # reverse stock / cancel pending asset receipt items as appropriate (backend-controlled)
+            for line in vr.lines.select_related("purchase_order_item__stock_item", "goods_receipt_item").all():
+                return_services.reverse_stock_for_return_line(line, request.user)
+                return_services.cancel_pending_asset_receipt_items_for_return_line(line)
+            matching_services.record_financial_event(vendor_return=vr, actor=request.user, event_type="return_shipped", previous_status=prev, new_status=vr.status)
+        return Response(VendorReturnDetailSerializer(vr).data)
+
+    @action(detail=True, methods=["post"], url_path="record-replacement")
+    def record_replacement(self, request, pk=None):
+        if not is_manager_or_admin(request.user): return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = VendorReturnReplacementSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            vr = self._lock(pk)
+            if _check_version(vr, ser.validated_data): return _stale_response()
+            if vr.status not in ("shipped", "partially_resolved"):
+                return Response({"detail": "Return must be shipped before recording replacement."}, status=status.HTTP_409_CONFLICT)
+            prev = vr.status
+            vr.status = "partially_resolved"
+            vr.save(update_fields=["status", "updated_at"])
+            matching_services.record_financial_event(vendor_return=vr, actor=request.user, event_type="replacement_received", previous_status=prev, new_status=vr.status)
+        return Response(VendorReturnDetailSerializer(vr).data)
+
+    @action(detail=True, methods=["post"])
+    def complete(self, request, pk=None):
+        if not is_manager_or_admin(request.user): return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = VendorReturnCompleteSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            vr = self._lock(pk)
+            if _check_version(vr, ser.validated_data): return _stale_response()
+            if vr.status not in ("shipped", "partially_resolved", "approved"):
+                return Response({"detail": "Return cannot be completed in current state."}, status=status.HTTP_409_CONFLICT)
+            prev = vr.status
+            vr.status = "resolved"
+            vr.completed_by = request.user
+            vr.completed_at = timezone.now()
+            vr.save(update_fields=["status", "completed_by", "completed_at", "updated_at"])
+            matching_services.record_financial_event(vendor_return=vr, actor=request.user, event_type="return_completed", previous_status=prev, new_status=vr.status)
+        return Response(VendorReturnDetailSerializer(vr).data)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        if not is_manager_or_admin(request.user): return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = VendorReturnActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            vr = self._lock(pk)
+            if _check_version(vr, ser.validated_data): return _stale_response()
+            if vr.status in ("resolved", "shipped"):
+                return Response({"detail": "Shipped/resolved returns cannot be cancelled."}, status=status.HTTP_409_CONFLICT)
+            prev = vr.status
+            vr.status = "cancelled"
+            vr.save(update_fields=["status", "updated_at"])
+            matching_services.record_financial_event(vendor_return=vr, actor=request.user, event_type="return_completed", previous_status=prev, new_status=vr.status, detail={"cancelled": True, "reason": ser.validated_data.get("reason", "")})
+        return Response(VendorReturnDetailSerializer(vr).data)
+
+
+class VendorReturnLineViewSet(viewsets.ModelViewSet):
+    permission_classes = [CanViewProcurement]
+    serializer_class = VendorReturnLineSerializer
+    pagination_class = ProcurementPagination
+
+    def get_queryset(self):
+        qs = VendorReturnLine.objects.select_related("vendor_return", "goods_receipt_item", "purchase_order_item", "asset")
+        vr = _as_int(_param(self.request, "vendor_return"))
+        if vr: qs = qs.filter(vendor_return_id=vr)
+        return qs.order_by("id")
+
+    def perform_create(self, serializer):
+        vr = serializer.validated_data["vendor_return"]
+        if vr.status != "draft":
+            raise PermissionDenied("Return lines can only be added while return is Draft.")
+        line = serializer.save()
+        # basic eligibility check
+        eligible = return_services.eligible_return_quantity(line.goods_receipt_item)
+        if int(line.quantity) > eligible and not p3_is_system_admin(self.request.user):
+            # rollback by raising - in perform_create transaction managed by viewset? DRF saves outside explicit tx in default flow, so delete
+            line.delete()
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"quantity": "Return quantity exceeds eligible quantity."})
+
+
+class VendorCreditNoteViewSet(viewsets.ModelViewSet):
+    permission_classes = [CanViewProcurement]
+    pagination_class = ProcurementPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = VendorCreditNote.objects.select_related(
+            "vendor", "supplier_invoice", "vendor_return", "created_by"
+        ).prefetch_related("lines")
+        if not (is_manager_or_admin(user) or user.is_superuser):
+            qs = qs.filter(created_by=user)
+        r = self.request
+        if _param(r, "status"): qs = qs.filter(status=_param(r, "status"))
+        if _as_int(_param(r, "vendor")): qs = qs.filter(vendor_id=_as_int(_param(r, "vendor")))
+        if _as_int(_param(r, "supplier_invoice")): qs = qs.filter(supplier_invoice_id=_as_int(_param(r, "supplier_invoice")))
+        if _as_int(_param(r, "vendor_return")): qs = qs.filter(vendor_return_id=_as_int(_param(r, "vendor_return")))
+        if _param(r, "currency"): qs = qs.filter(currency__iexact=_param(r, "currency"))
+        qs = _apply_date_range(qs, r, "credit_date", "credit_date_from", "credit_date_to")
+        qs = _apply_search(qs, r, ["credit_note_number", "vendor__name", "supplier_invoice__invoice_number", "vendor_return__return_number", "external_reference"])
+        return _apply_ordering(qs, r, {"created_at", "credit_date", "total", "status", "updated_at"}, ["-created_at"])
+
+    def get_serializer_class(self):
+        if self.action == "list": return VendorCreditNoteListSerializer
+        if self.action == "create": return VendorCreditNoteCreateSerializer
+        return VendorCreditNoteDetailSerializer
+
+    def perform_create(self, serializer):
+        obj = serializer.save(created_by=self.request.user)
+        matching_services.record_financial_event(credit_note=obj, invoice=obj.supplier_invoice, actor=self.request.user, event_type="credit_created", new_status=obj.status)
+
+    def update(self, request, *args, **kwargs):
+        obj = self.get_object()
+        if obj.status != "draft":
+            return Response({"detail": "Only draft credit notes can be edited."}, status=status.HTTP_409_CONFLICT)
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        return Response({"detail": "Credit notes cannot be hard-deleted after submission."}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def _lock(self, pk): return VendorCreditNote.objects.select_for_update().get(pk=pk)
+
+    @action(detail=True, methods=["post"])
+    def submit(self, request, pk=None):
+        ser = VendorCreditNoteActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            cn = self._lock(pk)
+            if _check_version(cn, ser.validated_data): return _stale_response()
+            if cn.status != "draft": return Response({"detail": "Only draft credit notes can be submitted."}, status=status.HTTP_409_CONFLICT)
+            inv = cn.supplier_invoice
+            if cn.vendor_id != inv.vendor_id: return Response({"vendor": "Vendor must match invoice."}, status=status.HTTP_400_BAD_REQUEST)
+            if cn.currency != inv.currency: return Response({"currency": "Currency must match invoice."}, status=status.HTTP_400_BAD_REQUEST)
+            if (cn.total or 0) < 0: return Response({"total": "Total cannot be negative."}, status=status.HTTP_400_BAD_REQUEST)
+            prev = cn.status
+            cn.status = "submitted"
+            cn.save(update_fields=["status", "updated_at"])
+            matching_services.record_financial_event(credit_note=cn, invoice=inv, actor=request.user, event_type="credit_created", previous_status=prev, new_status=cn.status, detail={"submitted": True})
+        return Response(VendorCreditNoteDetailSerializer(cn).data)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        if not is_manager_or_admin(request.user): return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = VendorCreditNoteActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            cn = self._lock(pk)
+            if _check_version(cn, ser.validated_data): return _stale_response()
+            if cn.status != "submitted": return Response({"detail": "Only submitted credit notes can be approved."}, status=status.HTTP_409_CONFLICT)
+            if cn.created_by_id == request.user.id and not p3_is_system_admin(request.user):
+                return Response({"detail": "Creator cannot approve their own credit note."}, status=status.HTTP_403_FORBIDDEN)
+            prev = cn.status
+            cn.status = "approved"
+            cn.approved_by = request.user
+            cn.approved_at = timezone.now()
+            cn.save(update_fields=["status", "approved_by", "approved_at", "updated_at"])
+            matching_services.record_financial_event(credit_note=cn, invoice=cn.supplier_invoice, actor=request.user, event_type="credit_approved", previous_status=prev, new_status=cn.status)
+        return Response(VendorCreditNoteDetailSerializer(cn).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        if not is_manager_or_admin(request.user): return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = VendorCreditNoteActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            cn = self._lock(pk)
+            if _check_version(cn, ser.validated_data): return _stale_response()
+            if cn.status in ("applied", "cancelled"): return Response({"detail": "Credit note cannot be rejected."}, status=status.HTTP_409_CONFLICT)
+            prev = cn.status
+            cn.status = "rejected"
+            cn.save(update_fields=["status", "updated_at"])
+        return Response(VendorCreditNoteDetailSerializer(cn).data)
+
+    @action(detail=True, methods=["post"])
+    def apply(self, request, pk=None):
+        if not is_manager_or_admin(request.user): return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = VendorCreditNoteApplySerializer(data=request.data); ser.is_valid(raise_exception=True)
+        from decimal import Decimal
+        with transaction.atomic():
+            cn = self._lock(pk)
+            if _check_version(cn, ser.validated_data): return _stale_response()
+            if cn.status != "approved": return Response({"detail": "Only approved credit notes can be applied."}, status=status.HTTP_409_CONFLICT)
+            inv = SupplierInvoice.objects.select_for_update().get(pk=cn.supplier_invoice_id)
+            # over-credit check: total applied credits cannot exceed invoice grand total
+            applied = VendorCreditNote.objects.filter(
+                supplier_invoice=inv, status="applied"
+            ).exclude(pk=cn.pk).aggregate(s=Sum("applied_amount")).get("s") or Decimal("0")
+            remaining = (inv.grand_total or Decimal("0")) - Decimal(str(applied))
+            if (cn.total or Decimal("0")) > remaining:
+                return Response({"detail": "Credit amount exceeds remaining invoice balance."}, status=status.HTTP_400_BAD_REQUEST)
+            prev = cn.status
+            cn.status = "applied"
+            cn.applied_amount = cn.total
+            cn.applied_at = timezone.now()
+            cn.save(update_fields=["status", "applied_amount", "applied_at", "updated_at"])
+            matching_services.record_financial_event(credit_note=cn, invoice=inv, actor=request.user, event_type="credit_applied", previous_status=prev, new_status=cn.status, detail={"applied_amount": str(cn.applied_amount)})
+        return Response(VendorCreditNoteDetailSerializer(cn).data)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        if not is_manager_or_admin(request.user): return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        ser = VendorCreditNoteActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+        with transaction.atomic():
+            cn = self._lock(pk)
+            if _check_version(cn, ser.validated_data): return _stale_response()
+            if cn.status == "applied": return Response({"detail": "Applied credit notes cannot be cancelled."}, status=status.HTTP_409_CONFLICT)
+            prev = cn.status
+            cn.status = "cancelled"
+            cn.save(update_fields=["status", "updated_at"])
+        return Response(VendorCreditNoteDetailSerializer(cn).data)
+
+
+class VendorCreditNoteLineViewSet(viewsets.ModelViewSet):
+    permission_classes = [CanViewProcurement]
+    serializer_class = VendorCreditNoteLineSerializer
+    pagination_class = ProcurementPagination
+
+    def get_queryset(self):
+        qs = VendorCreditNoteLine.objects.select_related("credit_note", "supplier_invoice_line")
+        cn = _as_int(_param(self.request, "credit_note"))
+        if cn: qs = qs.filter(credit_note_id=cn)
+        return qs.order_by("id")
+
+
+class ProcurementFinancialHistoryViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [CanViewProcurement]
+    serializer_class = ProcurementFinancialHistorySerializer
+    pagination_class = ProcurementPagination
+
+    def get_queryset(self):
+        if not is_manager_or_admin(self.request.user):
+            return ProcurementFinancialHistory.objects.none()
+        qs = ProcurementFinancialHistory.objects.select_related("actor", "invoice", "vendor_return", "credit_note")
+        r = self.request
+        if _as_int(_param(r, "invoice")): qs = qs.filter(invoice_id=_as_int(_param(r, "invoice")))
+        if _as_int(_param(r, "vendor_return")): qs = qs.filter(vendor_return_id=_as_int(_param(r, "vendor_return")))
+        if _as_int(_param(r, "credit_note")): qs = qs.filter(credit_note_id=_as_int(_param(r, "credit_note")))
+        if _param(r, "event_type"): qs = qs.filter(event_type=_param(r, "event_type"))
+        if _as_int(_param(r, "actor")): qs = qs.filter(actor_id=_as_int(_param(r, "actor")))
+        qs = _apply_date_range(qs, r, "created_at", "date_from", "date_to")
+        return _apply_ordering(qs, r, {"created_at"}, ["created_at"])
+
+
+@api_view(["GET"])
+@permission_classes([CanViewProcurement])
+def procurement_financial_dashboard(request):
+    if not is_manager_or_admin(request.user):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+    today = timezone.now().date()
+    invoices = SupplierInvoice.objects.all()
+    cards = {
+        "draft": invoices.filter(status="draft").count(),
+        "submitted": invoices.filter(status="submitted").count(),
+        "awaiting_match": invoices.filter(status__in=["submitted", "matching"]).count(),
+        "matched": invoices.filter(status__in=["matched", "approved", "payment_ready"]).count(),
+        "match_exceptions": invoices.filter(status="exception").count(),
+        "approval_pending": invoices.filter(status__in=["matched", "exception"]).count(),
+        "payment_holds": invoices.filter(payment_hold=True).count(),
+        "payment_ready": invoices.filter(status="payment_ready", payment_status="ready").count(),
+        "paid_in_period": invoices.filter(status__in=["paid", "closed"], payment_status="paid", updated_at__date__gte=today.replace(day=1)).count(),
+        "overdue": invoices.filter(due_date__lt=today).exclude(status__in=["paid", "closed", "cancelled"]).count(),
+        "open_returns": VendorReturn.objects.filter(status__in=["draft", "pending_approval", "approved", "shipped", "partially_resolved"]).count(),
+        "pending_credits": VendorCreditNote.objects.filter(status__in=["draft", "submitted", "approved"]).count(),
+        "unresolved_high_critical": InvoiceException.objects.filter(status__in=["open", "acknowledged"], severity__in=["high", "critical"]).count(),
+        "match_rate": 0,
+        "exception_rate": 0,
+        "average_match_time": None,
+    }
+    totals = list(invoices.values("currency").annotate(
+        invoiced=Sum("grand_total"),
+        approved=Sum("grand_total", filter=Q(status__in=["approved", "payment_ready", "paid", "closed"])),
+        payment_ready=Sum("grand_total", filter=Q(status="payment_ready")),
+        paid=Sum("grand_total", filter=Q(status__in=["paid", "closed"])),
+        exception_value=Sum("variance_total"),
+    ).order_by("currency"))
+    credit_totals = {r["currency"]: r for r in VendorCreditNote.objects.exclude(status__in=["rejected", "cancelled"]).values("currency").annotate(credit_note_total=Sum("total"))}
+    for row in totals:
+        cur = row.get("currency")
+        row["credit_note_total"] = (credit_totals.get(cur, {}) or {}).get("credit_note_total") or 0
+        row["outstanding"] = (row.get("invoiced") or 0) - (row.get("paid") or 0) - (row.get("credit_note_total") or 0)
+    recent = list(invoices.select_related("vendor").order_by("-created_at")[:10].values("id", "invoice_number", "vendor__name", "status", "grand_total", "currency"))
+    for r in recent: r["vendor_name"] = r.pop("vendor__name", None)
+    crit = list(InvoiceException.objects.filter(status__in=["open", "acknowledged"], severity__in=["high", "critical"]).select_related("invoice").order_by("-created_at")[:10].values("id", "invoice_id", "invoice__invoice_number", "exception_type", "severity", "status"))
+    for r in crit: r["invoice_number"] = r.pop("invoice__invoice_number", None)
+    pay_ready = list(invoices.filter(status="payment_ready").select_related("vendor").order_by("due_date")[:10].values("id", "invoice_number", "vendor__name", "grand_total", "currency"))
+    for r in pay_ready: r["vendor_name"] = r.pop("vendor__name", None)
+    overdue = list(invoices.filter(due_date__lt=today).exclude(status__in=["paid", "closed", "cancelled"]).select_related("vendor").order_by("due_date")[:10].values("id", "invoice_number", "vendor__name", "due_date", "grand_total", "currency"))
+    for r in overdue: r["vendor_name"] = r.pop("vendor__name", None)
+    open_returns = list(VendorReturn.objects.filter(status__in=["draft", "pending_approval", "approved", "shipped", "partially_resolved"]).select_related("vendor").order_by("-created_at")[:10].values("id", "return_number", "vendor__name", "status"))
+    for r in open_returns: r["vendor_name"] = r.pop("vendor__name", None)
+    credits_wait = list(VendorCreditNote.objects.filter(status__in=["draft", "submitted", "approved"]).select_related("vendor").order_by("-created_at")[:10].values("id", "credit_note_number", "vendor__name", "status", "total", "currency"))
+    for r in credits_wait: r["vendor_name"] = r.pop("vendor__name", None)
+    return Response({
+        "cards": cards,
+        "totals_by_currency": totals,
+        "recent_invoices": recent,
+        "critical_exceptions": crit,
+        "payment_ready_invoices": pay_ready,
+        "overdue_invoices": overdue,
+        "open_vendor_returns": open_returns,
+        "credits_awaiting_application": credits_wait,
+    })
+
+
+
+@api_view(["GET"])
+@permission_classes([CanViewProcurement])
+def report_invoice_aging(request):
+    if not is_manager_or_admin(request.user):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+    today = timezone.now().date()
+    qs = SupplierInvoice.objects.exclude(status__in=["paid", "closed", "cancelled"]).select_related("vendor")
+    buckets = {"current": [], "1_30": [], "31_60": [], "61_90": [], "over_90": []}
+    for inv in qs:
+        if not inv.due_date or inv.due_date >= today:
+            buckets["current"].append(inv)
+            continue
+        days = (today - inv.due_date).days
+        if days <= 30: buckets["1_30"].append(inv)
+        elif days <= 60: buckets["31_60"].append(inv)
+        elif days <= 90: buckets["61_90"].append(inv)
+        else: buckets["over_90"].append(inv)
+    def ser(lst):
+        return [{"id": i.id, "invoice_number": i.invoice_number, "vendor_name": getattr(i.vendor, 'name', None), "due_date": i.due_date, "grand_total": str(i.grand_total), "currency": i.currency, "status": i.status} for i in lst]
+    return Response({k: ser(v) for k, v in buckets.items()})
+
+
+@api_view(["GET"])
+@permission_classes([CanViewProcurement])
+def report_match_rate(request):
+    if not is_manager_or_admin(request.user):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+    qs = InvoiceMatchResult.objects.order_by("invoice_id", "-match_version")
+    latest_ids = []
+    seen = set()
+    for r in qs.values("id", "invoice_id"):
+        if r["invoice_id"] in seen: continue
+        seen.add(r["invoice_id"]); latest_ids.append(r["id"])
+    latest = InvoiceMatchResult.objects.filter(id__in=latest_ids)
+    total = latest.count() or 0
+    def cnt(s): return latest.filter(overall_status=s).count()
+    return Response({
+        "total": total,
+        "exact_match": cnt("matched"),
+        "within_tolerance": cnt("matched_within_tolerance"),
+        "exception": cnt("exception"),
+        "receipt_incomplete": cnt("receipt_incomplete"),
+        "over_invoiced": cnt("over_invoiced"),
+        "invalid": cnt("invalid"),
+        "unmatched": cnt("unmatched"),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([CanViewProcurement])
+def report_exceptions(request):
+    if not is_manager_or_admin(request.user):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+    qs = InvoiceException.objects.all()
+    return Response({
+        "total": qs.count(),
+        "by_status": list(qs.values("status").annotate(count=Count("id")).order_by("status")),
+        "by_severity": list(qs.values("severity").annotate(count=Count("id")).order_by("severity")),
+        "by_type": list(qs.values("exception_type").annotate(count=Count("id")).order_by("exception_type")),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([CanViewProcurement])
+def report_vendor_returns(request):
+    if not is_manager_or_admin(request.user):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+    qs = VendorReturn.objects.all()
+    return Response({
+        "total": qs.count(),
+        "by_status": list(qs.values("status").annotate(count=Count("id")).order_by("status")),
+        "by_reason": list(qs.values("reason").annotate(count=Count("id")).order_by("reason")),
+        "open": qs.filter(status__in=["draft", "pending_approval", "approved", "shipped", "partially_resolved"]).count(),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([CanViewProcurement])
+def report_credits(request):
+    if not is_manager_or_admin(request.user):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+    qs = VendorCreditNote.objects.all()
+    totals = list(qs.values("currency").annotate(total=Sum("total"), applied=Sum("applied_amount")).order_by("currency"))
+    return Response({
+        "total": qs.count(),
+        "by_status": list(qs.values("status").annotate(count=Count("id")).order_by("status")),
+        "totals_by_currency": totals,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([CanViewProcurement])
+def report_payment_readiness(request):
+    if not is_manager_or_admin(request.user):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+    qs = SupplierInvoice.objects.exclude(status__in=["cancelled", "closed"])
+    rows = []
+    for inv in qs.select_related("vendor")[:200]:
+        r = matching_services.compute_payment_readiness(inv)
+        rows.append({
+            "id": inv.id, "invoice_number": inv.invoice_number, "vendor_name": getattr(inv.vendor, 'name', None),
+            "status": inv.status, "payment_status": inv.payment_status,
+            "ready": r["ready"], "blocker_count": len(r.get("blockers", [])),
+        })
+    return Response({"count": len(rows), "invoices": rows})
+
+
+@api_view(["GET"])
+@permission_classes([CanViewProcurement])
+def report_vendor_performance(request):
+    if not is_manager_or_admin(request.user):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+    vendors = {}
+    for po in PurchaseOrder.objects.select_related("vendor").all():
+        vid = po.vendor_id
+        v = vendors.setdefault(vid, {"vendor_id": vid, "vendor_name": getattr(po.vendor, "name", str(vid)), "purchase_orders": 0, "delivered_on_time": 0, "with_eta": 0, "complete": 0, "received_lines": 0, "rejected_qty": 0, "damaged_qty": 0, "total_received_qty": 0, "invoices": 0, "matched_invoices": 0, "price_variance_sum": 0.0, "open_returns": 0})
+        v["purchase_orders"] += 1
+        if po.expected_delivery_date:
+            v["with_eta"] += 1
+            # approximate on-time: has completed/received and completed_at or received receipts before eta? simplified
+            if po.status in ("received", "closed") and po.completed_at and po.completed_at.date() <= po.expected_delivery_date:
+                v["delivered_on_time"] += 1
+        if po.status in ("received", "closed"): v["complete"] += 1
+    # receipt quantities
+    for item in GoodsReceiptItem.objects.select_related("goods_receipt__purchase_order").all():
+        vid = item.goods_receipt.purchase_order.vendor_id
+        if vid not in vendors: continue
+        v = vendors[vid]
+        v["total_received_qty"] += int(item.quantity_received or 0)
+        v["rejected_qty"] += int(item.quantity_rejected or 0)
+        v["damaged_qty"] += int(item.quantity_damaged or 0)
+    # invoices/match
+    for inv in SupplierInvoice.objects.select_related("vendor").prefetch_related("match_results").all():
+        vid = inv.vendor_id
+        if vid not in vendors: vendors.setdefault(vid, {"vendor_id": vid, "vendor_name": getattr(inv.vendor, "name", str(vid)), "purchase_orders": 0, "delivered_on_time": 0, "with_eta": 0, "complete": 0, "received_lines": 0, "rejected_qty": 0, "damaged_qty": 0, "total_received_qty": 0, "invoices": 0, "matched_invoices": 0, "price_variance_sum": 0.0, "open_returns": 0})
+        v = vendors[vid]
+        v["invoices"] += 1
+        latest = inv.match_results.order_by("-match_version").first()
+        if latest and latest.overall_status in ("matched", "matched_within_tolerance"):
+            v["matched_invoices"] += 1
+        if latest:
+            v["price_variance_sum"] += float(latest.price_variance_total or 0)
+    # open returns
+    for vr in VendorReturn.objects.filter(status__in=["draft", "pending_approval", "approved", "shipped", "partially_resolved"]):
+        if vr.vendor_id in vendors: vendors[vr.vendor_id]["open_returns"] += 1
+    rows = []
+    for v in vendors.values():
+        tr = v["total_received_qty"] or 0
+        pos = v["purchase_orders"] or 0
+        invs = v["invoices"] or 0
+        rows.append({
+            "vendor_id": v["vendor_id"], "vendor_name": v["vendor_name"],
+            "purchase_orders": pos,
+            "on_time_delivery_rate": round((v["delivered_on_time"] / v["with_eta"] * 100), 2) if v["with_eta"] else None,
+            "complete_delivery_rate": round((v["complete"] / pos * 100), 2) if pos else None,
+            "rejected_quantity_rate": round((v["rejected_qty"] / tr * 100), 2) if tr else None,
+            "damaged_quantity_rate": round((v["damaged_qty"] / tr * 100), 2) if tr else None,
+            "invoice_match_rate": round((v["matched_invoices"] / invs * 100), 2) if invs else None,
+            "average_price_variance": round((v["price_variance_sum"] / invs), 2) if invs else None,
+            "open_returns": v["open_returns"],
+            "sample_note": "Small sample" if (pos < 3 and invs < 3) else "",
+        })
+    return Response(rows)
