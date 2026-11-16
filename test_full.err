@@ -1,0 +1,169 @@
+Creating test database for alias 'default' ('file:memorydb_default?mode=memory&cache=shared')...
+test_asset_assigned_status_maps_on_create (cmdb.tests.CMDBAssetSyncTests.test_asset_assigned_status_maps_on_create) ... ERROR
+test_manual_ci_preserved (cmdb.tests.CMDBAssetSyncTests.test_manual_ci_preserved) ... ERROR
+test_sync_asset_idempotent (cmdb.tests.CMDBAssetSyncTests.test_sync_asset_idempotent) ... ok
+test_baseline_self_approval_denied (cmdb.tests.CMDBBaselineDriftTests.test_baseline_self_approval_denied) ... 2026-11-16 12:19:45 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/cmdb/baselines/1/approve/ user_id=1 role=system_admin client=127.0.0.1
+2026-11-16 12:19:45 WARNING django.request log: Forbidden: /api/cmdb/baselines/1/approve/
+ok
+test_compare_and_drift_evaluation (cmdb.tests.CMDBBaselineDriftTests.test_compare_and_drift_evaluation) ... ok
+test_create_baseline (cmdb.tests.CMDBBaselineDriftTests.test_create_baseline) ... ok
+test_critical_accept_admin_only (cmdb.tests.CMDBBaselineDriftTests.test_critical_accept_admin_only) ... 2026-11-16 12:19:55 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/cmdb/drift/1/accept/ user_id=2 role=it_manager client=127.0.0.1
+2026-11-16 12:19:55 WARNING django.request log: Forbidden: /api/cmdb/drift/1/accept/
+ok
+test_drift_create_update_delete_blocked (cmdb.tests.CMDBBaselineDriftTests.test_drift_create_update_delete_blocked) ... 2026-11-16 12:19:58 WARNING django.request log: Method Not Allowed: /api/cmdb/drift/
+ok
+test_drift_list_filters (cmdb.tests.CMDBBaselineDriftTests.test_drift_list_filters) ... ok
+test_drift_masks_ip_address (cmdb.tests.CMDBBaselineDriftTests.test_drift_masks_ip_address) ... ok
+test_drift_workflow_actions (cmdb.tests.CMDBBaselineDriftTests.test_drift_workflow_actions) ... 2026-11-16 12:20:07 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/cmdb/drift/1/resolve/ user_id=3 role=it_support client=127.0.0.1
+2026-11-16 12:20:07 WARNING django.request log: Forbidden: /api/cmdb/drift/1/resolve/
+ok
+test_false_positive_requires_note (cmdb.tests.CMDBBaselineDriftTests.test_false_positive_requires_note) ... 2026-11-16 12:20:10 WARNING django.request log: Bad Request: /api/cmdb/drift/1/false-positive/
+ok
+test_same_name_baseline_supersedes (cmdb.tests.CMDBBaselineDriftTests.test_same_name_baseline_supersedes) ... ERROR
+test_submit_then_other_manager_approves (cmdb.tests.CMDBBaselineDriftTests.test_submit_then_other_manager_approves) ... ok
+test_dashboard (cmdb.tests.CMDBDashboardReportTests.test_dashboard) ... ok
+test_dashboard_without_slash (cmdb.tests.CMDBDashboardReportTests.test_dashboard_without_slash) ... ok
+test_reports_coverage (cmdb.tests.CMDBDashboardReportTests.test_reports_coverage) ... ok
+test_reports_kind_path_without_slash (cmdb.tests.CMDBDashboardReportTests.test_reports_kind_path_without_slash) ... ok
+test_reports_unknown_kind_falls_back (cmdb.tests.CMDBDashboardReportTests.test_reports_unknown_kind_falls_back) ... ok
+test_verification_queue_roundtrip (cmdb.tests.CMDBDashboardReportTests.test_verification_queue_roundtrip) ... ok
+test_cycle_indicator (cmdb.tests.CMDBImpactTests.test_cycle_indicator) ... ok
+test_dependencies_graph_shape (cmdb.tests.CMDBImpactTests.test_dependencies_graph_shape) ... ok
+test_dependency_without_slash (cmdb.tests.CMDBImpactTests.test_dependency_without_slash) ... ok
+test_depth_clamped (cmdb.tests.CMDBImpactTests.test_depth_clamped) ... ok
+test_graph_view_filters_direction (cmdb.tests.CMDBImpactTests.test_graph_view_filters_direction) ... ok
+test_impact_direction (cmdb.tests.CMDBImpactTests.test_impact_direction) ... ok
+test_impact_payload_shape (cmdb.tests.CMDBImpactTests.test_impact_payload_shape) ... ok
+test_create_item_numbering (cmdb.tests.CMDBItemTests.test_create_item_numbering) ... ok
+test_detail_includes_history (cmdb.tests.CMDBItemTests.test_detail_includes_history) ... ok
+test_employee_denied (cmdb.tests.CMDBItemTests.test_employee_denied) ... 2026-11-16 12:20:32 WARNING common.security middleware: auth_failure status=403 method=GET path=/api/cmdb/items/ user_id=2 role=employee client=127.0.0.1
+2026-11-16 12:20:32 WARNING django.request log: Forbidden: /api/cmdb/items/
+ok
+test_history_action_array (cmdb.tests.CMDBItemTests.test_history_action_array) ... ok
+test_hostname_normalized (cmdb.tests.CMDBItemTests.test_hostname_normalized) ... ok
+test_items_list_plain_array_and_paginated (cmdb.tests.CMDBItemTests.test_items_list_plain_array_and_paginated) ... ok
+test_items_list_without_slash (cmdb.tests.CMDBItemTests.test_items_list_without_slash) ... ok
+test_patch_stale_version_409 (cmdb.tests.CMDBItemTests.test_patch_stale_version_409) ... 2026-11-16 12:20:37 WARNING django.request log: Conflict: /api/cmdb/items/1/
+ok
+test_retire_denied_for_support (cmdb.tests.CMDBItemTests.test_retire_denied_for_support) ... 2026-11-16 12:20:39 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/cmdb/items/1/retire/ user_id=2 role=it_support client=127.0.0.1
+2026-11-16 12:20:39 WARNING django.request log: Forbidden: /api/cmdb/items/1/retire/
+ok
+test_retire_requires_reason (cmdb.tests.CMDBItemTests.test_retire_requires_reason) ... 2026-11-16 12:20:40 WARNING django.request log: Bad Request: /api/cmdb/items/1/retire/
+ok
+test_retire_with_reason (cmdb.tests.CMDBItemTests.test_retire_with_reason) ... ok
+test_support_cannot_change_ci_type (cmdb.tests.CMDBItemTests.test_support_cannot_change_ci_type) ... 2026-11-16 12:20:44 WARNING django.request log: Bad Request: /api/cmdb/items/1/
+ok
+test_verify (cmdb.tests.CMDBItemTests.test_verify) ... ok
+test_verify_stale_version_409 (cmdb.tests.CMDBItemTests.test_verify_stale_version_409) ... 2026-11-16 12:20:46 WARNING django.request log: Conflict: /api/cmdb/items/1/verify/
+ok
+test_verify_without_trailing_slash (cmdb.tests.CMDBItemTests.test_verify_without_trailing_slash) ... ok
+test_create_relationship (cmdb.tests.CMDBRelationshipTests.test_create_relationship) ... ok
+test_duplicate_rejected (cmdb.tests.CMDBRelationshipTests.test_duplicate_rejected) ... 2026-11-16 12:20:50 WARNING django.request log: Bad Request: /api/cmdb/relationships/
+ok
+test_employee_denied (cmdb.tests.CMDBRelationshipTests.test_employee_denied) ... 2026-11-16 12:20:52 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/cmdb/relationships/ user_id=2 role=employee client=127.0.0.1
+2026-11-16 12:20:52 WARNING django.request log: Forbidden: /api/cmdb/relationships/
+ok
+test_hierarchy_cycle_rejected (cmdb.tests.CMDBRelationshipTests.test_hierarchy_cycle_rejected) ... FAIL
+test_manager_activates_support_proposal (cmdb.tests.CMDBRelationshipTests.test_manager_activates_support_proposal) ... 2026-11-16 12:20:56 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/cmdb/relationships/1/activate/ user_id=2 role=it_support client=127.0.0.1
+2026-11-16 12:20:56 WARNING django.request log: Forbidden: /api/cmdb/relationships/1/activate/
+ok
+test_relationships_list_plain_array (cmdb.tests.CMDBRelationshipTests.test_relationships_list_plain_array) ... ok
+test_self_reference_rejected (cmdb.tests.CMDBRelationshipTests.test_self_reference_rejected) ... 2026-11-16 12:20:59 WARNING django.request log: Bad Request: /api/cmdb/relationships/
+ok
+test_support_cannot_create_active (cmdb.tests.CMDBRelationshipTests.test_support_cannot_create_active) ... 2026-11-16 12:21:01 WARNING django.request log: Bad Request: /api/cmdb/relationships/
+ok
+test_support_create_forced_proposed (cmdb.tests.CMDBRelationshipTests.test_support_create_forced_proposed) ... ok
+test_retire_assigned_asset_blocked (cmdb.tests.CMDBRetireImpactTests.test_retire_assigned_asset_blocked) ... ERROR
+test_retire_blocked_by_impact_then_acknowledged (cmdb.tests.CMDBRetireImpactTests.test_retire_blocked_by_impact_then_acknowledged) ... 2026-11-16 12:21:06 WARNING django.request log: Conflict: /api/cmdb/items/1/retire/
+ok
+test_retire_replacement_links_replaces (cmdb.tests.CMDBRetireImpactTests.test_retire_replacement_links_replaces) ... ok
+test_service_graph (cmdb.tests.CMDBServiceMappingTests.test_service_graph) ... ok
+test_service_impact (cmdb.tests.CMDBServiceMappingTests.test_service_impact) ... ok
+test_service_profile_and_link (cmdb.tests.CMDBServiceMappingTests.test_service_profile_and_link) ... ok
+test_service_spof (cmdb.tests.CMDBServiceMappingTests.test_service_spof) ... ok
+test_create_type (cmdb.tests.CMDBTypeTests.test_create_type) ... ok
+test_employee_denied (cmdb.tests.CMDBTypeTests.test_employee_denied) ... 2026-11-16 12:21:17 WARNING common.security middleware: auth_failure status=403 method=GET path=/api/cmdb/types/ user_id=2 role=employee client=127.0.0.1
+2026-11-16 12:21:17 WARNING django.request log: Forbidden: /api/cmdb/types/
+ok
+test_manager_can_create_type (cmdb.tests.CMDBTypeTests.test_manager_can_create_type) ... ok
+test_support_cannot_create_type (cmdb.tests.CMDBTypeTests.test_support_cannot_create_type) ... 2026-11-16 12:21:21 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/cmdb/types/ user_id=2 role=it_support client=127.0.0.1
+2026-11-16 12:21:21 WARNING django.request log: Forbidden: /api/cmdb/types/
+ok
+test_types_expose_ci_count (cmdb.tests.CMDBTypeTests.test_types_expose_ci_count) ... ok
+
+======================================================================
+ERROR: test_asset_assigned_status_maps_on_create (cmdb.tests.CMDBAssetSyncTests.test_asset_assigned_status_maps_on_create)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\cmdb\tests.py", line 862, in test_asset_assigned_status_maps_on_create
+    asset = Asset.objects.create(
+        name="assigned-laptop", asset_tag="LT-ASG", category=cat,
+        department=dept, status="assigned",
+    )
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\db\models\manager.py", line 87, in manager_method
+    return getattr(self.get_queryset(), name)(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\db\models\query.py", line 669, in create
+    obj.save(force_insert=True, using=self.db)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\assets\models.py", line 186, in save
+    self.full_clean()
+    ~~~~~~~~~~~~~~~^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\db\models\base.py", line 1710, in full_clean
+    raise ValidationError(errors)
+django.core.exceptions.ValidationError: {'status': ['An assigned asset must have a holder.'], 'assigned_to': ['Set a holder to mark the asset assigned.']}
+
+======================================================================
+ERROR: test_manual_ci_preserved (cmdb.tests.CMDBAssetSyncTests.test_manual_ci_preserved)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\cmdb\tests.py", line 846, in test_manual_ci_preserved
+    self.client, "manual-ci", self.type, asset=self.asset.id,
+                              ^^^^^^^^^
+AttributeError: 'CMDBAssetSyncTests' object has no attribute 'type'
+
+======================================================================
+ERROR: test_same_name_baseline_supersedes (cmdb.tests.CMDBBaselineDriftTests.test_same_name_baseline_supersedes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\cmdb\tests.py", line 531, in test_same_name_baseline_supersedes
+    first.refresh_from_db()
+    ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'ReturnDict' object has no attribute 'refresh_from_db'
+
+======================================================================
+ERROR: test_retire_assigned_asset_blocked (cmdb.tests.CMDBRetireImpactTests.test_retire_assigned_asset_blocked)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\cmdb\tests.py", line 936, in test_retire_assigned_asset_blocked
+    asset = Asset.objects.create(
+        name="mon", asset_tag="MON1", category=cat, department=dept,
+        status="assigned",
+    )
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\db\models\manager.py", line 87, in manager_method
+    return getattr(self.get_queryset(), name)(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\db\models\query.py", line 669, in create
+    obj.save(force_insert=True, using=self.db)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\assets\models.py", line 186, in save
+    self.full_clean()
+    ~~~~~~~~~~~~~~~^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\db\models\base.py", line 1710, in full_clean
+    raise ValidationError(errors)
+django.core.exceptions.ValidationError: {'status': ['An assigned asset must have a holder.'], 'assigned_to': ['Set a holder to mark the asset assigned.']}
+
+======================================================================
+FAIL: test_hierarchy_cycle_rejected (cmdb.tests.CMDBRelationshipTests.test_hierarchy_cycle_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\cmdb\tests.py", line 323, in test_hierarchy_cycle_rejected
+    self.assertEqual(r2.status_code, 400)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 201 != 400
+
+----------------------------------------------------------------------
+Ran 63 tests in 101.029s
+
+FAILED (failures=1, errors=4)
+Destroying test database for alias 'default' ('file:memorydb_default?mode=memory&cache=shared')...

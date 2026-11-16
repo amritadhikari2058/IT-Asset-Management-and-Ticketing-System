@@ -1,0 +1,35 @@
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\manage.py", line 22, in <module>
+    main()
+    ~~~~^^
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\manage.py", line 18, in main
+    execute_from_command_line(sys.argv)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\management\__init__.py", line 443, in execute_from_command_line
+    utility.execute()
+    ~~~~~~~~~~~~~~~^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\management\__init__.py", line 437, in execute
+    self.fetch_command(subcommand).run_from_argv(self.argv)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\management\commands\test.py", line 24, in run_from_argv
+    super().run_from_argv(argv)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\management\base.py", line 416, in run_from_argv
+    self.execute(*args, **cmd_options)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\management\base.py", line 460, in execute
+    output = self.handle(*args, **options)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\management\commands\test.py", line 63, in handle
+    failures = test_runner.run_tests(test_labels)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\test\runner.py", line 1132, in run_tests
+    suite = self.build_suite(test_labels)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\test\runner.py", line 988, in build_suite
+    tests = self.load_tests_for_label(label, discover_kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\test\runner.py", line 946, in load_tests_for_label
+    tests = self.test_loader.loadTestsFromName(label)
+  File "C:\Python314\Lib\unittest\loader.py", line 141, in loadTestsFromName
+    module = __import__(module_name)
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\problem_management\tests.py", line 722
+    problem_management_tests_History? No -- check history records per problem: each problem should have its own task_created events count >= 1.
+                                    ^
+SyntaxError: invalid syntax

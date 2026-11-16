@@ -115,8 +115,10 @@ INSTALLED_APPS = [
     'procurement',
     'approval_center',
     'lifecycle',
+    'monitoring',
     'licensing',
     'cmdb',
+    'problem_management',
     'backup',
 ]
 
@@ -320,6 +322,14 @@ ATTACHMENT_ALLOWED_EXTENSIONS = [
     ).split(',') if e.strip()
 ]
 ATTACHMENT_MAX_SIZE_MB = float(os.environ.get('ATTACHMENT_MAX_SIZE_MB', '10'))
+
+# ---------- Problem Management (PM1) policy defaults ----------
+PROBLEM_DETECTION_DEFAULT_WINDOW_DAYS = int(os.environ.get('PROBLEM_DETECTION_DEFAULT_WINDOW_DAYS', '30'))
+PROBLEM_DETECTION_DEFAULT_MIN_OCCURRENCES = int(os.environ.get('PROBLEM_DETECTION_DEFAULT_MIN_OCCURRENCES', '3'))
+PROBLEM_DETECTION_MAX_WINDOW_DAYS = 365
+PROBLEM_DETECTION_BATCH_SIZE = 500
+PROBLEM_RECURRENCE_MONITORING_DAYS = 30
+PROBLEM_DASHBOARD_DETAIL_LIMIT = 10
 
 # ---------- Email intake (organizational support mailbox via IMAP) ----------
 INBOUND_MAILBOX_ENABLED = os.environ.get('INBOUND_MAILBOX_ENABLED', 'true').lower() == 'true'

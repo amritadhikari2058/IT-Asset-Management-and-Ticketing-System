@@ -38,3 +38,6 @@ goose-extracted/
 
 # Generated backup test artifacts (not source code)
 backend/backups/
+
+.crush.json
+crush.json
