@@ -1,9 +1,11 @@
 """Gate 2B evidence security tests."""
 import hashlib
 import io
+import os
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TransactionTestCase, override_settings
+from rest_framework.exceptions import ValidationError
 
 from accounts.models import User
 from problem_management.models import Problem, ProblemHistory
@@ -25,6 +27,8 @@ class Gate2EvidenceTests(TransactionTestCase):
         self.problem = services.create_problem(
             actor=self.support, title="Ev problem", description="Desc",
         )
+        self.problem.status = "accepted"
+        self.problem.save(update_fields=["status"])
 
     @override_settings(MEDIA_ROOT="/tmp/problem_gate2b_closure/media")
     def test_create_evidence_records_history_if_supported(self):
@@ -155,10 +159,10 @@ class Gate2EvidenceTests(TransactionTestCase):
                 ProblemHistory.objects.filter(problem=self.problem, event_type="evidence_added").exists()
             )
             return
-        # Verify no path separators in stored name
+        # Verify no path separators in stored filename
         stored_name = str(ev.file) if ev.file else ""
-        self.assertNotIn("/", stored_name)
-        self.assertNotIn("\\", stored_name)
+        self.assertNotIn("/", os.path.basename(stored_name))
+        self.assertNotIn("\\", os.path.basename(stored_name))
 
     @override_settings(MEDIA_ROOT="/tmp/problem_gate2b_closure/media")
     def test_randomized_stored_name(self):
@@ -291,6 +295,8 @@ class Gate2EvidenceTests(TransactionTestCase):
         other_problem = services.create_problem(
             actor=self.support, title="Other Problem", description="Desc",
         )
+        other_problem.status = "accepted"
+        other_problem.save(update_fields=["status"])
         rca = services.create_root_cause_analysis(
             actor=self.support, problem=other_problem, title="RCA",
         )

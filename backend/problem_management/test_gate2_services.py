@@ -1,7 +1,7 @@
 """Gate 2B service workflow tests."""
 from django.test import TransactionTestCase
-from django.core.exceptions import ValidationError
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from accounts.models import User
 from problem_management.models import (
@@ -27,7 +27,10 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
         self.manager = _user("it_manager", 1)
         self.problem = services.create_problem(
             actor=self.support, title="Svc problem", description="Desc",
+            owner=self.manager,
         )
+        services.submit_problem(actor=self.support, problem=self.problem)
+        services.accept_problem(actor=self.manager, problem=self.problem)
 
     # --- RCA ---
 
@@ -64,7 +67,7 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
         rca = services.create_root_cause_analysis(
             actor=self.support, problem=self.problem, title="RCA Title",
         )
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(PermissionDenied):
             services.approve_root_cause_analysis(
                 actor=self.support, analysis=rca,
             )
@@ -205,7 +208,7 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
             actor=self.support, analysis=rca, category="people", factor="Old",
         )
         updated = services.update_root_cause_factor(
-            actor=self.support, category="method", factor="New",
+            actor=self.support, factor=factor, category="method", factor_text="New",
         )
         self.assertEqual(updated.category, "method")
         self.assertEqual(updated.factor, "New")
@@ -340,7 +343,7 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
         action = services.create_problem_action(
             actor=self.support, problem=self.problem, title="Action",
         )
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(PermissionDenied):
             services.approve_problem_action(actor=self.support, action=action)
 
     def test_action_stale_version(self):
@@ -392,9 +395,7 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
             steps="S1", risk="low",
         )
         # No Knowledge Article should be created
-        self.assertFalse(
-            hasattr(wa, 'knowledge_article') or True  # placeholder check
-        )
+        self.assertFalse(hasattr(wa, 'knowledge_article'))
 
     # --- Validations ---
 
@@ -490,7 +491,7 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
         exc = services.create_problem_exception(
             actor=self.support, problem=self.problem, title="Exc Title",
         )
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(PermissionDenied):
             services.approve_problem_exception(actor=self.support, exception=exc)
 
     def test_critical_risk_approval_requires_system_admin(self):
@@ -499,7 +500,7 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
             exception_type="critical",
         )
         # Support cannot approve critical
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(PermissionDenied):
             services.approve_problem_exception(actor=self.support, exception=exc)
 
     def test_reject_problem_exception(self):
@@ -533,7 +534,10 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
         # Create problem
         problem = services.create_problem(
             actor=self.support, title="Test", description="D",
+            owner=self.manager,
         )
+        services.submit_problem(actor=self.support, problem=problem)
+        services.accept_problem(actor=self.manager, problem=problem)
         # Create RCA
         rca = services.create_root_cause_analysis(
             actor=self.support, problem=problem, title="RCA",

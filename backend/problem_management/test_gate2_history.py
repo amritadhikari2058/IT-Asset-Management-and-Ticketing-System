@@ -1,5 +1,7 @@
 """Gate 2B history/audit/notification tests."""
-from django.test import TransactionTestCase, override_settings
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.test import TestCase, override_settings
+from rest_framework.exceptions import ValidationError
 
 from accounts.models import User
 from common.models import Notification
@@ -14,7 +16,7 @@ def _user(role, n):
     )
 
 
-class Gate2HistoryTests(TransactionTestCase):
+class Gate2HistoryTests(TestCase):
     """Gate 2B history/audit/notification tests."""
 
     def setUp(self):
@@ -22,12 +24,15 @@ class Gate2HistoryTests(TransactionTestCase):
         self.manager = _user("it_manager", 1)
         self.problem = services.create_problem(
             actor=self.support, title="Hist problem", description="Desc",
+            owner=self.manager,
         )
+        services.submit_problem(actor=self.support, problem=self.problem)
+        services.accept_problem(actor=self.manager, problem=self.problem)
 
     def test_history_immutable(self):
         h = ProblemHistory.objects.filter(problem=self.problem).first()
         self.assertIsNotNone(h)
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(DjangoValidationError):
             h.detail = "changed"
             h.save()
 
@@ -130,7 +135,7 @@ class Gate2HistoryTests(TransactionTestCase):
         """Verify history records are immutable."""
         services.create_problem_task(actor=self.support, problem=self.problem, title="T1")
         h = ProblemHistory.objects.filter(problem=self.problem).first()
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(DjangoValidationError):
             h.save()
 
     def test_auditlog_creation(self):
@@ -142,11 +147,12 @@ class Gate2HistoryTests(TransactionTestCase):
 
     def test_notification_absent_before_commit(self):
         """Verify Notification is not created before commit."""
-        with self.assertRaises(AttributeError):
-            # Older Django fallback
-            pass
-        # In captureOnCommitCallbacks test, notification should be registered
-        # but not executed until commit
+        with self.captureOnCommitCallbacks(execute=False):
+            services.create_problem_task(
+                actor=self.support, problem=self.problem, title="Notify task",
+                assigned_to=self.manager,
+            )
+        self.assertEqual(Notification.objects.count(), 0)
 
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
     def test_notification_created_after_commit(self):
