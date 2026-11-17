@@ -52,6 +52,7 @@ class MonitoringSource(models.Model):
     )
     secret_hash = models.CharField(max_length=128)
     previous_secret_hash = models.CharField(max_length=128, null=True, blank=True)
+    previous_secret_valid_until = models.DateTimeField(null=True, blank=True)
     allowed_ip_networks = models.CharField(max_length=500, blank=True, default="")
     allowed_event_types = models.CharField(max_length=500, blank=True, default="")
     allowed_target_patterns = models.CharField(max_length=500, blank=True, default="")
@@ -233,7 +234,7 @@ class MonitoringIngestionAttempt(models.Model):
         FAILED = "failed", "Failed"
 
     source = models.ForeignKey("MonitoringSource", on_delete=models.CASCADE, related_name="ingestion_attempts")
-    request_id = models.CharField(max_length=128, unique=True)
+    request_id = models.CharField(max_length=128)
     received_at = models.DateTimeField(auto_now_add=True)
     remote_address_hash = models.CharField(max_length=128)
     authentication_result = models.CharField(max_length=30, choices=AuthenticationResult.choices, default=AuthenticationResult.SUCCESS)
@@ -254,6 +255,10 @@ class MonitoringIngestionAttempt(models.Model):
             models.Index(fields=["source", "received_at"], name="ingest_source_time_idx"),
             models.Index(fields=["authentication_result"], name="ingest_auth_idx"),
             models.Index(fields=["status"], name="ingest_status_idx"),
+            models.Index(fields=["source", "request_id"], name="ingest_source_request_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["source", "request_id"], name="unique_ingest_request_per_source"),
         ]
 
     def __str__(self):
