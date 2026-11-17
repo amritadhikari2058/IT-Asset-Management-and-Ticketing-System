@@ -42,7 +42,7 @@ urlpatterns = [
     path("reports/unmapped-targets/", views.ReportViewSet.as_view({"get": "target_coverage"})),
     
     # Ingestion endpoints
-    path("ingest/<str:source_code>/", views.ingest_event),
-    path("ingest/<str:source_code>/batch/", views.ingest_batch_events),
+    path("ingest/<str:source_code>/", views.MonitoringIngestionView.as_view()),
+    path("ingest/<str:source_code>/batch/", views.MonitoringIngestionView.as_view()),
     path("manual-events/", views.manual_event),
 ]
