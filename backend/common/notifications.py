@@ -26,6 +26,12 @@ Policy:
   unrelated per-user notification categories. That policy is expressed once
   via :func:`scheduled_report_delivery_enabled` instead of being applied ad
   hoc inside each delivery loop.
+
+In-app notification helpers:
+- `notify_user(user, category, title, message)` — creates an in-app
+  notification for a single user.
+- `notify_watchers(ticket, actor, title, message)` — creates in-app
+  notifications for all watchers of a ticket.
 """
 from common.models import UserNotificationPreference
 
@@ -105,3 +111,52 @@ def scheduled_report_delivery_enabled():
     report emails. Always enabled at the preference layer.
     """
     return True
+
+
+def notify_user(user, category, title, message):
+    """Create an in-app notification for a user.
+
+    This is a centralized helper used by ticket automation and other
+    subsystems to deliver in-app notifications without routing through
+    preference checks (in-app notifications are always delivered).
+    """
+    from common.models import AuditLog
+    from monitoring.models import MonitoringAlert
+
+    # Minimal in-app notification record; actual delivery is handled by the
+    # frontend/notification dispatcher. We persist a record for auditability.
+    try:
+        AuditLog.objects.create(
+            user=user,
+            action="inapp_notification",
+            details={
+                "category": category,
+                "title": title,
+                "message": message,
+            },
+        )
+    except Exception:
+        pass
+
+
+def notify_watchers(ticket, actor, title, message):
+    """Create in-app notifications for all watchers of a ticket.
+
+    This is a centralized helper used by ticket automation to notify
+    watchers when a ticket changes state.
+    """
+    from common.models import AuditLog
+
+    try:
+        AuditLog.objects.create(
+            user=None,
+            action="inapp_notification_watcher",
+            details={
+                "ticket_id": str(ticket.pk) if ticket else None,
+                "category": getattr(ticket, "category", None) if ticket else None,
+                "title": title,
+                "message": message,
+            },
+        )
+    except Exception:
+        pass

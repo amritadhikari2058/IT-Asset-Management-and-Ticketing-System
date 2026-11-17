@@ -1,6 +1,6 @@
 ﻿"""Asset API tests: bulk safety (assignment guard), bulk assignment."""
 from django.db import IntegrityError, connection, transaction
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 
 from accounts.models import Department, User
@@ -586,7 +586,11 @@ class AssetAttachmentTests(TestCase):
         auth(self.c, self.emp)
         dl = self.c.get(f"/api/assets/attachments/{aid}/download/")
         self.assertEqual(dl.status_code, 200)
-        dl.close()
+        # Consuming the stream releases the file handle held by the
+        # FileResponse; the response is left for the client to collect so
+        # the test does not fire request_finished mid-transaction (which
+        # would close the connection under TestCase's atomic block).
+        self.assertEqual(b"".join(dl.streaming_content), b"hello")
 
     def test_anonymous_denied(self):
         self.c.credentials()
@@ -626,7 +630,7 @@ class AssetAttachmentTests(TestCase):
         att.restore()
         dl = self.c.get(f"/api/assets/attachments/{aid}/download/")
         self.assertEqual(dl.status_code, 200)
-        dl.close()
+        self.assertEqual(b"".join(dl.streaming_content), b"hello")
         self.assertTrue(AuditLog.objects.filter(
             entity_type="assets.assetattachment",
             object_id=str(aid), action="soft_delete").exists())
@@ -673,6 +677,70 @@ class AssetAttachmentTests(TestCase):
         att.file.storage.delete(att.file.name)
         dl = self.c.get(f"/api/assets/attachments/{aid}/download/")
         self.assertEqual(dl.status_code, 410)
+        # No file body is opened for a 410, so there is nothing to close.
+
+
+class AssetAttachmentDownloadConnectionTests(TransactionTestCase):
+    """A consumed+closed download must leave the DB connection usable.
+
+    Uses TransactionTestCase because closing the response fires
+    ``request_finished``, and ``close_old_connections`` intentionally drops
+    the connection when autocommit differs from the configured value --
+    which is always the case inside a plain TestCase's atomic block. With
+    autocommit matching the settings, the download can be fully consumed
+    and closed while the connection stays reusable for later ORM work.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        self.asset = Asset.objects.create(asset_tag="AT1", name="n",
+                                          category=self.acat,
+                                          assigned_to=self.emp,
+                                          status="assigned",
+                                          department=self.dep)
+
+    def tearDown(self):
+        for att in list(AssetAttachment.all_objects.all()):
+            if att.file:
+                att.file.storage.delete(att.file.name)
+
+    def test_download_response_lifecycle_keeps_connection_usable(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.db import connection
+
+        aid = self.c.post(
+            "/api/assets/attachments/",
+            {"asset": self.asset.pk,
+             "file": SimpleUploadedFile("doc.txt", b"hello",
+                                        content_type="text/plain")},
+            format="multipart").data["id"]
+
+        dl = self.c.get(f"/api/assets/attachments/{aid}/download/")
+        self.assertEqual(dl.status_code, 200)
+        self.assertFalse(getattr(dl, "closed", False))
+        try:
+            body = b"".join(dl.streaming_content)
+        finally:
+            dl.close()
+
+        self.assertEqual(body, b"hello")
+        self.assertTrue(getattr(dl, "closed", False))
+        self.assertTrue(connection.is_usable())
+
+        # The connection must still serve ORM work after the response was
+        # consumed and closed; a dangling connection would raise
+        # "sqlite3.ProgrammingError: Cannot operate on a closed database".
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            self.assertEqual(cursor.fetchone(), (1,))
+        probe = AssetCategory.objects.create(name="Lifecycle Probe")
+        self.assertIsNotNone(probe.pk)
+        self.assertTrue(
+            AssetCategory.objects.filter(pk=probe.pk).exists())
+        self.assertTrue(connection.is_usable())
 
 
 class AssetAttachmentIdorTests(TestCase):

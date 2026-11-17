@@ -536,7 +536,14 @@ class MonitoringAlert(models.Model):
     summary = models.TextField(blank=True, default="")
     severity = models.CharField(max_length=20, choices=AlertSeverity.choices, default=AlertSeverity.INFO)
     status = models.CharField(max_length=20, choices=AlertStatus.choices, default=AlertStatus.NEW)
-    source = models.ForeignKey("MonitoringSource", on_delete=models.CASCADE, related_name="alerts")
+    source = models.ForeignKey("MonitoringSource", null=True, blank=True, on_delete=models.CASCADE, related_name="alerts")
+    policy = models.ForeignKey(
+        "MonitoringAutomationPolicy",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="automation_alerts",
+    )
     fingerprint = models.CharField(max_length=128)
     correlation_key = models.CharField(max_length=200, blank=True, default="")
     first_event = models.ForeignKey("MonitoringEvent", null=True, blank=True, on_delete=models.SET_NULL, related_name="first_alert")
@@ -587,3 +594,67 @@ class MonitoringAlert(models.Model):
 
     def __str__(self):
         return f"ALT-{self.alert_number}: {self.title[:80]}"
+
+
+class MonitoringAutomationPolicy(models.Model):
+    """Policy defining automated ticket creation and routing for monitoring alerts."""
+
+    class SourceFilter(models.TextChoices):
+        ALL = "all", "All Sources"
+        SELECTIVE = "selective", "Selective Sources"
+
+    class MinimumSeverity(models.TextChoices):
+        INFO = "info", "Info (no Ticket by default)"
+        LOW = "low", "Low"
+        MEDIUM = "medium", "Medium"
+        HIGH = "high", "High"
+        CRITICAL = "critical", "Critical"
+
+    class EligibleAlertState(models.TextChoices):
+        NEW = "new", "New"
+        OPEN = "open", "Open"
+        ACKNOWLEDGED = "acknowledged", "Acknowledged"
+        RECOVERED = "recovered", "Recovered"
+        SUPPRESSED = "suppressed", "Suppressed"
+
+    name = models.CharField(max_length=200, unique=True)
+    description = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    source_filter = models.CharField(
+        max_length=20, choices=SourceFilter.choices, default=SourceFilter.ALL
+    )
+    minimum_severity = models.CharField(
+        max_length=20, choices=MinimumSeverity.choices, default=MinimumSeverity.INFO
+    )
+    eligible_alert_states = models.CharField(
+        max_length=20, choices=EligibleAlertState.choices, default=EligibleAlertState.OPEN
+    )
+    target_service = models.CharField(blank=True, default="", max_length=200)
+    ticket_category = models.CharField(blank=True, default="", max_length=100)
+    default_priority = models.CharField(blank=True, default="", max_length=20)
+    default_queue = models.CharField(blank=True, default="", max_length=50)
+    auto_create = models.BooleanField(default=True)
+    auto_update = models.BooleanField(default=True)
+    auto_resolve = models.BooleanField(default=True)
+    reopen_behavior = models.CharField(blank=True, default="", max_length=20)
+    maximum_retries = models.PositiveIntegerField(default=3)
+    effective_from = models.DateTimeField(blank=True, null=True)
+    effective_until = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    default_assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        blank=True,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="automated_tickets",
+    )
+    eligible_sources = models.ManyToManyField(
+        "monitoring.MonitoringSource", blank=True, related_name="automation_policies"
+    )
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
