@@ -169,50 +169,169 @@ def _transition(problem, actor, new_status, *, event_type, detail,
 # ---------------------------------------------------------------------------
 
 def evaluate_problem_readiness(problem):
-    """Evaluate if a problem is ready for a status transition.
+    """Read-only readiness evaluation for resolution/closure.
 
-    Returns (ready: bool, reason: str, blocking_factors: list[str]).
-    This is the authoritative readiness check; services must delegate to it,
-    not reimplement their own logic.
+    Returns the authoritative contract required by Gate 2B:
+    {
+        "ready_for_resolution": False,
+        "ready_for_closure": False,
+        "blockers": [...],
+        "warnings": [],
+        "counts": {
+            "open_blocking_tasks": 0,
+            "open_required_actions": 0,
+            "failed_validations": 0,
+            "open_critical_tickets": 0,
+            "active_exceptions": 0,
+        },
+    }
     """
-    blocking = []
+    blockers = []
 
-    # Must have a problem number
-    if not problem.problem_number:
-        blocking.append("problem_number_missing")
-        return False, "Problem number is required", blocking
+    def add_blocker(code, message, severity="high"):
+        if any(b["code"] == code for b in blockers):
+            return
+        blockers.append({"code": code, "message": message, "severity": severity})
 
-    # Open problems need at least one task or evidence
-    if problem.is_open and not problem.tasks.exists():
-        blocking.append("no_tasks")
-        return False, "Open problems must have at least one task", blocking
+    # Counts (bounded/simple aggregates). Optional integrations guarded.
+    try:
+        open_blocking_tasks = problem.tasks.filter(is_deleted=False).exclude(
+            status__in=["completed", "cancelled", "skipped"],
+        ).filter(blocks_resolution=True).count()
+    except Exception:
+        open_blocking_tasks = 0
 
-    if problem.is_open and not problem.evidence.exists():
-        blocking.append("no_evidence")
-        return False, "Open problems must have at least one evidence record", blocking
+    try:
+        actions_qs = problem.actions.filter(is_deleted=False)
+        open_required_actions = actions_qs.exclude(
+            status__in=["completed", "validated", "verified", "closed", "cancelled", "ineffective"],
+        ).count()
+    except Exception:
+        open_required_actions = 0
 
-    # Status-specific checks
-    if problem.status == "investigating" and not problem.root_cause_identified_at:
-        blocking.append("root_cause_not_identified")
-        return False, "Root cause must be identified before moving from investigating", blocking
+    try:
+        failed_validations = problem.validations.filter(is_deleted=False).filter(
+            status="failed",
+        ).count() if hasattr(problem.validations.model, "status") else problem.validations.filter(
+            is_deleted=False, passed=False,
+        ).exclude(status__in=["planned", "in_progress", "inconclusive", "cancelled"]).count()
+    except Exception:
+        try:
+            failed_validations = problem.validations.filter(is_deleted=False, passed=False).count()
+        except Exception:
+            failed_validations = 0
 
-    if problem.status == "workaround_available" and not problem.workarounds.exists():
-        blocking.append("no_workaround")
-        return False, "Workaround must be documented before moving from workaround_available", blocking
+    open_critical_tickets = 0
+    try:
+        if hasattr(problem, "ticket_links"):
+            open_critical_tickets = problem.ticket_links.filter(is_deleted=False).filter(
+                ticket__status__in=OPEN_TICKET_STATUSES,
+            ).filter(
+                ticket__priority__in=["critical", "high"],
+            ).count()
+    except Exception:
+        open_critical_tickets = 0
 
-    if problem.status == "validation" and not problem.validations.filter(passed=True).exists():
-        blocking.append("no_validation_passed")
-        return False, "At least one validation must pass before moving from validation", blocking
+    active_exceptions = 0
+    try:
+        now = timezone.now()
+        ex_qs = problem.exceptions.filter(is_deleted=False)
+        if hasattr(problem.exceptions.model, "status"):
+            active_exceptions = ex_qs.filter(status__in=["approved", "active"]).count()
+        else:
+            active_exceptions = ex_qs.count()
+        # treat expired as inactive when expires_at present
+        active_exceptions = ex_qs.filter(
+            **({"status__in": ["approved", "active"]} if hasattr(problem.exceptions.model, "status") else {})
+        ).exclude(expires_at__lt=now).count() if hasattr(problem.exceptions.model, "expires_at") else active_exceptions
+    except Exception:
+        active_exceptions = 0
 
-    if problem.status == "known_error" and not problem.known_error_at:
-        blocking.append("known_error_date_missing")
-        return False, "Known error date must be set for known_error status", blocking
+    counts = {
+        "open_blocking_tasks": int(open_blocking_tasks or 0),
+        "open_required_actions": int(open_required_actions or 0),
+        "failed_validations": int(failed_validations or 0),
+        "open_critical_tickets": int(open_critical_tickets or 0),
+        "active_exceptions": int(active_exceptions or 0),
+    }
 
-    ready = len(blocking) == 0
-    reason = "Problem is ready for transition" if blocking == [] else "; ".join(
-        [f"Blocked: {b}" for b in blocking]
-    )
-    return ready, reason, blocking
+    # Deterministic blocker evaluation (resolution/closure gates)
+    # Approved RCA required unless approved unknown-root-cause exception exists.
+    has_approved_rca = False
+    try:
+        has_approved_rca = problem.root_cause_analyses.filter(
+            is_deleted=False, status="approved",
+        ).exists()
+    except Exception:
+        has_approved_rca = False
+
+    has_unknown_rca_exception = False
+    try:
+        ex_qs = problem.exceptions.filter(is_deleted=False)
+        if hasattr(problem.exceptions.model, "status"):
+            ex_qs = ex_qs.filter(status__in=["approved", "active"])
+        now = timezone.now()
+        if hasattr(problem.exceptions.model, "expires_at"):
+            ex_qs = ex_qs.exclude(expires_at__lt=now)
+        has_unknown_rca_exception = ex_qs.filter(
+            exception_type__in=["unknown_root_cause", "unknown-root-cause", "rca_unknown"],
+        ).exists()
+    except Exception:
+        has_unknown_rca_exception = False
+
+    if not has_approved_rca and not has_unknown_rca_exception:
+        add_blocker(
+            "ROOT_CAUSE_MISSING",
+            "An approved Root Cause Analysis is required.",
+            "high",
+        )
+
+    if counts["open_blocking_tasks"] > 0:
+        add_blocker(
+            "OPEN_BLOCKING_TASKS",
+            "Blocking tasks must be completed before transition.",
+            "high",
+        )
+    if counts["open_required_actions"] > 0:
+        add_blocker(
+            "OPEN_REQUIRED_ACTIONS",
+            "Required actions must be completed before transition.",
+            "high",
+        )
+    if counts["failed_validations"] > 0:
+        add_blocker(
+            "FAILED_VALIDATIONS",
+            "Failed validations must be resolved before transition.",
+            "high",
+        )
+    if counts["open_critical_tickets"] > 0:
+        add_blocker(
+            "OPEN_CRITICAL_TICKETS",
+            "Critical linked tickets remain open.",
+            "high",
+        )
+
+    # Deterministic order by code for known blockers
+    blocker_order = [
+        "ROOT_CAUSE_MISSING",
+        "OPEN_BLOCKING_TASKS",
+        "OPEN_REQUIRED_ACTIONS",
+        "FAILED_VALIDATIONS",
+        "OPEN_CRITICAL_TICKETS",
+    ]
+    order_index = {c: i for i, c in enumerate(blocker_order)}
+    blockers = sorted(blockers, key=lambda b: (order_index.get(b["code"], 999), b["code"]))
+
+    ready_for_resolution = len(blockers) == 0
+    ready_for_closure = ready_for_resolution and counts["open_critical_tickets"] == 0
+
+    return {
+        "ready_for_resolution": bool(ready_for_resolution),
+        "ready_for_closure": bool(ready_for_closure),
+        "blockers": blockers,
+        "warnings": [],
+        "counts": counts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -529,34 +648,48 @@ def next_task_sequence(problem):
     return (last or 0) + 1
 
 
-def create_task(*, actor, problem, title, **fields):
+def create_problem_task(*, actor, problem, title, **fields):
     _require_staff(actor)
     title = (title or "").strip()
     if not title:
         raise ValidationError({"title": "Task title is required."})
-    task = ProblemTask(
-        problem=problem,
-        title=title,
-        created_by=actor,
-        sequence=fields.pop("sequence", None) or next_task_sequence(problem),
-        **fields,
-    )
-    try:
-        task.full_clean()
-    except DjangoValidationError as exc:
-        raise ValidationError(getattr(exc, "message_dict", {"detail": [str(exc)]}))
-    task.save()
-    record_history(
-        problem, "task_created", actor, task=task,
-        detail=f"Task #{task.sequence} '{task.title}' created.",
-        changed_fields=["task"],
-    )
-    notify_staff(
-        task.assigned_to, "Problem task assigned",
-        f"{problem.problem_number}: {task.title}",
-        "problem_management.ProblemTask", task.pk,
-    )
-    return task
+    # Never trust client-controlled status/sequence/completion fields on create.
+    for forbidden in ("status", "sequence", "started_at", "completed_at", "completed_by", "completion_note", "is_deleted"):
+        fields.pop(forbidden, None)
+    with transaction.atomic():
+        locked_problem = Problem.objects.select_for_update().get(pk=problem.pk)
+        task = ProblemTask(
+            problem=locked_problem,
+            title=title,
+            created_by=actor,
+            sequence=next_task_sequence(locked_problem),
+            **fields,
+        )
+        try:
+            task.full_clean()
+        except DjangoValidationError as exc:
+            raise ValidationError(getattr(exc, "message_dict", {"detail": [str(exc)]}))
+        task.save()
+        record_history(
+            locked_problem, "task_created", actor, task=task,
+            detail=f"Task #{task.sequence} '{task.title}' created.",
+            changed_fields=["task"],
+        )
+        log_action(
+            actor=actor, action="problem_task_created", instance=task,
+            details={"problem_id": locked_problem.pk, "sequence": task.sequence},
+        )
+        notify_staff(
+            task.assigned_to, "Problem task assigned",
+            f"{locked_problem.problem_number}: {task.title}",
+            "problem_management.ProblemTask", task.pk,
+        )
+        return task
+
+
+def create_task(*, actor, problem, title, **fields):
+    """Compatibility alias for Gate 1 service naming."""
+    return create_problem_task(actor=actor, problem=problem, title=title, **fields)
 
 
 def create_root_cause_why(*, actor, analysis, question_text, answer, **extra):
@@ -1488,48 +1621,67 @@ def retire_problem_workaround(*, actor, workaround, **extra):
 # ---------------------------------------------------------------------------
 # Gate 1 mutation service: soft delete a Problem
 # ---------------------------------------------------------------------------
-def soft_delete_problem(*, actor, problem, reason=""):
-    """Soft-delete a Problem instance.
+def soft_delete_problem(*, actor, problem, expected=None, reason=""):
+    """Soft-delete an unused draft Problem.
 
-    Policy:
-    - Support role: denied (Http403)
-    - Manager (IT Manager / System Admin): allowed
-    - Active links (ticket/CI/service/asset/software) block deletion → 400
-    - On success: sets problem.is_deleted=True, creates History "soft_deleted"
+    Enforces: governance role, expected version, draft-only, and no related
+    operational records/links. Creates exactly one success history event.
     """
-    from rest_framework.exceptions import PermissionDenied, ValidationError
+    _require_governance(actor)
+    reason = _bounded(reason or "")
+    with transaction.atomic():
+        locked = Problem.objects.select_for_update().get(pk=problem.pk)
+        check_version(locked, expected)
+        if locked.is_deleted:
+            raise ValidationError({"detail": "Problem is already deleted."})
+        if locked.status != "draft":
+            raise ValidationError(
+                {"status": "Only unused Draft Problems can be soft-deleted."}
+            )
 
-    # Role enforcement
-    if is_it_support(actor):
-        raise PermissionDenied("Support role cannot soft-delete problems.")
+        if locked.ticket_links.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Active Ticket links block deletion."})
+        if locked.ci_links.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Active CI links block deletion."})
+        if locked.service_links.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Active Service links block deletion."})
+        if locked.asset_links.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Active Asset links block deletion."})
+        if locked.software_links.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Active Software Product links block deletion."})
+        if locked.tasks.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Active Tasks block deletion."})
+        if hasattr(locked, "root_cause_analyses") and locked.root_cause_analyses.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "RCA records block deletion."})
+        if hasattr(locked, "evidence") and locked.evidence.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Evidence records block deletion."})
+        if hasattr(locked, "actions") and locked.actions.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Actions block deletion."})
+        if hasattr(locked, "workarounds") and locked.workarounds.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Workarounds block deletion."})
+        if hasattr(locked, "validations") and locked.validations.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Validations block deletion."})
+        if hasattr(locked, "exceptions") and locked.exceptions.filter(is_deleted=False).exists():
+            raise ValidationError({"detail": "Exceptions block deletion."})
 
-    # Check for active links that would block soft deletion
-    active_links = (
-        problem.ticket_links.filter(is_deleted=False).count()
-        + problem.ci_links.filter(is_deleted=False).count()
-        + problem.service_links.filter(is_deleted=False).count()
-        + problem.asset_links.filter(is_deleted=False).count()
-        + problem.software_links.filter(is_deleted=False).count()
-    )
-    if active_links > 0:
-        raise ValidationError(
-            {"non_field_errors": ["Cannot soft-delete Problem with active links."]}
+        previous_status = locked.status
+        update_fields = ["is_deleted"]
+        locked.is_deleted = True
+        if hasattr(locked, "deleted_at"):
+            locked.deleted_at = timezone.now()
+            update_fields.append("deleted_at")
+        if hasattr(locked, "deletion_reason"):
+            locked.deletion_reason = reason
+            update_fields.append("deletion_reason")
+        _save_problem(locked, update_fields)
+        record_history(
+            locked, "other", actor,
+            previous_status=previous_status, new_status=locked.status,
+            detail=f"Problem soft-deleted. {reason}".strip(),
+            changed_fields=["is_deleted"],
         )
-
-    # Perform soft delete via the model method
-    problem.soft_delete(by_user=actor, reason=reason or "")
-
-    # Record history event
-    from problem_management.models import ProblemHistory
-
-    ProblemHistory.objects.create(
-        problem=problem,
-        event_type="soft_deleted",
-        actor=actor,
-        previous_status=problem.status,
-        new_status=problem.status,
-        detail=f"Problem soft-deleted: {reason or ''}",
-        changed_fields=["status"],
-    )
-
-    return problem
+        log_action(
+            actor=actor, action="problem_soft_deleted", instance=locked,
+            reason=reason[:500] if reason else "",
+        )
+        return locked

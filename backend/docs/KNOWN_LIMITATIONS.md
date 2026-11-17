@@ -227,3 +227,14 @@ noted below:
 - Celery-dependent tests are skipped when Celery is not installed.
 - Frontend tests mock the API layer; they do not exercise the real
   backend. End-to-end browser testing is not automated.
+
+
+## CMDB limitations
+
+- PostgreSQL migration and concurrency rehearsal pending.
+- SQLite verification is not production-concurrency evidence.
+- Celery schedules configured but require deployed Beat and worker.
+- Assets pagination/full-suite closure is a separate workstream.
+- Historical CMDB implementation exists in mixed commits.
+- CMDB frontend validation remains separate from backend certification.
+- Production schedule cadence may need tuning after operational metrics.

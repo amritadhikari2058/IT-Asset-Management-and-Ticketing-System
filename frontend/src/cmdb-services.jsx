@@ -11,7 +11,8 @@ import {
 } from './cmdb-utils';
 
 export function ServiceMappingPage() {
-  const { role } = useAuth();
+  const { role: authRole, user } = useAuth();
+  const role = authRole ?? user?.role;
   const [serviceProfiles, setServiceProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -61,14 +62,14 @@ export function ServiceMappingPage() {
 
       <DataTable
         columns={[
-          { key: 'service', label: 'Service', render: (v) => v || '—' },
-          { key: 'service_tier', label: 'Tier', render: (v) => v || '—' },
-          { key: 'criticality', label: 'Criticality', render: (v) => CRITICALITY_LABELS[v] || v || '—' },
-          { key: 'service_owner', label: 'Service Owner', render: (v) => v || '—' },
-          { key: 'technical_owner', label: 'Tech Owner', render: (v) => v || '—' },
-          { key: 'support_group', label: 'Support Group', render: (v) => v || '—' },
-          { key: 'ci_count', label: 'CI Count' },
-          { key: 'single_point_of_failure_count', label: 'SPOF Count', render: (v) => v || '—' },
+          { key: 'service', label: 'Service', render: (row) => row.service_name || row.service || '—' },
+          { key: 'service_tier', label: 'Tier', render: (row) => row.service_tier || '—' },
+          { key: 'criticality', label: 'Criticality', render: (row) => CRITICALITY_LABELS[row.criticality] || row.criticality || '—' },
+          { key: 'service_owner', label: 'Service Owner', render: (row) => row.service_owner_name || row.service_owner || '—' },
+          { key: 'technical_owner', label: 'Tech Owner', render: (row) => row.technical_owner_name || row.technical_owner || '—' },
+          { key: 'support_group', label: 'Support Group', render: (row) => row.support_group || '—' },
+          { key: 'ci_count', label: 'CI Count', render: (row) => row.ci_count ?? '—' },
+          { key: 'single_point_of_failure_count', label: 'SPOF Count', render: (row) => row.single_point_of_failure_count ?? '—' },
         ]}
         rows={serviceProfiles}
         keyOf={(r) => r.id}

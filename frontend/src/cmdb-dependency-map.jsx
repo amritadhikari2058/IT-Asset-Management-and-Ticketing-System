@@ -9,13 +9,14 @@ import {
   formatDate, formatDateTime, ciStatusBadgeVariant,
   criticalityBadgeVariant, driftStatusBadgeVariant,
   safeResults, formatVerificationAge,
-  CRITICALITY_LABELS, ENV_LABELS, STATUS_LABELS,
+  CRITICALITY_LABELS, ENVIRONMENT_LABELS, CI_STATUS_LABELS,
   RELATIONSHIP_STATUS_LABELS, RELATIONSHIP_TYPE_LABELS,
   CMDB_API_CONTRACT, CMDB_ROLES, CMDB_PERMISSIONS,
 } from './cmdb-utils';
 
 export function DependencyMap({ match: { params: { id } } }) {
-  const { role } = useAuth();
+  const { role: authRole, user } = useAuth();
+  const role = authRole ?? user?.role;
   const [depth, setDepth] = useState(3);
   const [view, setView] = useState('combined');
   const [nodes, setNodes] = useState([]);
@@ -104,11 +105,11 @@ export function DependencyMap({ match: { params: { id } } }) {
           <span className="node-name">{nodeData.name || '—'}</span>
           <span className="node-type">{nodeData.ci_type || '—'}</span>
           <span className="node-status">
-            {nodeData.status && STATUS_LABELS[nodeData.status] || nodeData.status || '—'}
+            {nodeData.status && CI_STATUS_LABELS[nodeData.status] || nodeData.status || '—'}
           </span>
         </div>
         <div className="node-meta">
-          <span>{nodeData.environment && ENV_LABELS[nodeData.environment] || nodeData.environment || '—'}</span>
+          <span>{nodeData.environment && ENVIRONMENT_LABELS[nodeData.environment] || nodeData.environment || '—'}</span>
           <span>{formatDateTime(nodeData.updated_at)}</span>
         </div>
       </div>
@@ -171,7 +172,7 @@ export function DependencyMap({ match: { params: { id } } }) {
             <span>{edges.length} relationships</span>
           </div>
         </div>
-      )
+      )}
 
       {/* Node cards grid */}
       <div className="dependency-grid">
@@ -186,11 +187,11 @@ export function DependencyMap({ match: { params: { id } } }) {
             </div>
             <div className="node-meta">
               <span>{node.status && ciStatusBadgeVariant(node.status) || '—'}</span>
-              <span>{node.environment && ENV_LABELS[node.environment] || node.environment || '—'}</span>
+              <span>{node.environment && ENVIRONMENT_LABELS[node.environment] || node.environment || '—'}</span>
             </div>
           </div>
         ))}
-      )
+      </div>
 
       {/* Edge connections */}
       {edges.length > 0 && (
@@ -203,10 +204,10 @@ export function DependencyMap({ match: { params: { id } } }) {
             </div>
           ))}
         </div>
-      )
+      )}
 
       {/* Table representation */}
-      {nodes.length > 0 || edges.length > 0 && (
+      {(nodes.length > 0 || edges.length > 0) && (
         <div className="panel panel-pad">
           <h4>Table Representation</h4>
           <DataTable
@@ -214,16 +215,16 @@ export function DependencyMap({ match: { params: { id } } }) {
               { key: 'ci_number', label: 'CI Number' },
               { key: 'name', label: 'Name' },
               { key: 'ci_type', label: 'Type' },
-              { key: 'status', label: 'Status', render: (v) => STATUS_LABELS[v] || v },
-              { key: 'criticality', label: 'Criticality', render: (v) => CRITICALITY_LABELS[v] || v },
-              { key: 'environment', label: 'Environment', render: (v) => ENV_LABELS[v] || v },
+              { key: 'status', label: 'Status', render: (row) => CI_STATUS_LABELS[row.status] || row.status || '—' },
+              { key: 'criticality', label: 'Criticality', render: (row) => CRITICALITY_LABELS[row.criticality] || row.criticality || '—' },
+              { key: 'environment', label: 'Environment', render: (row) => ENVIRONMENT_LABELS[row.environment] || row.environment || '—' },
             ]}
             rows={edges.length > 0 ? edges : nodes}
             keyOf={(r) => r.ci_number || r.id}
             emptyTitle="No relationships"
           />
         </div>
-      )
+      )}
     </div>
   );
 }

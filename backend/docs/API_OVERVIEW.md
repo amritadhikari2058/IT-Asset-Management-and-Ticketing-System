@@ -368,3 +368,26 @@ failure details, correlation ID). Failures raise
 `reports/by-category/` filters exactly the requested `date_from`/`date_to`
 range and returns absolute counts. No previous-period comparison or
 percentage changes are computed — absolute counts only, by decision.
+
+
+## CMDB `/api/cmdb/`
+
+Base: `/api/cmdb/`. Auth: JWT. Staff only (employees denied). Pagination:
+PageNumberPagination (page_size 20, max 100). Trailing slashes optional.
+
+Routes (router prefixes, optional trailing slash):
+- `types` / `configuration-item-types` — CI types (read staff; write system admin/IT manager)
+- `items` / `configuration-items` — configuration items (CRUD staff; field/retirement limits in serializer)
+- `relationships` — directional CI links (support proposes; elevated activate/confirm)
+- `history` — read-only CI change history
+- `baselines` — create/edit/approve (manager/admin; support read-only)
+- `drift` / `drift-findings` — drift findings (staff read; support acknowledge; elevated resolve; critical accept admin-only)
+- `service-profiles` — service profile metadata
+- `service-links` / `service-ci-links` — Service-to-CI links
+- `ticket-links` — Ticket-to-CI links
+- `change-links` — Change-to-CI links
+- `dashboard`, `reports`, `reports/<kind>` — aggregates
+- `verification`, `verification/<pk>/verify` — verification queue
+- `services/<pk>/graph`, `/impact`, `/single-points-of-failure` — service impact graph
+
+Errors: 400 validation, 403 role/capability denied, 404 scoped (hidden/not visible), 409 conflict.

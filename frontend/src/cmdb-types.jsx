@@ -17,9 +17,11 @@ import {
   BASELINE_SCOPE_LABELS, BASELINE_STATUS_LABELS,
   DRIFT_TYPE_LABELS, DRIFT_SEVERITY_LABELS, DRIFT_STATUS_LABELS,
 } from './cmdb-utils';
+import { parseApiError } from './api-utils';
 
 export function CiTypesPage() {
-  const { role } = useAuth();
+  const { role: authRole, user } = useAuth();
+  const role = authRole ?? user?.role;
   const [types, setTypes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -53,8 +55,8 @@ export function CiTypesPage() {
         await api.post(CMDB_API_CONTRACT.typeCreate.endpoint, form);
       }
       setError('');
-      setTypes(prev => prev.filter((t) => t.id !== form.id));
-      setTypes([...setTypes, { ...form, id: form.id }]);
+      const saved = await api.get(CMDB_API_CONTRACT.typesList.endpoint);
+      setTypes(safeResults(saved.data?.results ?? saved.data));
       setForm({ name: '', code: '', description: '', category: 'other',
         icon: '', color: '', is_active: true, schema: [], required_attributes: [] });
     } catch (e) {
@@ -227,12 +229,12 @@ export function CiTypesPage() {
       <div className="panel panel-pad">
         <DataTable
           columns={[
-            { key: 'name', label: 'Name' },
-            { key: 'code', label: 'Code' },
-            { key: 'category', label: 'Category', render: (v) => CI_TYPE_CATEGORY_LABELS[v] || v },
-            { key: 'is_active', label: 'Active', render: (v) => v ? '<span className="badge badge-green">Yes</span>' : '<span className="badge badge-gray">No</span>' },
-            { key: 'ci_count', label: 'CI Count' },
-            { key: 'is_system', label: 'System Type', render: (v) => v ? '<span className="badge badge-gray">Yes</span>' : 'No' },
+            { key: 'name', label: 'Name', render: (row) => row.name || '—' },
+            { key: 'code', label: 'Code', render: (row) => row.code || '—' },
+            { key: 'category', label: 'Category', render: (row) => CI_TYPE_CATEGORY_LABELS[row.category] || row.category || '—' },
+            { key: 'is_active', label: 'Active', render: (row) => (row.is_active ? 'Yes' : 'No') },
+            { key: 'ci_count', label: 'CI Count', render: (row) => row.ci_count ?? 0 },
+            { key: 'is_system', label: 'System Type', render: (row) => (row.is_system ? 'Yes' : 'No') },
           ]}
           rows={types}
           keyOf={(r) => r.id}

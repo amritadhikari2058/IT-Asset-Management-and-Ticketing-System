@@ -46,7 +46,9 @@ function usePaginatedApiGet(endpoint, initialParams = {}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const load = useMemo(() => {
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError('');
@@ -59,7 +61,7 @@ function usePaginatedApiGet(endpoint, initialParams = {}) {
         setItems(results);
         setCount(data.count ?? results.length);
       }
-    ).catch((e) => {
+    ).catch(() => {
       if (cancelled) return;
       setError('Could not load CI list.');
       setCount(0);
@@ -67,16 +69,16 @@ function usePaginatedApiGet(endpoint, initialParams = {}) {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [params, endpoint]);
+  }, [params, endpoint, reloadKey]);
 
-  const reload = () => load();
+  const reload = () => setReloadKey((k) => k + 1);
 
   const goToPage = (pageNum) => {
     setParams({ ...params, page: pageNum });
   };
 
   return {
-    items, count, loading, error,
+    items, count, loading, error, params,
     setParams, reload, goToPage,
   };
 }
@@ -84,9 +86,10 @@ function usePaginatedApiGet(endpoint, initialParams = {}) {
 // ── CI List component ────────────────────────────────────────────────
 
 export function CmdbItemsList() {
-  const { role } = useAuth();
+  const { role: authRole, user } = useAuth();
+  const role = authRole ?? user?.role;
   const [filters, setFilters] = useState({});
-  const [tableState, setTableState] = useTableColumns('cmdb-items', [
+  useTableColumns('cmdb-items', [
     'ci_number', 'name', 'ci_type', 'status', 'lifecycle_state',
     'criticality', 'environment', 'department', 'location', 'owner',
     'technical_owner', 'asset', 'software_product', 'service',
@@ -96,7 +99,7 @@ export function CmdbItemsList() {
     'environment', 'department', 'location', 'owner',
   ]);
 
-  const { items, count, loading, error } =
+  const { items, count, loading, error, params, setParams, goToPage } =
     usePaginatedApiGet(CMDB_API_CONTRACT.ciList.endpoint, {
       page: 1,
     });
@@ -199,27 +202,6 @@ export function CmdbItemsList() {
     setParams({ page: 1 });
   };
 
-  if (role === 'employee') {
-    return (
-      <div className="error-summary" role="alert">
-        Employees have no CMDB CI list access.
-      </div>
-    );
-  }
-
-  if (loading && items.length === 0) {
-    return (
-      <div className="panel panel-pad">
-        <LoadingRows n={8} />
-      </div>
-    );
-  }
-  if (error && items.length === 0) {
-    return (
-      <div className="error-summary" role="alert">{error}</div>
-    );
-  }
-
   // Build DataTable columns from saved table state
   const columns = useMemo(() => {
     const base = [
@@ -263,10 +245,31 @@ export function CmdbItemsList() {
 
     return base.map((c) => ({
       ...c,
-      render: renderers[c.key],
+      render: (row) => renderers[c.key](row[c.key]),
       sortable: true,
     }));
   }, []);
+
+  if (role === 'employee') {
+    return (
+      <div className="error-summary" role="alert">
+        Employees have no CMDB CI list access.
+      </div>
+    );
+  }
+
+  if (loading && items.length === 0) {
+    return (
+      <div className="panel panel-pad">
+        <LoadingRows n={8} />
+      </div>
+    );
+  }
+  if (error && items.length === 0) {
+    return (
+      <div className="error-summary" role="alert">{error}</div>
+    );
+  }
 
   return (
     <div>

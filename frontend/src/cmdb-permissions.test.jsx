@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 
 const { mockGet, mockPost, mockPatch, mockDelete, mockAuth } = vi.hoisted(() => ({
   mockGet: vi.fn(),
@@ -21,6 +21,7 @@ vi.mock('./api', () => ({
 vi.mock('./auth', () => ({ useAuth: (...a) => mockAuth(...a) }));
 
 import { AccessDenied } from './components.jsx';
+import { parseApiError } from './api-utils';
 import { CmdbItemsList } from './cmdb-items';
 import { CiTypesPage } from './cmdb-types';
 import { CiRelationshipsPage } from './cmdb-relationships';
@@ -67,6 +68,7 @@ function authFor(role) {
 }
 
 beforeEach(() => {
+  cleanup();
   vi.resetAllMocks();
   mockGet.mockResolvedValue(EMPTY_PAGE);
   mockPost.mockResolvedValue({ data: {} });
@@ -74,7 +76,7 @@ beforeEach(() => {
   mockDelete.mockResolvedValue({ data: {} });
 });
 
-afterEach(() => {});
+afterEach(() => cleanup());
 
 describe('CMDB Permissions', () => {
   describe('capability helpers', () => {
@@ -90,7 +92,8 @@ describe('CMDB Permissions', () => {
     it('it_support is read-only for vendors and cannot approve or configure workflow', () => {
       const auth = makeAuth('it_support');
       expect(auth.isSupportOrAbove).toBe(true);
-      expect(auth.canManageVendors).toBe(true);
+      expect(auth.canViewVendors).toBe(true);
+      expect(auth.canManageVendors).toBe(false);
       expect(auth.canConfigureWorkflow).toBe(false);
     });
 
@@ -113,8 +116,8 @@ describe('CMDB Permissions', () => {
     });
 
     it('renders manager-only wording', () => {
-      const { container } = render(<AccessDenied role="it_manager" />);
-      expect(container.textContent).toContain('manager');
+      const { container } = render(<AccessDenied reason="manager" />);
+      expect(container.textContent).toMatch(/manager/i);
     });
 
     it('renders action denial wording', () => {
@@ -125,7 +128,7 @@ describe('CMDB Permissions', () => {
 
   describe('parseApiError 403 handling', () => {
     it('produces a readable forbidden message for 403 without global detail', () => {
-      expect(parseApiError({ status: 403 })).toContain('forbidden');
+      expect(parseApiError({ response: { status: 403 } }).global).toMatch(/forbidden/i);
     });
   });
 

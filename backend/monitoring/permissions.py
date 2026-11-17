@@ -2,6 +2,15 @@
 
 from rest_framework import permissions
 
+from .models import MonitoringSource
+
+
+class IsMonitoringSource(permissions.BasePermission):
+    """Permission for authenticated MonitoringSource principals."""
+
+    def has_permission(self, request, view):
+        return isinstance(request.user, MonitoringSource) and request.user.is_active
+
 
 class SystemAdminPermission(permissions.BasePermission):
     """Permission for System Admin only."""

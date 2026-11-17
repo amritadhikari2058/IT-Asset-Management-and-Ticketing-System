@@ -1,5 +1,5 @@
-"""Asset API tests: bulk safety (assignment guard), bulk assignment."""
-from django.db import IntegrityError, transaction
+﻿"""Asset API tests: bulk safety (assignment guard), bulk assignment."""
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
@@ -376,7 +376,7 @@ class BulkAssignTests(TestCase):
 class AssetNotificationTests(TestCase):
     """In-app notifications for asset assignment + return only.
 
-    No emails, no preference checks â€” pure Notification rows sharing the
+    No emails, no preference checks Ã¢â‚¬â€ pure Notification rows sharing the
     mutation's transaction.
     """
 
@@ -523,7 +523,14 @@ class AssetAttachmentTests(TestCase):
 
     def tearDown(self):
         # Test-DB rows only; never real user uploads.
-        for att in AssetAttachment.all_objects.all():
+        # Materialize rows first so a closed DB (possible under file-DB test
+        # settings where request_finished closes the connection before this
+        # loop runs) cannot turn this cleanup loop into a test error.
+        try:
+            attachments = list(AssetAttachment.all_objects.all())
+        except Exception:
+            attachments = []
+        for att in attachments:
             try:
                 if att.file:
                     att.file.storage.delete(att.file.name)

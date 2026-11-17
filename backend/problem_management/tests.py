@@ -700,39 +700,64 @@ class HistoryImmutabilityTests(ProblemTestBase):
 
 class TaskGate1Tests(ProblemTestBase):
     def test_create_task_auto_sequence_and_history(self):
-        p1 = self.make_problem()
         client = api_client(self.support)
-        res1 = client.post(
+        problem_a = self.make_problem(title="Problem A")
+        problem_b = self.make_problem(title="Problem B")
+
+        res_a1 = client.post(
             f"{BASE}tasks/",
-            {"problem": p1.pk, "title": "Collect logs"},
+            {"problem": problem_a.pk, "title": "Task A1"},
             format="json",
         )
-        self.assertEqual(res1.status_code, 201, res1.data)
-        p2 = self.make_problem()
-        res2 = client.post(
+        self.assertEqual(res_a1.status_code, 201, res_a1.data)
+        res_a2 = client.post(
             f"{BASE}tasks/",
-            {"problem": p2.pk, "title": "Interview supplier"},
+            {"problem": problem_a.pk, "title": "Task A2"},
             format="json",
         )
-        self.assertEqual(res2.status_code, 201, res2.data)
-        self.assertEqual(res2.data["sequence"], 1)
+        self.assertEqual(res_a2.status_code, 201, res_a2.data)
+        res_b1 = client.post(
+            f"{BASE}tasks/",
+            {"problem": problem_b.pk, "title": "Task B1"},
+            format="json",
+        )
+        self.assertEqual(res_b1.status_code, 201, res_b1.data)
 
-        self.assertEqual(res1.data["status"], "not_started")
+        task_a1 = ProblemTask.objects.get(pk=res_a1.data["id"])
+        task_a2 = ProblemTask.objects.get(pk=res_a2.data["id"])
+        task_b1 = ProblemTask.objects.get(pk=res_b1.data["id"])
 
+        self.assertEqual(task_a1.sequence, 1)
+        self.assertEqual(task_a2.sequence, 2)
+        self.assertEqual(task_b1.sequence, 1)
+        self.assertEqual(task_a1.problem_id, problem_a.pk)
+        self.assertEqual(task_a2.problem_id, problem_a.pk)
+        self.assertEqual(task_b1.problem_id, problem_b.pk)
         self.assertEqual(
-            p1.history_records.filter(event_type="task_created").count(),
+            ProblemTask.objects.filter(problem=problem_a, sequence=task_a1.sequence, is_deleted=False).count(),
             1,
-        )  # tasks created for other problem
+        )
+        self.assertEqual(
+            ProblemTask.objects.filter(problem=problem_a, sequence=task_a2.sequence, is_deleted=False).count(),
+            1,
+        )
 
-        # NOTE: ProblemHistory events are scoped to each problem
-        self.assertTrue(
-            ProblemHistory.objects.filter(problem=p1.pk, event_type="task_created").count()
-            >= 1,
+        a_history = ProblemHistory.objects.filter(
+            problem=problem_a, event_type="task_created", task=task_a1,
         )
-        self.assertTrue(
-            ProblemHistory.objects.filter(problem=p2.pk, event_type="task_created").count()
-            >= 1,
+        self.assertEqual(a_history.count(), 1)
+        self.assertEqual(a_history.first().actor_id, self.support.pk)
+        a2_history = ProblemHistory.objects.filter(
+            problem=problem_a, event_type="task_created", task=task_a2,
         )
+        self.assertEqual(a2_history.count(), 1)
+        self.assertEqual(a2_history.first().actor_id, self.support.pk)
+        b1_history = ProblemHistory.objects.filter(
+            problem=problem_b, event_type="task_created", task=task_b1,
+        )
+        self.assertEqual(b1_history.count(), 1)
+        self.assertEqual(b1_history.first().actor_id, self.support.pk)
+
     def test_task_status_readonly_via_patch(self):
         problem = self.make_problem()
         client = api_client(self.support)
@@ -761,11 +786,17 @@ class TaskGate1Tests(ProblemTestBase):
         p1 = self.make_problem()
         p2 = self.make_problem()
         client = api_client(self.support)
-        client.post(f"{BASE}tasks/", {"problem": p1.pk, "title": "A"}, format="json")
-        client.post(f"{BASE}tasks/", {"problem": p2.pk, "title": "B"}, format="json")
+        res_a = client.post(f"{BASE}tasks/", {"problem": p1.pk, "title": "A"}, format="json")
+        res_b = client.post(f"{BASE}tasks/", {"problem": p2.pk, "title": "B"}, format="json")
+        self.assertEqual(res_a.status_code, 201, res_a.data)
+        self.assertEqual(res_b.status_code, 201, res_b.data)
         res = client.get(f"{BASE}tasks/", {"problem": p1.pk})
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIn("results", res.data)
+        self.assertEqual(res.data["count"], 1)
+        self.assertEqual(len(res.data["results"]), 1)
+        self.assertEqual(res.data["results"][0]["problem"], p1.pk)
+        self.assertNotEqual(res.data["results"][0]["id"], res_b.data["id"])
 
 
 class SoftDeleteGate1Tests(ProblemTestBase):

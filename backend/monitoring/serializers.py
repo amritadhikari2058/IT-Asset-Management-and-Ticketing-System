@@ -16,17 +16,26 @@ class MonitoringSourceListSerializer(serializers.ModelSerializer):
 class MonitoringSourceCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating MonitoringSource."""
 
+    secret = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
     class Meta:
         model = MonitoringSource
-        fields = ["name", "code", "source_type", "description"]
+        fields = ["name", "code", "source_type", "description", "secret"]
 
     def create(self, validated_data):
         import hashlib
         secret = validated_data.pop("secret", None)
         instance = super().create(validated_data)
         if secret:
-            instance.secret_hash = hashlib.sha256(secret.encode()).hexdigest()[:128]
+            instance.secret_hash = hashlib.sha256(secret.encode()).hexdigest()
             instance.save(update_fields=["secret_hash"])
+            instance._plaintext_secret = secret
+        elif not instance.secret_hash:
+            import secrets
+            generated = secrets.token_urlsafe(32)
+            instance.secret_hash = hashlib.sha256(generated.encode()).hexdigest()
+            instance.save(update_fields=["secret_hash"])
+            instance._plaintext_secret = generated
         return instance
 
 
@@ -35,8 +44,8 @@ class MonitoringSourceDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MonitoringSource
-        fields = "__all__"
-        read_only_fields = ["secret_hash", "created_at", "updated_at"]
+        exclude = ["secret_hash", "previous_secret_hash", "previous_secret_valid_until"]
+        read_only_fields = ["created_at", "updated_at"]
 
 
 class MonitoringEventSerializer(serializers.ModelSerializer):

@@ -61,21 +61,21 @@ describe('CMDB Impact Analysis', () => {
     makeAdminAuth();
     mockGet.mockResolvedValueOnce({ data: [] });
     render(<ImpactAnalysisPage match={{ params: { id: 1 } }} />);
-    await screen.findByText(/Impact/i);
+    await screen.findByRole('heading', { name: /Impact Analysis/i });
   });
 
   it('system_admin can run downstream impact', async () => {
     makeAdminAuth();
     mockGet.mockResolvedValueOnce({ data: [] });
     render(<ImpactAnalysisPage match={{ params: { id: 1 } }} />);
-    await screen.findByText(/Impact/i);
+    await screen.findByRole('heading', { name: /Impact Analysis/i });
   });
 
   it('bounded depth prevents unbounded requests', () => {
     makeAdminAuth();
     mockGet.mockResolvedValueOnce({ data: [] });
     render(<ImpactAnalysisPage match={{ params: { id: 1 } }} />);
-    expect(screen.getByText(/depth|maximum/i)).toBeTruthy();
+    expect(screen.getByLabelText('Maximum Depth')).toBeTruthy();
   });
 
   it('truncation state shown when result exceeds bounds', async () => {
@@ -89,7 +89,7 @@ describe('CMDB Impact Analysis', () => {
     makeSupportAuth();
     mockGet.mockResolvedValueOnce({ data: [] });
     render(<ImpactAnalysisPage match={{ params: { id: 1 } }} />);
-    await screen.findByText(/Impact/i);
+    await screen.findByRole('heading', { name: /Impact Analysis/i });
     // Should not contain hidden/inaccessible records
     expect(screen.queryByText(/hidden/i)).toBeNull();
   });
@@ -115,14 +115,14 @@ describe('CMDB Impact Analysis', () => {
       makeManagerAuth();
       mockGet.mockResolvedValueOnce({ data: [] });
       render(<ImpactAnalysisPage match={{ params: { id: 1 } }} />);
-      await screen.findByText(/Impact/i);
+      await screen.findByRole('heading', { name: /Impact Analysis/i });
     });
 
     it('it_support can view impact results', async () => {
       makeSupportAuth();
       mockGet.mockResolvedValueOnce({ data: [] });
       render(<ImpactAnalysisPage match={{ params: { id: 1 } }} />);
-      await screen.findByText(/Impact/i);
+      await screen.findByRole('heading', { name: /Impact Analysis/i });
     });
 
     it('employee denied impact analysis', () => {

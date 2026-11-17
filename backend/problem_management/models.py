@@ -707,6 +707,36 @@ class ProblemHistory(models.Model):
         ("major_review_started", "Major Review Started"),
         ("major_review_approved", "Major Review Approved"),
         ("evidence_added", "Evidence Added"),
+        ("evidence_archived", "Evidence Archived"),
+        ("rca_created", "RCA Created"),
+        ("rca_submitted", "RCA Submitted"),
+        ("rca_approved", "RCA Approved"),
+        ("rca_rejected", "RCA Rejected"),
+        ("rca_superseded", "RCA Superseded"),
+        ("why_created", "Why Created"),
+        ("why_updated", "Why Updated"),
+        ("why_deleted", "Why Deleted"),
+        ("factor_created", "Factor Created"),
+        ("factor_updated", "Factor Updated"),
+        ("factor_deleted", "Factor Deleted"),
+        ("timeline_event_added", "Timeline Event Added"),
+        ("action_approved", "Action Approved"),
+        ("action_started", "Action Started"),
+        ("action_validated", "Action Validated"),
+        ("action_ineffective", "Action Ineffective"),
+        ("action_cancelled", "Action Cancelled"),
+        ("workaround_submitted", "Workaround Submitted"),
+        ("workaround_approved", "Workaround Approved"),
+        ("workaround_expired", "Workaround Expired"),
+        ("workaround_retired", "Workaround Retired"),
+        ("validation_created", "Validation Created"),
+        ("validation_inconclusive", "Validation Inconclusive"),
+        ("validation_cancelled", "Validation Cancelled"),
+        ("exception_created", "Exception Created"),
+        ("exception_submitted", "Exception Submitted"),
+        ("exception_rejected", "Exception Rejected"),
+        ("exception_revoked", "Exception Revoked"),
+        ("exception_expired", "Exception Expired"),
         ("linked", "Linked"),
         ("unlinked", "Unlinked"),
         ("metrics_refreshed", "Metrics Refreshed"),
@@ -1063,48 +1093,3 @@ class ProblemException(SoftDeleteModel):
 
     def __str__(self):
         return f"{self.problem_id}: {self.title}"
-
-
-def evaluate_problem_readiness(problem):
-    """Evaluate if a problem is ready for a status transition.
-
-    Returns (ready: bool, reason: str, blocking_factors: list[str]).
-    """
-    blocking = []
-
-    # Must have a problem number
-    if not problem.problem_number:
-        blocking.append("problem_number_missing")
-        return False, "Problem number is required", blocking
-
-    # Open problems need at least one task or evidence
-    if problem.is_open and not problem.tasks.exists():
-        blocking.append("no_tasks")
-        return False, "Open problems must have at least one task", blocking
-
-    if problem.is_open and not problem.evidence.exists():
-        blocking.append("no_evidence")
-        return False, "Open problems must have at least one evidence record", blocking
-
-    # Status-specific checks
-    if problem.status == "investigating" and not problem.root_cause_identified_at:
-        blocking.append("root_cause_not_identified")
-        return False, "Root cause must be identified before moving from investigating", blocking
-
-    if problem.status == "workaround_available" and not problem.workarounds.exists():
-        blocking.append("no_workaround")
-        return False, "Workaround must be documented before moving from workaround_available", blocking
-
-    if problem.status == "validation" and not problem.validations.filter(passed=True).exists():
-        blocking.append("no_validation_passed")
-        return False, "At least one validation must pass before moving from validation", blocking
-
-    if problem.status == "known_error" and not problem.known_error_at:
-        blocking.append("known_error_date_missing")
-        return False, "Known error date must be set for known_error status", blocking
-
-    ready = len(blocking) == 0
-    reason = "Problem is ready for transition" if blocking == [] else "; ".join(
-        [f"Blocked: {b}" for b in blocking]
-    )
-    return ready, reason, blocking

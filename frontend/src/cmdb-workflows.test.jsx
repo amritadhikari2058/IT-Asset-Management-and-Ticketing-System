@@ -104,8 +104,8 @@ describe('CMDB Workflows', () => {
       access: 'token', user: { id: 1, email: 'emp@local', employee_id: 'E1', role: 'employee', is_active: true },
       profileLoading: false, isStaff: false, isAdmin: false,
     });
-    render(<></>);
-    expect(screen.getByText('Only IT staff can view the CMDB dashboard.')).toBeTruthy();
+    render(<CmdbItemsList />);
+    expect(screen.getByText('Employees have no CMDB CI list access.')).toBeTruthy();
   });
 
   it('verify CI workflow with correct version', async () => {

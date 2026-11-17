@@ -156,8 +156,8 @@ export function ChangeForm({ changeId = null }) {
       <Form>
         <h2>Affected Records</h2>
         <Row>
-          <Col sm={6}><h4>Assets</h4><Select multiple onChange={(e) => handleAssetChange(e.target.value)}>{/* Asset options */}</Col>
-          <Col sm={6}><h4>Services</h4><Select multiple onChange={(e) => handleServiceChange(e.target.value)}>{/* Service options */}</Col>
+          <Col sm={6}><h4>Assets</h4><Select multiple onChange={(e) => handleAssetChange(e.target.value)}>{/* Asset options */}</Select></Col>
+          <Col sm={6}><h4>Services</h4><Select multiple onChange={(e) => handleServiceChange(e.target.value)}>{/* Service options */}</Select></Col>
         </Row>
         <Row className="mt-3"><Col sm={12}><Input placeholder="Related Tickets (IDs)" value={change.related_tickets_str || ''} onChange={(e) => setChange(c => ({ ...c, related_tickets_str: e.target.value }))} /></Col></Row>
         <Row className="mt-3"><Col sm={12}><Input placeholder="KB References" value={change.knowledge_base_references_str || ''} onChange={(e) => setChange(c => ({ ...c, knowledge_base_references_str: e.target.value }))} /></Col></Row>

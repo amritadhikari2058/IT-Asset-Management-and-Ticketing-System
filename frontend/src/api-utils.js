@@ -27,6 +27,10 @@ export function parseApiError(e) {
   const status = e?.response?.status;
   const out = { fields: {}, global: '' };
   if (!data) {
+    if (status === 403) {
+      out.global = 'Forbidden: you lack permission for this action.';
+      return out;
+    }
     out.global = e?.message ? `Request failed: ${e.message}` : 'Request failed.';
     return out;
   }

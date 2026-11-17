@@ -339,18 +339,19 @@ class AssetViewSet(viewsets.ModelViewSet):
         params = self.request.query_params
         if params.get("q"):
             q = params["q"]
-            qs = qs.filter(name__icontains=q) | qs.filter(
-                asset_tag__icontains=q) | qs.filter(
-                serial_number__icontains=q) | qs.filter(
-                location__icontains=q) | qs.filter(
-                department__name__icontains=q) | qs.filter(
-                department__code__icontains=q)
+            qs = qs.filter(
+                Q(name__icontains=q) | Q(asset_tag__icontains=q) |
+                Q(serial_number__icontains=q) | Q(location__icontains=q) |
+                Q(department__name__icontains=q) | Q(department__code__icontains=q)
+            )
         if params.get("category"):
             qs = qs.filter(category_id=params["category"])
         if params.get("department"):
             qs = qs.filter(department_id=params["department"])
         if params.get("vendor"):
             qs = qs.filter(vendor_id=params["vendor"])
+        qs = _apply_asset_ordering(qs, params.get("ordering"))
+        return qs
 
     def perform_create(self, serializer):
         """Create the asset; optionally attach an uploaded file atomically.
@@ -1054,10 +1055,16 @@ def _asset_visible_qs(user):
     visibility — so they cannot enumerate or download other employees'
     assets and attachments (IDOR protection).
     """
+    if not (user and getattr(user, "is_authenticated", False)
+            and getattr(user, "is_active", True)):
+        return Asset.objects.none()
+    role = getattr(user, "role", "")
+    if role not in ("system_admin", "it_manager", "it_support",
+                    "employee") and not getattr(user, "is_superuser", False):
+        return Asset.objects.none()
     qs = Asset.objects.select_related(
         "category", "assigned_to", "department").all()
-    if is_system_admin(user) or getattr(user, "role", "") in (
-            "it_manager", "it_support"):
+    if is_system_admin(user) or role in ("it_manager", "it_support"):
         return qs
     filt = Q(assigned_to=user)
     if getattr(user, "home_department_id", None):
@@ -1178,19 +1185,22 @@ class AssetAttachmentViewSet(viewsets.ModelViewSet):
         )
         obj = self.get_object()  # scoped to visible assets above
         if obj.is_deleted:
-            return Response({"detail": "Attachment is deleted."}, status=404)
+            return Response(
+                {"detail": "Attachment is deleted."}, status=404)
         try:
             handle = obj.file.open("rb")
         except FileNotFoundError:
-            return Response({"detail": "File missing from storage."},
-                            status=410)
-        name = obj.original_filename or os.path.basename(obj.file.name)
+            return Response(
+                {"detail": "File missing from storage."}, status=410)
+        name = obj.original_filename or os.path.basename(
+            obj.file.name)
         resp = FileResponse(
             handle,
             content_type=mimetypes.guess_type(name)[0]
             or "application/octet-stream")
         safe_name = safe_content_disposition_filename(name)
-        resp["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+        resp["Content-Disposition"] = (
+            f'attachment; filename="{safe_name}"')
         add_download_security_headers(resp)
         return resp
 

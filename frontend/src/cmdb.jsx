@@ -64,8 +64,8 @@ export const CMDB_PERMISSIONS = {
 
   // Relationships
   canViewRelationships: (role) => role !== CMDB_ROLES.EMPLOYEE,
-  canCreateRelationship: (role) => role !== CMDB_ROLES.EMPLOYEE,
-  canEditRelationship: (role) => role !== CMDB_ROLES.EMPLOYEE,
+  canCreateRelationship: (role) => role === CMDB_ROLES.SYSTEM_ADMIN || role === CMDB_ROLES.IT_MANAGER,
+  canEditRelationship: (role) => role === CMDB_ROLES.SYSTEM_ADMIN || role === CMDB_ROLES.IT_MANAGER,
   canDeleteRelationship: (role) => role === CMDB_ROLES.SYSTEM_ADMIN,
 
   // Dependency Map

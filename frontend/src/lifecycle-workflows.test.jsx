@@ -145,7 +145,11 @@ beforeEach(() => {
   mockDelete.mockResolvedValue({ data: {} });
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.location.hash = '#/';
+  vi.clearAllTimers();
+});
 
 describe('Four-step wizard', () => {
   it('renders step 1 with case type, employee, template, priority', async () => {
@@ -167,8 +171,9 @@ describe('Four-step wizard', () => {
     render(<LifecycleForm />);
     await waitFor(() => expect(screen.getByTestId('case-type-select')).toBeTruthy());
     fireEvent.change(screen.getByTestId('case-type-select'), { target: { value: 'onboarding' } });
-    await waitFor(() => expect(screen.getAllByTestId('employee-select').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByTestId('employee-select')[0].querySelector('option[value="3"]')).toBeTruthy());
     fireEvent.change(screen.getAllByTestId('employee-select')[0], { target: { value: '3' } });
+    await waitFor(() => expect(screen.getByTestId('template-select').querySelector('option[value="1"]')).toBeTruthy());
     fireEvent.change(screen.getByTestId('template-select'), { target: { value: '1' } });
     fireEvent.click(screen.getByRole('button', { name: /Next/ }));
     await waitFor(() => expect(screen.getByText(/Step 2 of 4/)).toBeTruthy());
@@ -191,8 +196,9 @@ describe('Four-step wizard', () => {
     render(<LifecycleForm />);
     await waitFor(() => expect(screen.getByTestId('case-type-select')).toBeTruthy());
     fireEvent.change(screen.getByTestId('case-type-select'), { target: { value: 'onboarding' } });
-    await waitFor(() => expect(screen.getAllByTestId('employee-select').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByTestId('employee-select')[0].querySelector('option[value="3"]')).toBeTruthy());
     fireEvent.change(screen.getAllByTestId('employee-select')[0], { target: { value: '3' } });
+    await waitFor(() => expect(screen.getByTestId('template-select').querySelector('option[value="1"]')).toBeTruthy());
     fireEvent.change(screen.getByTestId('template-select'), { target: { value: '1' } });
     expect(screen.getByTestId('template-select').value).toBe('1');
     fireEvent.change(screen.getByTestId('case-type-select'), { target: { value: 'offboarding' } });
@@ -205,8 +211,9 @@ describe('Four-step wizard', () => {
     render(<LifecycleForm />);
     await waitFor(() => expect(screen.getByTestId('case-type-select')).toBeTruthy());
     fireEvent.change(screen.getByTestId('case-type-select'), { target: { value: 'transfer' } });
-    await waitFor(() => expect(screen.getAllByTestId('employee-select').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByTestId('employee-select')[0].querySelector('option[value="3"]')).toBeTruthy());
     fireEvent.change(screen.getAllByTestId('employee-select')[0], { target: { value: '3' } });
+    await waitFor(() => expect(screen.getByTestId('template-select').querySelector('option[value="3"]')).toBeTruthy());
     fireEvent.change(screen.getByTestId('template-select'), { target: { value: '3' } });
     fireEvent.click(screen.getByRole('button', { name: /Next/ }));
     await waitFor(() => expect(screen.getByText(/Step 2 of 4/)).toBeTruthy());
@@ -227,8 +234,9 @@ describe('Four-step wizard', () => {
     render(<LifecycleForm />);
     await waitFor(() => expect(screen.getByTestId('case-type-select')).toBeTruthy());
     fireEvent.change(screen.getByTestId('case-type-select'), { target: { value: 'onboarding' } });
-    await waitFor(() => expect(screen.getAllByTestId('employee-select').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByTestId('employee-select')[0].querySelector('option[value="3"]')).toBeTruthy());
     fireEvent.change(screen.getAllByTestId('employee-select')[0], { target: { value: '3' } });
+    await waitFor(() => expect(screen.getByTestId('template-select').querySelector('option[value="1"]')).toBeTruthy());
     fireEvent.change(screen.getByTestId('template-select'), { target: { value: '1' } });
     fireEvent.click(screen.getByRole('button', { name: /Next/ }));
     await waitFor(() => expect(screen.getByText(/Step 2 of 4/)).toBeTruthy());
@@ -254,8 +262,9 @@ describe('Four-step wizard', () => {
     render(<LifecycleForm />);
     await waitFor(() => expect(screen.getByTestId('case-type-select')).toBeTruthy());
     fireEvent.change(screen.getByTestId('case-type-select'), { target: { value: 'onboarding' } });
-    await waitFor(() => expect(screen.getAllByTestId('employee-select').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByTestId('employee-select')[0].querySelector('option[value="3"]')).toBeTruthy());
     fireEvent.change(screen.getAllByTestId('employee-select')[0], { target: { value: '3' } });
+    await waitFor(() => expect(screen.getByTestId('template-select').querySelector('option[value="1"]')).toBeTruthy());
     fireEvent.change(screen.getByTestId('template-select'), { target: { value: '1' } });
     fireEvent.click(screen.getByRole('button', { name: /Next/ }));
     await waitFor(() => expect(screen.getByText(/Step 2 of 4/)).toBeTruthy());

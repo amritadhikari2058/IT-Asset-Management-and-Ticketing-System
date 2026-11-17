@@ -14,7 +14,8 @@ import {
 } from './cmdb-utils';
 
 export function DriftFindingsPage() {
-  const { role } = useAuth();
+  const { role: authRole, user } = useAuth();
+  const role = authRole ?? user?.role;
   const [driftFindings, setDriftFindings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -116,7 +117,7 @@ export function DriftFindingsPage() {
           <div className="row-gap">
             <Field label="Status">
               <Select
-                onChange={(e} => {/* filter handling */}
+                onChange={(e) => {/* filter handling */}}
                   aria-label="Drift status">
                 <option value="">All Statuses</option>
                 <option value="open">Open</option>
@@ -128,7 +129,7 @@ export function DriftFindingsPage() {
             </Field>
             <Field label="Severity">
               <Select
-                onChange={(e} => {/* filter handling */}
+                onChange={(e) => {/* filter handling */}}
                   aria-label="Drift severity">
                 <option value="">All Severities</option>
                 <option value="info">Info</option>
@@ -140,7 +141,7 @@ export function DriftFindingsPage() {
             </Field>
             <Field label="Type">
               <Select
-                onChange={(e} => {/* filter handling */}
+                onChange={(e) => {/* filter handling */}}
                   aria-label="Drift type">
                 <option value="">All Types</option>
               </Select>
@@ -153,15 +154,15 @@ export function DriftFindingsPage() {
       <div className="panel panel-pad">
         <DataTable
           columns={[
-            { key: 'severity', label: 'Severity', render: (v) => DRIFT_SEVERITY_LABELS[v] || v },
-            { key: 'finding_type', label: 'Finding Type', render: (v) => DRIFT_TYPE_LABELS[v] || v },
-            { key: 'ci_number', label: 'CI', render: (v) => v || '—' },
-            { key: 'baseline', label: 'Baseline', render: (v) => v || '—' },
-            { key: 'field_name', label: 'Field' },
-            { key: 'expected_value', label: 'Expected' },
-            { key: 'actual_value', label: 'Actual' },
-            { key: 'status', label: 'Status', render: (v) => DRIFT_STATUS_LABELS[v] || v },
-            { key: 'detected_at', label: 'Detected', render: (v) => v ? formatDateTime(v) : '—' },
+            { key: 'severity', label: 'Severity', render: (row) => DRIFT_SEVERITY_LABELS[row.severity] || row.severity || '—' },
+            { key: 'finding_type', label: 'Finding Type', render: (row) => DRIFT_TYPE_LABELS[row.finding_type] || row.finding_type || '—' },
+            { key: 'ci_number', label: 'CI', render: (row) => row.ci_number || '—' },
+            { key: 'baseline', label: 'Baseline', render: (row) => row.baseline_name || row.baseline || '—' },
+            { key: 'field_name', label: 'Field', render: (row) => row.field_name || '—' },
+            { key: 'expected_value', label: 'Expected', render: (row) => row.expected_value ?? '—' },
+            { key: 'actual_value', label: 'Actual', render: (row) => row.actual_value ?? '—' },
+            { key: 'status', label: 'Status', render: (row) => DRIFT_STATUS_LABELS[row.status] || row.status || '—' },
+            { key: 'detected_at', label: 'Detected', render: (row) => row.detected_at ? formatDateTime(row.detected_at) : '—' },
           ]}
           rows={driftFindings}
           keyOf={(r) => r.id}

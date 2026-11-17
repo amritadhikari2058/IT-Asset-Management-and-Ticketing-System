@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import { PageHeader, Badge, Form, Input, Select, Button, Row, Col } from './components';
 import { useAuth } from './auth';
+import api from './api';
 import { fetchPage, parseApiError } from './changes-utils';
 
 export function ChangeTasks({ match }) {
@@ -27,6 +28,15 @@ export function ChangeTasks({ match }) {
         setLoading(false);
       });
   }, [match.params.id]);
+
+  const updateTaskStatus = async (taskId, status) => {
+    try {
+      await api.patch(`/changes/${match.params.id}/tasks/${taskId}/`, { status });
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status } : t)));
+    } catch (e) {
+      setError(parseApiError(e));
+    }
+  };
 
   if (loading) {
     return <div className="mt-3"><p>Loading tasks…</p></div>;
@@ -53,7 +63,7 @@ export function ChangeTasks({ match }) {
                   <Col sm={4}><strong>Assigned:</strong> {t.assigned_to ? t.assigned_to.employee_id : 'Unassigned'}</Col>
                   <Col sm={2}>
                     {isStaff && (
-                      <Select onChange={(e) => /* TODO: update task status */}>
+                      <Select value={t.status} onChange={(e) => updateTaskStatus(t.id, e.target.value)}>
                         <option value="pending">Pending</option>
                         <option value="in_progress">In Progress</option>
                         <option value="completed">Completed</option>

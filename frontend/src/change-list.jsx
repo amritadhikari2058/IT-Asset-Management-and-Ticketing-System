@@ -120,7 +120,7 @@ export function ChangeList({ initialFilters = {} }) {
                     <Badge kind="low">{change.conflicts_count}</Badge>
                   ) : (
                     '-'
-                  ))
+                  )}
                 </td>
                 <td>
                   {isStaff ? (

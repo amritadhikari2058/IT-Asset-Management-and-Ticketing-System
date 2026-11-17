@@ -126,6 +126,7 @@ INSTALLED_APPS = [
 # Celery configuration
 import os
 from django.utils import timezone
+from celery.schedules import crontab
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
 CELERY_TIMEZONE = timezone.get_default_timezone_name() if hasattr(timezone, 'get_default_timezone_name') else 'UTC'
@@ -177,6 +178,21 @@ CELERY_BEAT_SCHEDULE = {
     'sync-backup-schedules': {
         'task': 'backup.tasks.sync_beat_schedules',
         'schedule': 300.0,  # every 5 minutes
+    },
+    'cmdb-evaluate-configuration-drift': {
+        'task': 'cmdb.tasks.evaluate_configuration_drift_task',
+        'schedule': crontab(hour=2, minute=15),
+        'kwargs': {'batch_size': 200},
+    },
+    'cmdb-sync-assets-to-cmdb': {
+        'task': 'cmdb.tasks.sync_assets_to_cmdb_task',
+        'schedule': crontab(minute=20),
+        'kwargs': {'batch_size': 100, 'offset': 0},
+    },
+    'cmdb-check-ci-verification-age': {
+        'task': 'cmdb.tasks.check_ci_verification_age_task',
+        'schedule': crontab(hour=8, minute=0),
+        'kwargs': {'batch_size': 200, 'notify': True},
     },
 }
 

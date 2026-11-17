@@ -1,9 +1,9 @@
-import { useEffect, useState, useMemo } from 'react';
+import { Children, cloneElement, useEffect, useState, useMemo } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
   Badge, DataTable, EmptyState, PageHeader, LoadingRows,
-  Field, Select, Input, Tab, Tabs,
+  Field, Select, Input,
 } from './components';
 import {
   formatDate, formatDateTime, safeResults,
@@ -11,7 +11,8 @@ import {
 } from './cmdb-utils';
 
 export function CmdbReports() {
-  const { role } = useAuth();
+  const { role: authRole, user } = useAuth();
+  const role = authRole ?? user?.role;
   const [reports, setReports] = useState(null);
   const [kind, setKind] = useState('coverage');
   const [loading, setLoading] = useState(true);
@@ -126,14 +127,14 @@ export function CmdbReports() {
             </Field>
             <Field label="CI Type">
               <Select
-                onChange={(e} => {/* filter */}}
+                onChange={(e) => {/* filter */}}
                   aria-label="CI Type">
                 <option value="">All CI Types</option>
               </Select>
             </Field>
             <Field label="Environment">
               <Select
-                onChange={(e} => {/* filter */}}
+                onChange={(e) => {/* filter */}}
                   aria-label="Environment">
                 <option value="">All Environments</option>
                 {filterOptions.environment.options.map((o) => (
@@ -143,7 +144,7 @@ export function CmdbReports() {
             </Field>
             <Field label="Criticality">
               <Select
-                onChange={(e} => {/* filter */}}
+                onChange={(e) => {/* filter */}}
                   aria-label="Criticality">
                 <option value="">All Criticalities</option>
                 {filterOptions.criticality.options.map((o) => (
@@ -153,7 +154,7 @@ export function CmdbReports() {
             </Field>
             <Field label="Status">
               <Select
-                onChange={(e} => {/* filter */}}
+                onChange={(e) => {/* filter */}}
                   aria-label="Status">
                 <option value="">All Statuses</option>
               </Select>
@@ -196,7 +197,7 @@ export function CmdbReports() {
             />
           )}
           <p className="muted small">
-            Generated {reports.generated_at ? formatDateTime(reports.generated_at) : '— ago}.
+            Generated {reports.generated_at ? formatDateTime(reports.generated_at) : '—'}
           </p>
         </div>
       ) : (
@@ -221,5 +222,32 @@ export function CmdbReports() {
         </div>
       )}
     </div>
+  );
+}
+// ── Local tab primitives (CMDB reports) ──────────────────────────────
+function Tabs({ value, onValueChange, children, 'aria-label': ariaLabel }) {
+  return (
+    <div className="tabs" role="tablist" aria-label={ariaLabel}>
+      {Children.map(children, (child) => (
+        child ? cloneElement(child, {
+          active: child.props.value === value,
+          onSelect: onValueChange,
+        }) : child
+      ))}
+    </div>
+  );
+}
+
+function Tab({ value, active, onSelect, children }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={!!active}
+      className={active ? 'tab active' : 'tab'}
+      onClick={() => onSelect(value)}
+    >
+      {children}
+    </button>
   );
 }

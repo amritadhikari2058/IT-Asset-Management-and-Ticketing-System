@@ -329,7 +329,7 @@ class ProblemTaskViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         data = dict(serializer.validated_data)
         problem = data.pop("problem")
-        task = services.create_task(
+        task = services.create_problem_task(
             actor=self.request.user, problem=problem,
             **data,
         )

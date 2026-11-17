@@ -145,3 +145,17 @@ application or duplicate monitoring models.
   only — no wildcard CORS in production.
 - S3 objects are private (`AWS_DEFAULT_ACL=None`); access is mediated by
   the application.
+
+
+## CMDB (Configuration Management Database)
+
+CI Type and Configuration Item (CI) models with soft-delete-aware uniqueness.
+Directional relationships between CIs. Links to Service, Ticket, Change, and
+Asset records. Baseline snapshot and approval (creator/reviewer separation).
+Drift evaluation against approved baselines. Impact traversal with depth/node
+limits. Verification-age evaluation with overdue CI findings and notifications.
+Bounded Asset-to-CMDB synchronization. Management commands:
+`seed_cmdb_types`, `sync_assets_to_cmdb`, `evaluate_configuration_drift`
+(support `--dry-run`). Celery Beat schedules (UTC): drift eval 02:15,
+Asset sync hourly :20, verification-age check 08:00. SQLite test evidence only;
+PostgreSQL recommended for production concurrency.

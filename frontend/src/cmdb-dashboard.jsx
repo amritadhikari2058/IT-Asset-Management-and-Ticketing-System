@@ -71,7 +71,8 @@ function prettyLabel(value) {
 // ── Main Dashboard component ───────────────────────────────────────────
 
 export function Dashboard() {
-  const { role } = useAuth();
+  const { role: authRole, user } = useAuth();
+  const role = authRole ?? user?.role;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');

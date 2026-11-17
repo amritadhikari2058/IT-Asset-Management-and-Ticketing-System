@@ -69,7 +69,7 @@ describe('CMDB Relationships', () => {
     makeAdminAuth();
     mockGet.mockResolvedValueOnce({ data: [] });
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    expect(screen.getByText(/Inverse/i)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /Inverse/i })).toBeTruthy();
   });
 
   it('system_admin can activate/deactivate relationships', () => {
@@ -106,19 +106,27 @@ describe('CMDB Relationships', () => {
     expect(screen.getByText(/cycle/i)).toBeTruthy();
   });
 
-  it('excludes inaccessible CIs from relationship selectors', () => {
+  it('excludes inaccessible CIs from relationship selectors', async () => {
     makeAdminAuth();
-    mockGet.mockResolvedValueOnce({ data: [{ id: 1, name: 'A', status: 'active' }, { id: 2, name: 'B', status: 'inactive' }] });
+    mockGet
+      .mockResolvedValueOnce({ data: [] }) // relationships for this CI
+      .mockResolvedValueOnce({ data: [{ id: 1, name: 'A', status: 'active' }, { id: 2, name: 'B', status: 'inactive' }] });
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    expect(screen.getByRole('option', { name: /B/i })).toBeTruthy();
+    expect(await screen.findByRole('option', { name: 'B (2)' })).toBeTruthy();
   });
 
-  it('shows error on missing related CI', () => {
+  it('shows error on missing related CI', async () => {
     makeAdminAuth();
-    mockGet.mockResolvedValueOnce({ data: [{ id: 1, name: 'A' }] });
-    mockGet.mockResolvedValueOnce({ data: [] }); // Related CI not found
+    mockGet
+      .mockResolvedValueOnce({ data: [] }) // relationships for this CI
+      .mockResolvedValueOnce({ data: [{ id: 2, name: 'B' }] }); // related CI choices
+    mockPost.mockRejectedValueOnce({ response: { status: 404 } });
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    expect(screen.getByText(/not found/i)).toBeTruthy();
+    await screen.findByRole('option', { name: 'B (2)' });
+    fireEvent.change(screen.getByLabelText('Related CI'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('Relationship Type'), { target: { value: 'depends_on' } });
+    fireEvent.click(screen.getByRole('button', { name: /(Create|Update) Relationship/i }));
+    expect(await screen.findByText(/not found/i)).toBeTruthy();
   });
 
   describe('role gates', () => {
@@ -135,7 +143,7 @@ describe('CMDB Relationships', () => {
       mockGet.mockResolvedValueOnce({ data: [] });
       render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
       expect(screen.queryByRole('button', { name: /Create/ })).toBeNull();
-      expect(screen.getByText(/view/i)).toBeTruthy();
+      expect(screen.getByText(/requires IT Manager/i)).toBeTruthy();
     });
 
     it('employee denied all relationship access', () => {

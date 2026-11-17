@@ -11,9 +11,10 @@ from django.test import TransactionTestCase
 from problem_management.models import (
     ProblemEvidence, RootCauseAnalysis, RootCauseWhy, RootCauseFactor,
     ProblemTimelineEvent, ProblemAction, ProblemWorkaround,
-    ProblemValidation, ProblemException, evaluate_problem_readiness,
+    ProblemValidation, ProblemException,
     Problem, ProblemNumberSequence, ProblemTask,
 )
+from problem_management.services import evaluate_problem_readiness
 
 
 class Gate2ModelTests(TransactionTestCase):
@@ -250,8 +251,26 @@ class Gate2ModelTests(TransactionTestCase):
         self.assertFalse(exception.granted_at)
         self.assertEqual(str(exception), f"{problem.id}: Operational exception")
 
+    def _assert_readiness_contract(self, result):
+        self.assertIsInstance(result, dict)
+        self.assertIn("ready_for_resolution", result)
+        self.assertIn("ready_for_closure", result)
+        self.assertIn("blockers", result)
+        self.assertIn("warnings", result)
+        self.assertIn("counts", result)
+        self.assertIsInstance(result["blockers"], list)
+        self.assertIsInstance(result["warnings"], list)
+        self.assertEqual(result["warnings"], [])
+        for key in (
+            "open_blocking_tasks", "open_required_actions", "failed_validations",
+            "open_critical_tickets", "active_exceptions",
+        ):
+            self.assertIn(key, result["counts"])
+        codes = [b.get("code") for b in result["blockers"]]
+        self.assertEqual(len(codes), len(set(codes)))
+
     def test_evaluate_readiness_open_no_tasks(self):
-        """Open problem with no tasks -> blocked."""
+        """Open problem with blocking task and no approved RCA -> blocked."""
         problem = Problem.objects.create(
             title="Test problem readiness 2",
             description="Test",
@@ -259,60 +278,72 @@ class Gate2ModelTests(TransactionTestCase):
         )
         problem.problem_number = "PRB-2024-000001"
         problem.save()
-        ready, reason, blocking = evaluate_problem_readiness(problem)
-        self.assertFalse(ready)
-        self.assertIn("no_tasks", blocking)
-        self.assertIn("Open problems must have at least one task", reason)
+        ProblemTask.objects.create(
+            problem=problem,
+            title="Blocking investigation task",
+            task_type="investigation",
+            status="not_started",
+            blocks_resolution=True,
+        )
+        result = evaluate_problem_readiness(problem)
+        self._assert_readiness_contract(result)
+        self.assertFalse(result["ready_for_resolution"])
+        self.assertFalse(result["ready_for_closure"])
+        codes = [b["code"] for b in result["blockers"]]
+        self.assertIn("ROOT_CAUSE_MISSING", codes)
+        self.assertIn("OPEN_BLOCKING_TASKS", codes)
+        self.assertGreaterEqual(result["counts"]["open_blocking_tasks"], 1)
 
     def test_evaluate_readiness_open_no_evidence(self):
-        """Open problem with tasks but no evidence -> blocked."""
+        """Problem without approved RCA remains blocked (evidence alone is insufficient)."""
         problem = Problem.objects.create(
             title="Test problem readiness 3",
             description="Test",
             status="investigating",
         )
         problem.problem_number = "PRB-2024-000001"
-        # Create a task so the "no_tasks" check passes
         ProblemTask.objects.create(
             problem=problem,
             title="Investigation task",
             task_type="investigation",
-            status="not_started",
+            status="completed",
+            blocks_resolution=False,
         )
-        ready, reason, blocking = evaluate_problem_readiness(problem)
-        self.assertFalse(ready)
-        self.assertIn("no_evidence", blocking)
-        self.assertIn("Open problems must have at least one evidence record", reason)
+        ProblemEvidence.objects.create(
+            problem=problem,
+            title="Temporary evidence",
+        )
+        result = evaluate_problem_readiness(problem)
+        self._assert_readiness_contract(result)
+        self.assertFalse(result["ready_for_resolution"])
+        codes = [b["code"] for b in result["blockers"]]
+        self.assertIn("ROOT_CAUSE_MISSING", codes)
 
     def test_evaluate_readiness_investigating_no_root_cause_date(self):
-        """Investigating problem without root cause date -> blocked."""
+        """No approved RCA blocks readiness regardless of root_cause_identified_at timestamp."""
         problem = Problem.objects.create(
             title="Test problem readiness 4",
             description="Test",
             status="investigating",
         )
         problem.problem_number = "PRB-2024-000001"
-        # Create a task so "no_tasks" check passes
         ProblemTask.objects.create(
             problem=problem,
             title="Investigation task",
             task_type="investigation",
-            status="not_started",
+            status="completed",
+            blocks_resolution=False,
         )
-        # Also create evidence so the evidence check passes,
-        # allowing the status-specific check to be evaluated
-        ProblemEvidence.objects.create(
-            problem=problem,
-            title="Temporary evidence",
-        )
+        ProblemEvidence.objects.create(problem=problem, title="Temporary evidence")
         problem.root_cause_identified_at = None
         problem.save()
-        ready, reason, blocking = evaluate_problem_readiness(problem)
-        self.assertFalse(ready)
-        self.assertIn("root_cause_not_identified", blocking)
+        result = evaluate_problem_readiness(problem)
+        self._assert_readiness_contract(result)
+        self.assertFalse(result["ready_for_resolution"])
+        self.assertIn("ROOT_CAUSE_MISSING", [b["code"] for b in result["blockers"]])
 
     def test_evaluate_readiness_known_error_no_date(self):
-        """Known error problem without date -> blocked."""
+        """Known error without approved RCA/exception remains blocked under new contract."""
         problem = Problem.objects.create(
             title="Test problem readiness 7",
             description="Test",
@@ -323,21 +354,19 @@ class Gate2ModelTests(TransactionTestCase):
             problem=problem,
             title="Task for known error test",
             task_type="investigation",
-            status="not_started",
+            status="completed",
+            blocks_resolution=False,
         )
-        # Create evidence so the evidence check passes
-        ProblemEvidence.objects.create(
-            problem=problem,
-            title="Temporary evidence",
-        )
+        ProblemEvidence.objects.create(problem=problem, title="Temporary evidence")
         problem.known_error_at = None
         problem.save()
-        ready, reason, blocking = evaluate_problem_readiness(problem)
-        self.assertFalse(ready)
-        self.assertIn("known_error_date_missing", blocking)
+        result = evaluate_problem_readiness(problem)
+        self._assert_readiness_contract(result)
+        self.assertFalse(result["ready_for_resolution"])
+        self.assertIn("ROOT_CAUSE_MISSING", [b["code"] for b in result["blockers"]])
 
     def test_evaluate_readiness_validation_no_passed(self):
-        """Validation problem without passed validations -> blocked."""
+        """Failed/problematic validations contribute to blockers/counts when present."""
         problem = Problem.objects.create(
             title="Test problem readiness 6",
             description="Test",
@@ -348,19 +377,26 @@ class Gate2ModelTests(TransactionTestCase):
             problem=problem,
             title="Validation task",
             task_type="validation",
-            status="not_started",
+            status="completed",
+            blocks_resolution=False,
         )
-        # Create evidence so the evidence check passes
-        ProblemEvidence.objects.create(
+        ProblemEvidence.objects.create(problem=problem, title="Temporary evidence")
+        ProblemValidation.objects.create(
             problem=problem,
-            title="Temporary evidence",
+            title="Failed validation",
+            validation_type="functional",
+            passed=False,
         )
-        ready, reason, blocking = evaluate_problem_readiness(problem)
-        self.assertFalse(ready)
-        self.assertIn("no_validation_passed", blocking)
+        result = evaluate_problem_readiness(problem)
+        self._assert_readiness_contract(result)
+        self.assertFalse(result["ready_for_resolution"])
+        codes = [b["code"] for b in result["blockers"]]
+        self.assertTrue(
+            "ROOT_CAUSE_MISSING" in codes or "FAILED_VALIDATIONS" in codes
+        )
 
     def test_evaluate_readiness_workaround_no_workarounds(self):
-        """Workaround available problem without workarounds -> blocked."""
+        """Workaround state without approved RCA remains blocked under new contract."""
         problem = Problem.objects.create(
             title="Test problem readiness 5",
             description="Test",
@@ -371,19 +407,17 @@ class Gate2ModelTests(TransactionTestCase):
             problem=problem,
             title="Workaround task",
             task_type="workaround",
-            status="not_started",
+            status="completed",
+            blocks_resolution=False,
         )
-        # Create evidence so the evidence check passes
-        ProblemEvidence.objects.create(
-            problem=problem,
-            title="Temporary evidence",
-        )
-        ready, reason, blocking = evaluate_problem_readiness(problem)
-        self.assertFalse(ready)
-        self.assertIn("no_workaround", blocking)
+        ProblemEvidence.objects.create(problem=problem, title="Temporary evidence")
+        result = evaluate_problem_readiness(problem)
+        self._assert_readiness_contract(result)
+        self.assertFalse(result["ready_for_resolution"])
+        self.assertIn("ROOT_CAUSE_MISSING", [b["code"] for b in result["blockers"]])
 
     def test_evaluate_readiness_all_good(self):
-        """Problem with all requirements met -> ready."""
+        """Approved RCA-equivalent (unknown-root-cause exception) and no blocking conditions -> ready."""
         problem = Problem.objects.create(
             title="Test problem readiness 8",
             description="Test",
@@ -394,18 +428,20 @@ class Gate2ModelTests(TransactionTestCase):
             problem=problem,
             title="Investigation task",
             task_type="investigation",
-            status="not_started",
+            status="completed",
+            blocks_resolution=False,
         )
-        # Create evidence so all checks pass
-        ProblemEvidence.objects.create(
+        ProblemEvidence.objects.create(problem=problem, title="Root cause analysis evidence")
+        ProblemException.objects.create(
             problem=problem,
-            title="Root cause analysis evidence",
+            title="Unknown root cause exception",
+            exception_type="unknown_root_cause",
         )
-        problem.root_cause_identified_at = "2024-01-20T14:30:00Z"
-        problem.save()
-        ready, reason, blocking = evaluate_problem_readiness(problem)
-        self.assertTrue(ready)
-        self.assertEqual(blocking, [])
+        result = evaluate_problem_readiness(problem)
+        self._assert_readiness_contract(result)
+        self.assertTrue(result["ready_for_resolution"])
+        self.assertTrue(result["ready_for_closure"])
+        self.assertEqual(result["blockers"], [])
 
     def test_model_ordering(self):
         """Verify Meta ordering on all Gate 2 models."""

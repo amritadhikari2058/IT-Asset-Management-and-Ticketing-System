@@ -564,3 +564,11 @@ the application; no production backup/restore has been executed against a
 live PostgreSQL/Redis/S3 deployment; validate before relying on this in
 production. A shared cache backend (Redis) is required for distributed
 backup locking.
+
+
+## CMDB status
+
+CMDB backend verified (179/179) and already committed on origin/main.
+Celery Beat entries configured for drift evaluation, Asset synchronization,
+and CI verification-age checks. Assets pagination/role-security regression is
+outside CMDB (Assets-owned). PostgreSQL rehearsal and documentation review remain.

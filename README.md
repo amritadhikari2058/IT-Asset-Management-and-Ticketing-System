@@ -122,3 +122,14 @@ Redis must be running locally (or set `CELERY_BROKER_URL`,
 
 * `backend/docs/API_OVERVIEW.md` — endpoints, bulk safety rules.
 * `backend/docs/PERMISSIONS.md` — role matrix (backend-enforced).
+
+
+## CMDB (Configuration Management Database)
+
+Backend CMDB is verified (179/179 tests) and committed in `backend/cmdb/`.
+Capabilities: CI types, directional relationships, Service/Ticket/Change/Asset links,
+baselines, drift detection, impact graph, verification age, Asset synchronization.
+Management commands: `seed_cmdb_types`, `sync_assets_to_cmdb`,
+`evaluate_configuration_drift` (all support `--dry-run`).
+Celery Beat entries configured (drift eval 02:15 UTC, Asset sync hourly :20,
+verification-age check 08:00 UTC). PostgreSQL rehearsal pending.

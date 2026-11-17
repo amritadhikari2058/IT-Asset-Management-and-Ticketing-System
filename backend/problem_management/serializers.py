@@ -283,7 +283,8 @@ class ProblemTaskSerializer(serializers.ModelSerializer):
     completed_by_username = serializers.CharField(
         source="completed_by.username", read_only=True,
     )
-    status = serializers.CharField(read_only=True, default="not_started")
+    status = serializers.CharField(read_only=True)
+    is_deleted = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = ProblemTask
@@ -294,11 +295,6 @@ class ProblemTaskSerializer(serializers.ModelSerializer):
             "completed_by", "completed_by_username", "required",
             "blocks_resolution", "evidence_required", "completion_note",
             "version", "is_overdue", "is_deleted",
-            "created_by", "created_at", "updated_at",
-        ]
-        read_only_fields = [
-            "id", "sequence", "started_at", "completed_at",
-            "completed_by", "completion_note", "version", "is_deleted",
             "created_by", "created_at", "updated_at",
         ]
         read_only_fields = [

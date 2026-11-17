@@ -90,3 +90,15 @@ All monitoring endpoints are enforced in the backend (`IsITStaff` for read,
 navigation entries is UX only; the backend is the control boundary. Sensitive
 diagnostic information (connection strings, credentials, tokens, request
 bodies) is never stored or returned.
+
+
+## CMDB permissions
+
+Staff only (employees denied). Unknown/inactive users fail closed.
+
+- System Admin: full CI type/item/relationship/baseline/drift governance; critical drift accept
+- IT Manager: CI type write, baseline approve, relationship activate/confirm
+- IT Support: read; propose relationships; acknowledge drift
+- Employee: denied
+- Baseline creator cannot approve own baseline (self-approval prevention)
+- History strictly read-only
