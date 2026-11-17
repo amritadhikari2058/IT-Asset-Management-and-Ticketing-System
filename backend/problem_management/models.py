@@ -4,10 +4,11 @@ Gate 1 subset: Problem (+numbering), ticket/CI/service/asset/software links,
 ProblemTask, ProblemHistory. Later gates append models via new migrations.
 """
 from django.conf import settings
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, OperationalError, models, transaction
 from django.db.models import Q
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 
 from common.models import SoftDeleteModel
 
@@ -775,13 +776,13 @@ class ProblemHistory(models.Model):
 
     def save(self, *args, **kwargs):
         if not self._state.adding:
-            raise ValidationError("Problem history records are immutable.")
+            raise DjangoValidationError("Problem history records are immutable.")
         if len(self.detail or "") > 4000:
-            raise ValidationError({"detail": "History detail is bounded to 4000 characters."})
+            raise DjangoValidationError({"detail": "History detail is bounded to 4000 characters."})
         super().save(*args, **kwargs)
 
     def delete(self, using=None, keep_parents=False):
-        raise ValidationError("Problem history records cannot be deleted.")
+        raise DjangoValidationError("Problem history records cannot be deleted.")
 
 
 # ---------------------------------------------------------------------------
@@ -799,6 +800,9 @@ class ProblemEvidence(SoftDeleteModel):
     )
     source = models.CharField(max_length=100, blank=True, default="")
     file = models.FileField(upload_to="problem_evidence/", null=True, blank=True)
+    checksum = models.CharField(max_length=64, blank=True)
+    content_type = models.CharField(max_length=100, blank=True)
+    size = models.PositiveIntegerField(default=0)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="evidence_created",
@@ -815,6 +819,13 @@ class ProblemEvidence(SoftDeleteModel):
 
 
 class RootCauseAnalysis(SoftDeleteModel):
+    STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("in_review", "In Review"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+        ("superseded", "Superseded"),
+    ]
     problem = models.ForeignKey(
         Problem, on_delete=models.CASCADE, related_name="root_cause_analyses",
     )
@@ -825,6 +836,16 @@ class RootCauseAnalysis(SoftDeleteModel):
     )
     findings = models.TextField(blank=True, default="")
     concluded_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default="draft", db_index=True,
+    )
+    version = models.PositiveIntegerField(default=1, editable=False)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="rca_approved",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True, default="")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="rca_created",
@@ -838,6 +859,14 @@ class RootCauseAnalysis(SoftDeleteModel):
 
     def __str__(self):
         return f"{self.problem_id}: {self.title}"
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            self.version += 1
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and "version" not in update_fields:
+                kwargs["update_fields"] = list(update_fields) + ["version"]
+        super().save(*args, **kwargs)
 
 
 class RootCauseWhy(SoftDeleteModel):
@@ -910,6 +939,15 @@ class ProblemTimelineEvent(SoftDeleteModel):
         ("exception_granted", "Exception Granted"),
         ("exception_denied", "Exception Denied"),
     ]
+    SOURCE_CHOICES = [
+        ("manual", "Manual"),
+        ("ticket", "Ticket"),
+        ("major_incident", "Major Incident"),
+        ("change_review", "Change Review"),
+        ("knowledge", "Knowledge"),
+        ("monitoring", "Monitoring"),
+        ("cmdb", "CMDB"),
+    ]
     problem = models.ForeignKey(
         Problem, on_delete=models.CASCADE, related_name="timeline_events",
     )
@@ -917,10 +955,14 @@ class ProblemTimelineEvent(SoftDeleteModel):
     title = models.CharField(max_length=200)
     description = models.TextField(blank=True, default="")
     occurred_at = models.DateTimeField()
+    source = models.CharField(
+        max_length=30, choices=SOURCE_CHOICES, default="manual",
+    )
     recorded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="timeline_events_recorded",
     )
+    recorded_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         ordering = ["occurred_at"]
@@ -929,6 +971,11 @@ class ProblemTimelineEvent(SoftDeleteModel):
 
     def __str__(self):
         return f"{self.problem_id}: {self.get_event_type_display()} @ {self.occurred_at.strftime('%Y-%m-%d %H:%M')}"
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Problem timeline events are immutable.")
+        super().save(*args, **kwargs)
 
 
 class ProblemAction(SoftDeleteModel):
@@ -958,6 +1005,7 @@ class ProblemAction(SoftDeleteModel):
         max_length=20, choices=STATUS_CHOICES, default="planned",
         db_index=True,
     )
+    version = models.PositiveIntegerField(default=1, editable=False)
     assigned_to = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="actions_assigned",
@@ -990,8 +1038,24 @@ class ProblemAction(SoftDeleteModel):
     def __str__(self):
         return f"{self.problem_id}: {self.get_action_type_display()} ({self.status})"
 
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            self.version += 1
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and "version" not in update_fields:
+                kwargs["update_fields"] = list(update_fields) + ["version"]
+        super().save(*args, **kwargs)
+
 
 class ProblemWorkaround(SoftDeleteModel):
+    WORKAROUND_STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("submitted", "Submitted"),
+        ("approved", "Approved"),
+        ("published", "Published"),
+        ("expired", "Expired"),
+        ("retired", "Retired"),
+    ]
     problem = models.ForeignKey(
         Problem, on_delete=models.CASCADE, related_name="workarounds",
     )
@@ -1014,6 +1078,10 @@ class ProblemWorkaround(SoftDeleteModel):
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="workarounds_created",
     )
+    status = models.CharField(
+        max_length=20, choices=WORKAROUND_STATUS_CHOICES, default="draft", db_index=True,
+    )
+    version = models.PositiveIntegerField(default=1, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1023,6 +1091,14 @@ class ProblemWorkaround(SoftDeleteModel):
 
     def __str__(self):
         return f"{self.problem_id}: {self.title}"
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            self.version += 1
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and "version" not in update_fields:
+                kwargs["update_fields"] = list(update_fields) + ["version"]
+        super().save(*args, **kwargs)
 
 
 class ProblemValidation(SoftDeleteModel):
@@ -1042,6 +1118,18 @@ class ProblemValidation(SoftDeleteModel):
         on_delete=models.SET_NULL, related_name="validations_validated",
     )
     validated_at = models.DateTimeField(null=True, blank=True)
+    VALIDATION_STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("in_progress", "In Progress"),
+        ("verified", "Verified"),
+        ("failed", "Failed"),
+        ("inconclusive", "Inconclusive"),
+        ("cancelled", "Cancelled"),
+    ]
+    status = models.CharField(
+        max_length=20, choices=VALIDATION_STATUS_CHOICES, default="draft", db_index=True,
+    )
+    version = models.PositiveIntegerField(default=1, editable=False)
     notes = models.TextField(blank=True, default="")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
@@ -1057,8 +1145,24 @@ class ProblemValidation(SoftDeleteModel):
     def __str__(self):
         return f"{self.problem_id}: {self.title} ({'passed' if self.passed else 'failed'})"
 
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            self.version += 1
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and "version" not in update_fields:
+                kwargs["update_fields"] = list(update_fields) + ["version"]
+        super().save(*args, **kwargs)
+
 
 class ProblemException(SoftDeleteModel):
+    EXCEPTION_STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("active", "Active"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+        ("revoked", "Revoked"),
+        ("expired", "Expired"),
+    ]
     problem = models.ForeignKey(
         Problem, on_delete=models.CASCADE, related_name="exceptions",
     )
@@ -1080,6 +1184,11 @@ class ProblemException(SoftDeleteModel):
     )
     approved_at = models.DateTimeField(null=True, blank=True)
     conditions = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=20, choices=EXCEPTION_STATUS_CHOICES, default="draft",
+        db_index=True,
+    )
+    version = models.PositiveIntegerField(default=1, editable=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="exceptions_created",
@@ -1093,3 +1202,11 @@ class ProblemException(SoftDeleteModel):
 
     def __str__(self):
         return f"{self.problem_id}: {self.title}"
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            self.version += 1
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and "version" not in update_fields:
+                kwargs["update_fields"] = list(update_fields) + ["version"]
+        super().save(*args, **kwargs)
