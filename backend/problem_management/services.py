@@ -113,7 +113,7 @@ def check_version(problem, expected):
     try:
         expected_int = int(expected)
     except (TypeError, ValueError):
-        raise ValidationError({"expected_record_version": "Must be an integer."})
+        raise DjangoValidationError({"expected_record_version": "Must be an integer."})
     if expected_int != problem.record_version:
         raise StaleRecordError(
             f"Record version {expected_int} is stale; current version is {problem.record_version}."
@@ -211,9 +211,7 @@ def evaluate_problem_readiness(problem):
 
     try:
         failed_validations = problem.validations.filter(is_deleted=False).filter(
-            status="failed",
-        ).count() if hasattr(problem.validations.model, "status") else problem.validations.filter(
-            is_deleted=False, passed=False,
+            passed=False,
         ).exclude(status__in=["planned", "in_progress", "inconclusive", "cancelled"]).count()
     except Exception:
         try:
@@ -692,6 +690,10 @@ def create_task(*, actor, problem, title, **fields):
     return create_problem_task(actor=actor, problem=problem, title=title, **fields)
 
 
+# ---------------------------------------------------------------------------
+# Five Whys and Factor services
+# ---------------------------------------------------------------------------
+
 def create_root_cause_why(*, actor, analysis, question_text, answer, **extra):
     """Create a new RootCauseWhy record.
 
@@ -873,7 +875,7 @@ def create_root_cause_factor(*, actor, analysis, category, factor, confidence="m
     # create factor_created History
     record_history(
         analysis.problem, "factor_created", actor,
-        detail=f"Factor added to RCA '{analysis.pk}': {factor[:100]}.",
+        detail=f"Factor added to RCA '{analysis.pk}': {factor[:100]}..",
         changed_fields=["factor"],
     )
 
@@ -952,6 +954,12 @@ def delete_root_cause_factor(*, actor, factor, **extra):
             "analysis": f"Factors cannot be deleted when RCA is '{factor.analysis.status}'."
         })
 
+    # Do not delete after RCA approval
+    if factor.analysis.status not in ("draft",):
+        raise ValidationError({
+            "analysis": "Cannot delete Factor after RCA has been approved or superseded."
+        })
+
     category = factor.category
     factor.delete()
 
@@ -971,209 +979,6 @@ def delete_root_cause_factor(*, actor, factor, **extra):
 
     return {"deleted": True}
 
-
-# ---------------------------------------------------------------------------
-# Five Whys and Factor services
-# ---------------------------------------------------------------------------
-
-def create_root_cause_why(*, actor, analysis, question_text, answer, **extra):
-    _require_staff(actor)
-
-    if analysis.status not in ("draft", "in_review"):
-        raise ValidationError({
-            "analysis": f"Whys can only be created/modified when RCA is draft or in_review, got '{analysis.status}'."
-        })
-
-    if RootCauseWhy.objects.filter(analysis=analysis, sequence=extra.get("sequence")).exists():
-        raise ValidationError({"analysis": f"Why with sequence {extra.get('sequence')} already exists."})
-
-    why = RootCauseWhy.objects.create(
-        analysis=analysis,
-        question_text=question_text.strip(),
-        answer=answer.strip(),
-        sequence=extra.get("sequence", 1),
-    )
-
-    record_history(
-        analysis.problem, "why_created", actor,
-        detail=f"Why #{why.sequence} added to RCA '{analysis.pk}'.",
-        changed_fields=["why"],
-    )
-
-    from common.audit import log_action
-    log_action(
-        actor=actor, action="problem_why_created",
-        instance=why,
-        reason=f"rca={analysis.pk}, why_sequence={why.sequence}",
-    )
-
-    return why
-
-
-def update_root_cause_why(*, actor, why, question_text=None, answer=None, **extra):
-    _require_staff(actor)
-
-    if why.analysis.status not in ("draft", "in_review"):
-        raise ValidationError({
-            "analysis": f"Whys cannot be modified when RCA is '{why.analysis.status}'."
-        })
-
-    updated = False
-    if question_text is not None:
-        why.question_text = question_text.strip()
-        updated = True
-    if answer is not None:
-        why.answer = answer.strip()
-        updated = True
-    if updated:
-        why.save(update_fields=["question_text", "answer"])
-
-    if updated:
-        record_history(
-            why.analysis.problem, "why_updated", actor,
-            detail=f"Why #{why.sequence} updated in RCA '{why.analysis.pk}'.",
-            changed_fields=["question_text", "answer"],
-        )
-
-        from common.audit import log_action
-        log_action(
-            actor=actor, action="problem_why_updated",
-            instance=why,
-            reason=f"rca={why.analysis.pk}, why_sequence={why.sequence}",
-        )
-
-    return why
-
-
-def delete_root_cause_why(*, actor, why, **extra):
-    _require_staff(actor)
-
-    if why.analysis.status not in ("draft",):
-        raise ValidationError({
-            "analysis": f"Whys cannot be deleted when RCA is '{why.analysis.status}'."
-        })
-
-    if why.analysis.status not in ("draft",):
-        raise ValidationError({
-            "analysis": "Cannot delete Why after RCA has been approved or superseded."
-        })
-
-    sequence = why.sequence
-    why.delete()
-
-    record_history(
-        why.analysis.problem, "why_deleted", actor,
-        detail=f"Why #{sequence} deleted from RCA '{why.analysis.pk}'.",
-        changed_fields=["why"],
-    )
-
-    from common.audit import log_action
-    log_action(
-        actor=actor, action="problem_why_deleted",
-        reason=f"rca={why.analysis.pk}, why_sequence={sequence}",
-    )
-
-    return {"deleted": True}
-
-
-def create_root_cause_factor(*, actor, analysis, category, factor, confidence="medium", **extra):
-    _require_staff(actor)
-
-    if analysis.status not in ("draft", "in_review"):
-        raise ValidationError({
-            "analysis": f"Factors can only be created/modified when RCA is draft or in_review, got '{analysis.status}'."
-        })
-
-    if RootCauseFactor.objects.filter(analysis=analysis, category=category).exists():
-        raise ValidationError({
-            "analysis": f"A factor with category '{category}' already exists."
-        })
-
-    factor_rec = RootCauseFactor.objects.create(
-        analysis=analysis,
-        category=category,
-        factor=factor.strip(),
-        confidence=confidence,
-    )
-
-    record_history(
-        analysis.problem, "factor_created", actor,
-        detail=f"Factor added to RCA '{analysis.pk}': {factor[:100]}..",
-        changed_fields=["factor"],
-    )
-
-    from common.audit import log_action
-    log_action(
-        actor=actor, action="problem_factor_created",
-        instance=factor_rec,
-        reason=f"rca={analysis.pk}, category={category}",
-    )
-
-    return factor_rec
-
-
-def update_root_cause_factor(*, actor, factor, category=None, factor_text=None, confidence=None, **extra):
-    _require_staff(actor)
-
-    if factor.analysis.status not in ("draft", "in_review"):
-        raise ValidationError({
-            "analysis": f"Factors cannot be modified when RCA is '{factor.analysis.status}'."
-        })
-
-    updated = False
-    if category is not None:
-        factor.category = category
-        updated = True
-    if factor_text is not None:
-        factor.factor = factor_text.strip()
-        updated = True
-    if confidence is not None:
-        factor.confidence = confidence
-        updated = True
-    if updated:
-        factor.save(update_fields=["category", "factor", "confidence"])
-
-    if updated:
-        record_history(
-            factor.analysis.problem, "factor_updated", actor,
-            detail=f"Factor updated in RCA '{factor.analysis.pk}'.",
-            changed_fields=["category", "factor", "confidence"],
-        )
-
-        from common.audit import log_action
-        log_action(
-            actor=actor, action="problem_factor_updated",
-            instance=factor,
-            reason=f"rca={factor.analysis.pk}",
-        )
-
-    return factor
-
-
-def delete_root_cause_factor(*, actor, factor, **extra):
-    _require_staff(actor)
-
-    if factor.analysis.status not in ("draft",):
-        raise ValidationError({
-            "analysis": f"Factors cannot be deleted when RCA is '{factor.analysis.status}'."
-        })
-
-    category = factor.category
-    factor.delete()
-
-    record_history(
-        factor.analysis.problem, "factor_deleted", actor,
-        detail=f"Factor '{category}' deleted from RCA '{factor.analysis.pk}'.",
-        changed_fields=["factor"],
-    )
-
-    from common.audit import log_action
-    log_action(
-        actor=actor, action="problem_factor_deleted",
-        reason=f"rca={factor.analysis.pk}, category={category}",
-    )
-
-    return {"deleted": True}
 
 # ---------------------------------------------------------------------------
 # Timeline service
@@ -1213,6 +1018,7 @@ def create_problem_timeline_event(*, actor, problem, occurred_at, source,
 
     return timeline
 
+
 # ---------------------------------------------------------------------------
 # Action services
 # ---------------------------------------------------------------------------
@@ -1243,7 +1049,7 @@ def create_problem_action(*, actor, problem, title, description='', due_date=Non
 
     record_history(
         problem, 'action_created', actor,
-        detail=f'Action \"{action.pk}\" created: {title[:200]}.',
+        detail=f'Action "{action.title}" created: {title[:200]}.',
         changed_fields=['action'],
     )
 
@@ -1261,7 +1067,7 @@ def approve_problem_action(*, actor, action, **extra):
     _require_governance(actor)
 
     if action.status not in ('planned',):
-        raise ValidationError({'action': f'Action can only be approved from planned state, got \"{action.status}\".'})
+        raise ValidationError({'action': f'Action can only be approved from planned state, got "{action.status}".'})
 
 
 def start_problem_action(*, actor, action, **extra):
@@ -1278,7 +1084,7 @@ def complete_problem_action(*, actor, action, **extra):
 
     record_history(
         action.problem, 'action_completed', actor,
-        detail=f'Action \"{action.title}\" completed.',
+        detail=f'Action "{action.title}" completed.',
         changed_fields=['status', 'completed_at'],
     )
 
@@ -1300,7 +1106,7 @@ def validate_problem_action(*, actor, action, **extra):
 
     record_history(
         action.problem, 'action_validated', actor,
-        detail=f'Action \"{action.title}\" validated.',
+        detail=f'Action "{action.title}" validated.',
         changed_fields=['status'],
     )
 
@@ -1322,7 +1128,7 @@ def mark_problem_action_ineffective(*, actor, action, **extra):
 
     record_history(
         action.problem, 'action_ineffective', actor,
-        detail=f'Action \"{action.title}\" marked ineffective.',
+        detail=f'Action "{action.title}" marked ineffective.',
         changed_fields=['status'],
     )
 
@@ -1344,7 +1150,7 @@ def cancel_problem_action(*, actor, action, **extra):
 
     record_history(
         action.problem, 'action_cancelled', actor,
-        detail=f'Action \"{action.title}\" cancelled.',
+        detail=f'Action "{action.title}" cancelled.',
         changed_fields=['status'],
     )
 
@@ -1356,6 +1162,7 @@ def cancel_problem_action(*, actor, action, **extra):
     )
 
     return action
+
 
 # ---------------------------------------------------------------------------
 # Workaround services
@@ -1390,7 +1197,7 @@ def create_problem_workaround(*, actor, problem, title, description='',
 
     record_history(
         problem, 'workaround_created', actor,
-        detail=f'Workaround \"{workaround.title}\" created.',
+        detail=f'Workaround "{workaround.title}" created.',
         changed_fields=['workaround'],
     )
 
@@ -1433,7 +1240,7 @@ def expire_problem_workaround(*, actor, workaround, **extra):
 
     record_history(
         workaround.problem, 'workaround_expired', actor,
-        detail=f'Workaround \"{workaround.title}\" expired.',
+        detail=f'Workaround "{workaround.title}" expired.',
         changed_fields=['status'],
     )
 
@@ -1446,6 +1253,27 @@ def expire_problem_workaround(*, actor, workaround, **extra):
 
     return workaround
 
+
+def retire_problem_workaround(*, actor, workaround, **extra):
+    _require_staff(actor)
+
+    workaround.status = 'retired'
+    workaround.save(update_fields=['status'])
+
+    record_history(
+        workaround.problem, 'workaround_retired', actor,
+        detail=f'Workaround "{workaround.title}" retired.',
+        changed_fields=['status'],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action='problem_workaround_retired',
+        instance=workaround,
+        reason=f'workaround={workaround.pk} retired',
+    )
+
+    return workaround
 
 
 # ---------------------------------------------------------------------------
@@ -1525,6 +1353,7 @@ def archive_problem_evidence(*, actor, evidence, reason=""):
     )
     return evidence
 
+
 # ---------------------------------------------------------------------------
 # RCA services
 # ---------------------------------------------------------------------------
@@ -1570,7 +1399,7 @@ def approve_root_cause_analysis(*, actor, analysis, **extra):
         raise ValidationError({"analysis": "Creator cannot approve own RCA."})
     analysis.status = "approved"
     analysis.approved_by = actor
-    analysis.approved_at = datetime.now()
+    analysis.approved_at = timezone.now()
     analysis.save(update_fields=["status", "approved_by", "approved_at"])
     record_history(analysis.problem, "rca_approved", actor,
         detail=f"RCA '{analysis.pk}' approved.",
@@ -1596,92 +1425,341 @@ def reject_root_cause_analysis(*, actor, analysis, reason="", **extra):
     log_action(actor=actor, action="problem_rca_rejected",
         instance=analysis, reason=f"rca={analysis.pk} rejected by {actor.id}, reason={reason[:200]}")
     return analysis
-def retire_problem_workaround(*, actor, workaround, **extra):
+
+
+def supersede_root_cause_analysis(*, actor, analysis, **extra):
+    """Supersede an approved RCA with a replacement belonging to the same Problem."""
+    _require_governance(actor)
+    if analysis.status not in ("approved",):
+        raise ValidationError({"analysis": f"Only approved RCA can be superseded."})
+    # superseding RCA must belong to the same Problem
+    if analysis.problem_id != extra.get("problem").pk if extra.get("problem") else None:
+        raise ValidationError({"analysis": "Superseding RCA must belong to the same Problem."})
+    analysis.status = "superseded"
+    analysis.save(update_fields=["status"])
+    record_history(analysis.problem, "rca_superseded", actor,
+        detail=f"RCA '{analysis.pk}' superseded.",
+        changed_fields=["status"])
+    from common.audit import log_action
+    log_action(actor=actor, action="problem_rca_superseded",
+        instance=analysis, reason=f"rca={analysis.pk} superseded by replacement")
+    return analysis
+
+# ---------------------------------------------------------------------------
+# Validation services
+# ---------------------------------------------------------------------------
+
+def create_problem_validation(*, actor, problem, title, description="",
+                              validation_type="functional", test_plan="",
+                              test_results="", **extra):
     _require_staff(actor)
 
-    workaround.status = 'retired'
-    workaround.save(update_fields=['status'])
+    if not title:
+        raise ValidationError({"title": "Title is required."})
+
+    validation = ProblemValidation.objects.create(
+        problem=problem,
+        title=title.strip(),
+        description=(description or "").strip(),
+        validation_type=validation_type,
+        test_plan=(test_plan or "").strip(),
+        test_results=(test_results or "").strip(),
+        passed=False,
+        created_by=actor,
+    )
 
     record_history(
-        workaround.problem, 'workaround_retired', actor,
-        detail=f'Workaround \"{workaround.title}\" retired.',
-        changed_fields=['status'],
+        problem, "validation_created", actor,
+        detail=f"Validation '{validation.title}' created.",
+        changed_fields=["validation"],
     )
 
     from common.audit import log_action
     log_action(
-        actor=actor, action='problem_workaround_retired',
-        instance=workaround,
-        reason=f'workaround={workaround.pk} retired',
+        actor=actor, action="problem_validation_created",
+        instance=validation,
+        reason=f"validation={validation.pk}, title={title[:200]}",
     )
 
-    return workaround
+    return validation
+
+
+def start_problem_validation(*, actor, validation, **extra):
+    _require_staff(actor)
+
+    validation.save(update_fields=["status"])
+
+    record_history(
+        validation.problem, "validation_started", actor,
+        detail=f"Validation '{validation.title}' started.",
+        changed_fields=["status"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_validation_started",
+        instance=validation,
+        reason=f"validation={validation.pk} started by {actor.id}",
+    )
+
+    return validation
+
+
+def pass_problem_validation(*, actor, validation, **extra):
+    _require_staff(actor)
+
+    validation.status = "verified"
+    validation.passed = True
+    validation.validated_by = actor
+    validation.validated_at = timezone.now()
+    validation.save(update_fields=["status", "passed", "validated_by", "validated_at"])
+
+    record_history(
+        validation.problem, "validation_passed", actor,
+        detail=f"Validation '{validation.title}' passed.",
+        changed_fields=["status", "passed"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_validation_passed",
+        instance=validation,
+        reason=f"validation={validation.pk} passed by {actor.id}",
+    )
+
+    return validation
+
+
+def fail_problem_validation(*, actor, validation, **extra):
+    _require_staff(actor)
+
+    validation.status = "failed"
+    validation.passed = False
+    validation.save(update_fields=["status", "passed"])
+
+    record_history(
+        validation.problem, "validation_failed", actor,
+        detail=f"Validation '{validation.title}' failed.",
+        changed_fields=["status", "passed"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_validation_failed",
+        instance=validation,
+        reason=f"validation={validation.pk} failed by {actor.id}",
+    )
+
+    return validation
+
+
+def mark_problem_validation_inconclusive(*, actor, validation, **extra):
+    _require_staff(actor)
+
+    validation.status = "inconclusive"
+    validation.save(update_fields=["status"])
+
+    record_history(
+        validation.problem, "validation_inconclusive", actor,
+        detail=f"Validation '{validation.title}' marked inconclusive.",
+        changed_fields=["status"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_validation_inconclusive",
+        instance=validation,
+        reason=f"validation={validation.pk} marked inconclusive by {actor.id}",
+    )
+
+    return validation
+
+
+def cancel_problem_validation(*, actor, validation, **extra):
+    _require_staff(actor)
+
+    validation.status = "cancelled"
+    validation.save(update_fields=["status"])
+
+    record_history(
+        validation.problem, "validation_cancelled", actor,
+        detail=f"Validation '{validation.title}' cancelled.",
+        changed_fields=["status"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_validation_cancelled",
+        instance=validation,
+        reason=f"validation={validation.pk} cancelled by {actor.id}",
+    )
+
+    return validation
 
 
 # ---------------------------------------------------------------------------
-# Gate 1 mutation service: soft delete a Problem
+# Exception services
 # ---------------------------------------------------------------------------
-def soft_delete_problem(*, actor, problem, expected=None, reason=""):
-    """Soft-delete an unused draft Problem.
 
-    Enforces: governance role, expected version, draft-only, and no related
-    operational records/links. Creates exactly one success history event.
-    """
+def create_problem_exception(*, actor, problem, title, description="",
+                             exception_type="operational", **extra):
+    _require_staff(actor)
+
+    if not title:
+        raise ValidationError({"title": "Title is required."})
+
+    exception = ProblemException.objects.create(
+        problem=problem,
+        title=title.strip(),
+        description=(description or "").strip(),
+        exception_type=exception_type,
+        created_by=actor,
+    )
+
+    record_history(
+        problem, "exception_created", actor,
+        detail=f"Exception '{exception.title}' created.",
+        changed_fields=["exception"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_exception_created",
+        instance=exception,
+        reason=f"exception={exception.pk}, title={title[:200]}",
+    )
+
+    return exception
+
+
+def submit_problem_exception(*, actor, exception, **extra):
+    _require_staff(actor)
+
+    if exception.status != "draft" if hasattr(exception, "status") else True:
+        raise ValidationError({"exception": f"Only draft exceptions can be submitted."})
+
+    exception.status = "active"
+    exception.save(update_fields=["status"])
+
+    record_history(
+        exception.problem, "exception_submitted", actor,
+        detail=f"Exception '{exception.title}' submitted for review.",
+        changed_fields=["status"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_exception_submitted",
+        instance=exception,
+        reason=f"exception={exception.pk} submitted by {actor.id}",
+    )
+
+    return exception
+
+
+def approve_problem_exception(*, actor, exception, **extra):
     _require_governance(actor)
-    reason = _bounded(reason or "")
-    with transaction.atomic():
-        locked = Problem.objects.select_for_update().get(pk=problem.pk)
-        check_version(locked, expected)
-        if locked.is_deleted:
-            raise ValidationError({"detail": "Problem is already deleted."})
-        if locked.status != "draft":
-            raise ValidationError(
-                {"status": "Only unused Draft Problems can be soft-deleted."}
-            )
 
-        if locked.ticket_links.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Active Ticket links block deletion."})
-        if locked.ci_links.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Active CI links block deletion."})
-        if locked.service_links.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Active Service links block deletion."})
-        if locked.asset_links.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Active Asset links block deletion."})
-        if locked.software_links.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Active Software Product links block deletion."})
-        if locked.tasks.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Active Tasks block deletion."})
-        if hasattr(locked, "root_cause_analyses") and locked.root_cause_analyses.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "RCA records block deletion."})
-        if hasattr(locked, "evidence") and locked.evidence.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Evidence records block deletion."})
-        if hasattr(locked, "actions") and locked.actions.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Actions block deletion."})
-        if hasattr(locked, "workarounds") and locked.workarounds.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Workarounds block deletion."})
-        if hasattr(locked, "validations") and locked.validations.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Validations block deletion."})
-        if hasattr(locked, "exceptions") and locked.exceptions.filter(is_deleted=False).exists():
-            raise ValidationError({"detail": "Exceptions block deletion."})
+    if exception.status not in ("active",):
+        raise ValidationError({"exception": f"Only active exceptions can be approved."})
 
-        previous_status = locked.status
-        update_fields = ["is_deleted"]
-        locked.is_deleted = True
-        if hasattr(locked, "deleted_at"):
-            locked.deleted_at = timezone.now()
-            update_fields.append("deleted_at")
-        if hasattr(locked, "deletion_reason"):
-            locked.deletion_reason = reason
-            update_fields.append("deletion_reason")
-        _save_problem(locked, update_fields)
-        record_history(
-            locked, "other", actor,
-            previous_status=previous_status, new_status=locked.status,
-            detail=f"Problem soft-deleted. {reason}".strip(),
-            changed_fields=["is_deleted"],
-        )
-        log_action(
-            actor=actor, action="problem_soft_deleted", instance=locked,
-            reason=reason[:500] if reason else "",
-        )
-        return locked
+    if exception.created_by_id == actor.id:
+        raise ValidationError({"exception": "Creator cannot self-approve an exception."})
+
+    exception.status = "approved"
+    exception.approved_by = actor
+    exception.approved_at = timezone.now()
+    exception.save(update_fields=["status", "approved_by", "approved_at"])
+
+    record_history(
+        exception.problem, "exception_approved", actor,
+        detail=f"Exception '{exception.title}' approved.",
+        changed_fields=["status"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_exception_approved",
+        instance=exception,
+        reason=f"exception={exception.pk} approved by {actor.id}",
+    )
+
+    return exception
+
+
+def reject_problem_exception(*, actor, exception, reason="", **extra):
+    _require_governance(actor)
+
+    if not reason:
+        raise ValidationError({"reason": "A rejection reason is required."})
+
+    exception.status = "rejected"
+    exception.save(update_fields=["status"])
+
+    record_history(
+        exception.problem, "exception_rejected", actor,
+        detail=f"Exception '{exception.title}' rejected: {reason[:200]}.",
+        changed_fields=["status", "rejection_reason"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_exception_rejected",
+        instance=exception,
+        reason=f"exception={exception.pk} rejected by {actor.id}, reason={reason[:200]}",
+    )
+
+    return exception
+
+
+def revoke_problem_exception(*, actor, exception, reason="", **extra):
+    _require_staff(actor)
+
+    if not reason:
+        raise ValidationError({"reason": "A revocation reason is required."})
+
+    exception.status = "revoked"
+    exception.save(update_fields=["status"])
+
+    record_history(
+        exception.problem, "exception_revoked", actor,
+        detail=f"Exception '{exception.title}' revoked: {reason[:200]}.",
+        changed_fields=["status"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_exception_revoked",
+        instance=exception,
+        reason=f"exception={exception.pk} revoked by {actor.id}, reason={reason[:200]}",
+    )
+
+    return exception
+
+
+def expire_problem_exception(*, actor, exception, **extra):
+    _require_staff(actor)
+
+    now = timezone.now()
+    if hasattr(exception, "expires_at") and exception.expires_at and exception.expires_at < now:
+        raise ValidationError({"exception": "Exception has already expired."})
+
+    exception.status = "expired"
+    if hasattr(exception, "expires_at"):
+        exception.expires_at = now
+    exception.save(update_fields=["status"] if not hasattr(exception, "expires_at") else ["status", "expires_at"])
+
+    record_history(
+        exception.problem, "exception_expired", actor,
+        detail=f"Exception '{exception.title}' expired.",
+        changed_fields=["status"],
+    )
+
+    from common.audit import log_action
+    log_action(
+        actor=actor, action="problem_exception_expired",
+        instance=exception,
+        reason=f"exception={exception.pk} expired",
+    )
+
+    return exception
