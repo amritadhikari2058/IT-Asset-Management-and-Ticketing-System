@@ -1,0 +1,90 @@
+{
+  "version": 2,
+  "feature": "monitoring-operations",
+  "description": "Monitoring operations frontend aligned to actual backend API surface. Unsupported workflows fail closed.",
+  "routes": [
+    {
+      "path": "#/monitoring/overview",
+      "lazyComponent": "@/features/monitoring/MonitoringOverview",
+      "label": "Overview",
+      "permissionGuard": "isStaff",
+      "backendEndpoints": ["GET /monitoring/sources/"],
+      "supportStatus": "partial",
+      "missingApiDependency": "Dashboard returns stub; no aggregate alert/automation KPIs available and the stub is not called.",
+      "safeFallback": "Source health from live Sources API; all alert/automation KPIs labelled unavailable (never zeroes).",
+      "section": "Operations"
+    },
+    {
+      "path": "#/monitoring/alerts/list",
+      "lazyComponent": "@/features/monitoring/AlertList",
+      "label": "Alerts",
+      "permissionGuard": "isStaff",
+      "backendEndpoints": [],
+      "supportStatus": "backend-api-missing",
+      "missingApiDependency": "GET /monitoring/alerts/ collection endpoint is not registered.",
+      "safeFallback": "Clear 'Alert list API unavailable' state. No requests to unsupported URL.",
+      "section": "Operations"
+    },
+    {
+      "path": "#/monitoring/alerts/:id",
+      "lazyComponent": "@/features/monitoring/AlertDetail",
+      "label": "Alert Detail",
+      "permissionGuard": "isStaff",
+      "backendEndpoints": ["GET /monitoring/alerts/<id>/", "POST /monitoring/alerts/<id>/{acknowledge,suppress,unsuppress,resolve,close,reopen,assign}"],
+      "supportStatus": "supported",
+      "missingApiDependency": null,
+      "safeFallback": "Only serializer-exposed fields rendered (alert_number, title, severity, status, source_name, event_count).",
+      "section": "Operations"
+    },
+    {
+      "path": "#/monitoring/sources",
+      "lazyComponent": "@/features/monitoring/SourceManagement",
+      "label": "Sources",
+      "permissionGuard": "isAdmin",
+      "backendEndpoints": ["GET /monitoring/sources/", "GET /monitoring/sources/<id>/", "POST /monitoring/sources/<id>/enable/", "POST /monitoring/sources/<id>/disable/", "POST /monitoring/sources/<id>/rotate-secret/", "POST /monitoring/sources/<id>/test/"],
+      "supportStatus": "partial",
+      "missingApiDependency": "Source create (POST /monitoring/sources/) and edit (PATCH/PUT /monitoring/sources/<id>/) not registered.",
+      "safeFallback": "Read-only list/detail; explicit 'create/edit not available' message; no create/edit form.",
+      "section": "Operations"
+    },
+    {
+      "path": "#/monitoring/policies",
+      "lazyComponent": "@/features/monitoring/PolicyManagement",
+      "label": "Automation policies",
+      "permissionGuard": "isAdmin",
+      "backendEndpoints": [],
+      "supportStatus": "backend-api-missing",
+      "missingApiDependency": "No policy CRUD endpoints registered (GET/POST/PATCH/DELETE /monitoring/automation-policies/).",
+      "safeFallback": "Read-only policy preview; save/delete disabled; 'Policy administration API not available' message.",
+      "section": "Operations"
+    }
+  ],
+  "apiService": {
+    "module": "@/services/monitoring/monitoring-api",
+    "exports": [
+      "listSources", "getSource", "enableSource", "disableSource",
+      "rotateSourceSecret", "testSource", "getAlert", "alertAction",
+      "loadDashboard", "parseMonitoringError", "MonitoringEndpoints"
+    ],
+    "unsupportedExportsRemoved": [
+      "listAlerts", "listAlertEvents", "listAlertHistory", "getAlertTicket",
+      "createAlertTicket", "updateAlertTicket", "createSource"
+    ]
+  },
+  "permissions": {
+    "system_admin": "full Monitoring administration (sources list/detail/enable/disable/rotate-secret/test, alert retrieve/actions, dashboard, policies preview)",
+    "it_manager": "operational visibility and governed actions (alert actions where permitted)",
+    "it_support": "Alert and Ticket operations per API permissions (alert actions where permitted)",
+    "employee": "no privileged Monitoring administration",
+    "inactive_or_unknown": "fail closed"
+  },
+  "apiGaps": [
+    "GET /monitoring/dashboard/ returns a stub (no aggregate alert metrics); frontend does not call it.",
+    "GET /monitoring/alerts/ list endpoint is not registered (only retrieve by id).",
+    "POST /monitoring/sources/ create endpoint is not registered.",
+    "PATCH/PUT /monitoring/sources/<id>/ edit endpoint is not registered.",
+    "No policy CRUD endpoints exist for MonitoringAutomationPolicy. Proposed: GET/POST/PATCH/DELETE /monitoring/automation-policies/.",
+    "Alert sub-actions events/history/ticket/create-ticket/update-ticket are registered in urls.py but have no corresponding methods on MonitoringAlertViewSet.",
+    "Source detail serializer (MonitoringSourceListSerializer) does not expose allowlist/grace-period write fields; only list fields are returned."
+  ]
+}

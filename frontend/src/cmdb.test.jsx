@@ -20,7 +20,7 @@ vi.mock('./api', () => ({
 
 vi.mock('./auth', () => ({ useAuth: (...a) => mockAuth(...a) }));
 
-import { Dashboard } from './cmdb-dashboard';
+import Dashboard from './cmdb-dashboard';
 import { CmdbItemsList } from './cmdb-items';
 import { CiTypesPage } from './cmdb-types';
 import { VerificationQueue } from './cmdb-verification';

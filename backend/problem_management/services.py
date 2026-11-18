@@ -1112,6 +1112,15 @@ def create_problem_timeline_event(*, actor, problem, occurred_at, source,
 # Action services
 # ---------------------------------------------------------------------------
 
+def validate_record_references(*, problem, data):
+    """Reject business references to records owned by another Problem."""
+    rca = data.get('root_cause_analysis')
+    if rca is not None and getattr(rca, 'problem_id', None) != problem.pk:
+        raise ValidationError({
+            'root_cause_analysis': 'Root-cause analysis belongs to a different problem.',
+        })
+
+
 def create_problem_action(*, actor, problem, title, description='', due_date=None,
                           related_task=None, **extra):
     from django.utils import timezone as dj_timezone
@@ -1119,6 +1128,8 @@ def create_problem_action(*, actor, problem, title, description='', due_date=Non
 
     if not title:
         raise ValidationError({'title': 'Title is required.'})
+
+    validate_record_references(problem=problem, data=extra)
 
     if due_date and due_date < dj_timezone.now():
         raise ValidationError({'due_date': 'Due date must be in the future.'})

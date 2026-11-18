@@ -1,5 +1,6 @@
 """Views for monitoring module."""
 from rest_framework import status, viewsets
+from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,12 +15,20 @@ from .serializers import (
     MonitoringSourceCreateSerializer,
     MonitoringEventSerializer,
     MonitoringAlertSerializer,
+    MonitoringAlertListSerializer,
 )
-from .permissions import SystemAdminPermission, IsMonitoringSource
+from .permissions import (
+    SystemAdminPermission,
+    ITSupportPermission,
+    IsMonitoringSource,
+)
+from .dashboard_service import get_aggregated_metrics
 from .authentication import MonitoringAuthentication
 from .normalizers import GenericNormalizer
 from .correlation import correlate_event, build_event_fingerprint
 from .throttling import MonitoringSourceRateThrottle
+from .source_views import MonitoringSourceCreateMixin, MonitoringSourceUpdateMixin
+from .source_serializers import MonitoringSourceWriteSerializer
 
 
 class MonitoringEventViewSet(viewsets.ReadOnlyModelViewSet):
@@ -39,6 +48,11 @@ class MonitoringAlertViewSet(viewsets.ReadOnlyModelViewSet):
     authentication_classes = []
     permission_classes = [SystemAdminPermission]
 
+    def get_serializer_class(self):
+        """Use the list serializer for the list action."""
+        if self.action == "list":
+            return MonitoringAlertListSerializer
+        return MonitoringAlertSerializer
     @action(methods=["POST"], detail=True, url_path="acknowledge")
     def acknowledge(self, request, pk=None):
         alert = self.get_object()
@@ -72,6 +86,7 @@ class MonitoringAlertViewSet(viewsets.ReadOnlyModelViewSet):
     @action(methods=["POST"], detail=True, url_path="suppress")
     def suppress(self, request, pk=None):
         alert = self.get_object()
+        user = request.user
         reason = request.data.get("reason")
         if not reason:
             return Response({"detail": "Reason is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -121,15 +136,17 @@ class MonitoringAlertViewSet(viewsets.ReadOnlyModelViewSet):
         alert.save(update_fields=["status"])
         return Response({"detail": "Alert reopened."})
 
-class MonitoringSourceViewSet(viewsets.ReadOnlyModelViewSet):
+class MonitoringSourceViewSet(MonitoringSourceCreateMixin, MonitoringSourceUpdateMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for MonitoringSource management."""
 
     queryset = MonitoringSource.objects.all()
     serializer_class = MonitoringSourceListSerializer
 
     def get_serializer_class(self):
-        if self.action == "create":
-            return MonitoringSourceCreateSerializer
+        """Use the write serializer for create and partial update; list
+        serializer for retrieve and list."""
+        if self.action in ("create", "partial_update"):
+            return MonitoringSourceWriteSerializer
         return MonitoringSourceListSerializer
 
     def get_permissions(self):
@@ -191,11 +208,16 @@ def manual_event(request):
 class DashboardViewSet(viewsets.ViewSet):
     """ViewSet for monitoring dashboard data."""
 
-    authentication_classes = []
-    permission_classes = [SystemAdminPermission]
+    authentication_classes = [SessionAuthentication]
+    permission_classes = [ITSupportPermission]
+
+    def get_permissions(self):
+        if not getattr(self.request.user, "is_active", False):
+            return [SystemAdminPermission()]
+        return super().get_permissions()
 
     def list(self, request):
-        return Response({"detail": "Dashboard data requires implementation."})
+        return Response(get_aggregated_metrics())
 
 
 class MonitoringIngestionView(APIView):

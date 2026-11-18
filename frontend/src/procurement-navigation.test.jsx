@@ -28,8 +28,12 @@ function makeAuth(role) {
   const active = role !== null && role !== 'inactive';
   return {
     access: active ? 'token' : null,
+    role,
     user: active ? { id: 1, email: 'u@x.io', employee_id: 'E1', role, is_active: true } : null,
     profileLoading: false,
+    isSystemAdmin: role === 'system_admin',
+    isITManager: role === 'it_manager',
+    isITSupport: role === 'it_support',
     isStaff,
     isAdmin: role === 'system_admin',
     canViewProcurement: isStaff,

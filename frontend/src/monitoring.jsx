@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
-import {
-  Badge, ConfirmDialog, DataTable, Field, Modal, PageHeader, Pager,
-} from './components';
+import { Badge, DataTable, Field, Modal, PageHeader } from './components';
 import { fetchPage, parseApiError } from './api-utils';
+import { canAccessMonitoring, canAdministerMonitoring } from './components/monitoring/access';
+import { MonitoringOverview } from './features/monitoring/MonitoringOverview';
+import { AlertList } from './features/monitoring/AlertList';
+import { AlertDetail } from './features/monitoring/AlertDetail';
+import { SourceManagement } from './features/monitoring/SourceManagement';
+import { PolicyManagement } from './features/monitoring/PolicyManagement';
 
 const STATE_TONE = {
   healthy: 'green', degraded: 'amber', unavailable: 'red',
@@ -14,23 +18,29 @@ const STATE_LABEL = {
   healthy: 'Healthy', degraded: 'Degraded', unavailable: 'Unavailable',
   unknown: 'Unknown', 'not_configured': 'Not configured',
 };
-const SEVERITY_TONE = { informational: 'blue', warning: 'amber',
-  critical: 'red' };
-
+const SAFE_RETRY_TASKS = new Set([
+  'common.tasks.process_inbound_mailbox',
+  'common.tasks.process_inbound_email_task',
+  'common.tasks.run_scheduled_reports',
+  'common.tasks.evaluate_retention_policies',
+  'common.tasks.execute_retention_policy',
+]);
 /** Phase 26 — operational monitoring dashboard (System Admin / IT staff).
  *
  * Hash-based sub-views:
  *   #/monitoring                health dashboard
  *   #/monitoring/tasks          background task history + safe retry
  *   #/monitoring/errors         application errors
- *   #/monitoring/alerts         operational alerts + ack/resolve/close
+ *   #/monitoring/alerts         common operational alerts + ack/resolve
+ *   #/monitoring/alerts/list    monitoring alert list unavailable state
+ *   #/monitoring/alerts/:id     monitoring alert detail + supported actions
  *   #/monitoring/incidents      operational incidents
  *   #/monitoring/performance    API performance summary
  *   #/monitoring/email-storage  email & storage health
  */
 export function Monitoring() {
-  const { isAdmin, isStaff } = useAuth();
-  if (!isAdmin && !isStaff) {
+  const auth = useAuth();
+  if (!canAccessMonitoring(auth)) {
     return (
       <div>
         <div className="page-head"><h1>Operational Monitoring</h1></div>
@@ -43,13 +53,19 @@ export function Monitoring() {
   }
 
   const hash = location.hash.split('?')[0];
+  const alertDetail = hash.match(/^#\/monitoring\/alerts\/([^/]+)$/);
+  if (alertDetail && alertDetail[1] !== 'list') return <AlertDetail alertId={decodeURIComponent(alertDetail[1])} />;
+  if (hash === '#/monitoring/alerts') return <AlertMonitor />;
+  if (hash === '#/monitoring/alerts/list') return <AlertList />;
   if (hash === '#/monitoring/tasks') return <TaskMonitor />;
   if (hash === '#/monitoring/errors') return <ErrorMonitor />;
-  if (hash === '#/monitoring/alerts') return <AlertMonitor />;
   if (hash === '#/monitoring/incidents') return <IncidentMonitor />;
   if (hash === '#/monitoring/performance') return <PerfMonitor />;
   if (hash === '#/monitoring/email-storage') return <EmailStorageMonitor />;
   if (hash === '#/monitoring/health') return <HealthMonitor />;
+  if (hash === '#/monitoring/overview') return <MonitoringOverview />;
+  if (hash === '#/monitoring/sources') return <SourceManagement />;
+  if (hash === '#/monitoring/policies') return <PolicyManagement />;
   return <HealthDashboard />;
 }
 
@@ -86,6 +102,7 @@ function HealthDashboard() {
   const comps = data ? data.components : {};
   const overallTone = STATE_TONE[data?.overall ?? 'unknown'] ?? 'gray';
   const overallLabel = STATE_LABEL[data?.overall ?? 'unknown'] ?? 'Unknown';
+  const lastEvaluated = data?.components?.backend?.evaluated_at;
 
   return (
     <div>
@@ -108,7 +125,7 @@ function HealthDashboard() {
           </div>
           {data && (
             <div className="small muted">
-              Last evaluated: {new Date(data.components.backend?.evaluated_at ?? Date.now()).toLocaleString()}
+              Last evaluated: {lastEvaluated ? new Date(lastEvaluated).toLocaleString() : '—'}
             </div>
           )}
         </div>
@@ -225,7 +242,7 @@ function TaskMonitor() {
   const retry = async (taskName) => {
     setRetryBusy(taskName);
     try {
-      const r = await api.post('/common/tasks/retry/', { task_name: taskName });
+      const r = await api.post('/common/tasks/retry_task/', { task_name: taskName });
       if (r.data.retried) {
         setError('');
         load();
@@ -269,12 +286,15 @@ function TaskMonitor() {
         { key: 'error', label: 'Error', render: (r) => <span className="cell-muted small">{r.error_summary || '—'}</span> },
         { key: 'actions', label: 'Actions', thClass: 'cell-actions', render: (r) => (
           <div className="cell-actions">
-            {r.status === 'failed' && (
+            {r.status === 'failed' && SAFE_RETRY_TASKS.has(r.task_name) && (
               <button type="button" className="btn-small btn-primary"
                 onClick={() => retry(r.task_name)}
                 disabled={retryBusy === r.task_name}>
                 {retryBusy === r.task_name ? '…' : 'Retry'}
               </button>
+            )}
+            {r.status === 'failed' && !SAFE_RETRY_TASKS.has(r.task_name) && (
+              <span className="cell-muted small">Retry not available for this task</span>
             )}
           </div>
         )},
@@ -399,8 +419,6 @@ function AlertMonitor() {
     } finally { setBusy({ ...busy, [id]: null }); }
   };
 
-  const SEVERITY_TONE = { informational: 'blue', warning: 'amber', critical: 'red' };
-
   return (
     <div>
       <PageHeader title="Operational alerts" sub="Deduplicated alerts with acknowledgement and resolution."
@@ -470,6 +488,8 @@ function AlertMonitor() {
 /* ---------------- Incidents ---------------- */
 
 function IncidentMonitor() {
+  const auth = useAuth();
+  const canCreateIncident = canAdministerMonitoring(auth);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -490,6 +510,10 @@ function IncidentMonitor() {
 
   const save = async (ev) => {
     ev.preventDefault();
+    if (!canCreateIncident) {
+      setError('Incident creation requires System Admin permission.');
+      return;
+    }
     setFormBusy(true); setError('');
     try {
       await api.post('/common/incidents/', {
@@ -512,7 +536,9 @@ function IncidentMonitor() {
         actions={(
           <div className="row-gap">
             <button type="button" className="btn-secondary" onClick={load}>Refresh</button>
-            <button type="button" className="btn-primary" onClick={() => setOpenForm(true)}>+ New incident</button>
+            {canCreateIncident && (
+              <button type="button" className="btn-primary" onClick={() => setOpenForm(true)}>+ New incident</button>
+            )}
             <a href="#/monitoring" className="btn-ghost">&larr; Back to dashboard</a>
           </div>
         )} />

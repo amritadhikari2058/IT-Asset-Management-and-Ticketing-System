@@ -1,5 +1,6 @@
 """Escalation tests for monitoring module."""
 from django.test import TestCase
+from django.utils import timezone
 from monitoring.models import MonitoringSource, MonitoringEvent, MonitoringAlert
 
 

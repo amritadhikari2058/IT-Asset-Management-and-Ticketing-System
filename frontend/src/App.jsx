@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
+import { HashRouter, useLocation } from 'react-router-dom';
 import { useAuth, AuthProvider } from './auth';
 import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, SLAConfig, SLAReport, Tickets, Users, VerifyEmail } from './pages';
 import {
-  KnowledgeBase, KnowledgeBaseCompare, KnowledgeBaseDetail,
+  KnowledgeBaseCompare, KnowledgeBaseDetail,
   KnowledgeBaseReviewQueue, KnowledgeBaseRevisionDetail,
   KnowledgeBaseRevisions,
 } from './kb';
@@ -10,6 +11,8 @@ import { AssetForm, AssetDetail } from './assets';
 import { AuditLogPage } from './audit';
 import { VendorForm, VendorsPage, VendorDetail } from './vendors';
 import { TicketForm, TicketDetail } from './tickets';
+import { ChangesPage } from './changes';
+import CmdbDashboard from './cmdb-dashboard';
 import { TicketQueuesPage } from './ticket-queues';
 import { TicketOperationsDashboard } from './ticket-operations';
 import { CannedResponsesPage } from './ticket-canned-responses';
@@ -18,8 +21,6 @@ import { SavedTicketViews } from './ticket-saved-views';
 import { TicketSatisfactionSurvey } from './ticket-satisfaction';
 import { TicketMergeDialog } from './ticket-merge';
 import { TicketTimeline } from './ticket-timeline';
-import { TicketCollaborationPanel } from './ticket-collaboration';
-import { TicketRelationsPanel } from './ticket-relations';
 import { Notifications, NotifBadge } from './notifications';
 import { Maintenance } from './maintenance';
 import { Disposals } from './disposals';
@@ -42,67 +43,40 @@ import {
 } from './lifecycle';
 import { ProcurementRouter } from './procurement';
 import { LicensingRouter } from './licensing';
+import { ProblemList } from './components/problem-management/problem-list';
+import { ProblemDetail } from './components/problem-management/problem-detail';
+import { MonitoringOverview } from './features/monitoring/MonitoringOverview';
+import { SourceManagement } from './features/monitoring/SourceManagement';
+import { AlertList } from './features/monitoring/AlertList';
+import { AlertDetail } from './features/monitoring/AlertDetail';
+import { PolicyManagement } from './features/monitoring/PolicyManagement';
 
 const NAV = [
-  { section: 'Work' },
-{ hash: '#/dashboard', label: 'Dashboard', staffOnly: true },
+  { section: 'Overview' },
+  { hash: '#/dashboard', label: 'Dashboard' },
+  { section: 'Service Operations' },
   { hash: '#/tickets', label: 'Tickets' },
-  { hash: '#/services', label: 'Services', staffOnly: false },
-  { hash: '#/service-requests', label: 'Service requests', staffOnly: false },
-  { hash: '#/kb', label: 'Knowledge Base', staffOnly: false },
-  { hash: '#/tickets/queues', label: 'Ticket Queues', staffOnly: true },
-  { hash: '#/tickets/operations', label: 'Operations', staffOnly: true },
-  { hash: '#/tickets/canned-responses', label: 'Canned Responses', staffOnly: true },
-  { hash: '#/tickets/templates', label: 'Ticket Templates', staffOnly: true },
-  { hash: '#/self-service', label: 'Self-Service', staffOnly: false },
-  { hash: '#/lifecycle', label: 'Lifecycle', staffOnly: false },
-  { hash: '#/lifecycle/onboarding', label: 'Onboarding Cases', staffOnly: true },
-  { hash: '#/lifecycle/offboarding', label: 'Offboarding Cases', staffOnly: true },
-  { hash: '#/lifecycle/transfers', label: 'Transfers', staffOnly: true },
-  { hash: '#/lifecycle/new', label: 'New Case', staffOnly: true },
-   { hash: '#/assets', label: 'Assets' },
-  { section: 'Software' },
-  { hash: '#/software', label: 'Software Dashboard', staffOnly: true },
-  { hash: '#/software/products', label: 'Software Products', staffOnly: true },
-  { hash: '#/licenses', label: 'License Agreements', staffOnly: true },
-  { hash: '#/license-allocations', label: 'License Allocations', staffOnly: true },
-  { hash: '#/license-installations', label: 'Software Installations', staffOnly: true },
-  { hash: '#/license-renewals', label: 'License Renewals', staffOnly: true },
-  { hash: '#/license-compliance', label: 'License Compliance', staffOnly: true },
-  { hash: '#/license-calendar', label: 'Renewal Calendar', staffOnly: true },
-  { hash: '#/license-utilization', label: 'License Utilization', staffOnly: true },
-  { hash: '#/my-software', label: 'My Software', staffOnly: false },
-  { section: 'Operations', staffOnly: true },
-  { hash: '#/workflow', label: 'Workflow', staffOnly: true },
-  { hash: '#/monitoring', label: 'Monitoring', staffOnly: true },
-  { hash: '#/backup', label: 'Backup &amp; DR', staffOnly: true },
-  { hash: '#/maintenance', label: 'Maintenance', staffOnly: true },
-  { hash: '#/disposals', label: 'Disposals', staffOnly: true },
-  { hash: '#/inventory', label: 'Inventory', staffOnly: true },
+  { hash: '#/monitoring', label: 'Monitoring', cap: 'canUseMonitoring' },
+  { hash: '#/problem-management', label: 'Problems', cap: 'canUseProblemManagement' },
+  { hash: '#/changes', label: 'Changes', staffOnly: true },
+  { hash: '#/services', label: 'Services' },
+{ section: 'Asset Operations' },
+  { hash: '#/assets', label: 'Assets', staffOnly: true },
+  { hash: '#/cmdb', label: 'CMDB', staffOnly: true },
+  { section: 'Procurement' },
   { hash: '#/procurement', label: 'Procurement', staffOnly: true },
-  { hash: '#/procurement/requests', label: 'Purchase Requests', staffOnly: true },
-  { hash: '#/procurement/orders', label: 'Purchase Orders', staffOnly: true },
-  { hash: '#/procurement/receipts', label: 'Goods Receipts', staffOnly: true },
-  { hash: '#/procurement/invoices', label: 'Supplier Invoices', cap: 'canViewProcurement' },
-  { hash: '#/procurement/exceptions', label: 'Invoice Exceptions', cap: 'canViewProcurement' },
-  { hash: '#/procurement/returns', label: 'Vendor Returns', cap: 'canViewProcurement' },
-  { hash: '#/procurement/credit-notes', label: 'Vendor Credit Notes', cap: 'canViewProcurement' },
+  { hash: '#/procurement/invoices', label: 'Supplier Invoices', staffOnly: true },
+  { hash: '#/procurement/exceptions', label: 'Invoice Exceptions', staffOnly: true },
+  { hash: '#/procurement/returns', label: 'Vendor Returns', staffOnly: true },
+  { hash: '#/procurement/credit-notes', label: 'Vendor Credit Notes', staffOnly: true },
   { hash: '#/procurement/financial-dashboard', label: 'Procurement Financial Dashboard', cap: 'canViewProcurementReports' },
   { hash: '#/procurement/vendor-performance', label: 'Vendor Performance', cap: 'canViewProcurementReports' },
-  { section: 'Reports' },  { hash: '#/reports/sla', label: 'SLA report', staffOnly: true },
-  { hash: '#/reports/departments', label: 'Department reports', staffOnly: true },
-  { hash: '#/reports/saved', label: 'Saved reports', staffOnly: false },
-  { hash: '#/reports/schedules', label: 'Scheduled reports', cap: 'canManageScheduledReports' },
-  { hash: '#/procurement/reports', label: 'Procurement reports', cap: 'canViewProcurementReports' },
-  { section: 'Approvals' },
-  { hash: '#/approvals', label: 'Approvals', staffOnly: true },
-  { section: 'Organize' },
-  { hash: '#/vendors', label: 'Vendors', cap: 'canViewVendors' },
-  { hash: '#/categories', label: 'Categories' },
-  { hash: '#/departments', label: 'Departments' },
-  { hash: '#/notifications', label: 'Notifications', badge: true },
-  { hash: '#/settings/notifications', label: 'Notification settings', staffOnly: false },
-  { hash: '#/users', label: 'Employees' },
+  { section: 'Administration' },
+  { hash: '#/users', label: 'Users', cap: 'isAdmin' },
+  { hash: '#/categories', label: 'Categories', cap: 'isAdmin' },
+  { hash: '#/departments', label: 'Departments', cap: 'isAdmin' },
+  { hash: '#/sla-config', label: 'SLA', cap: 'isAdmin' },
+  { hash: '#/notifications', label: 'Notifications', badge: true, cap: 'isAdmin' },
 ];
 
 /** Drop staff-only entries, capability-gated entries, and any section left
@@ -159,9 +133,13 @@ const TITLES = {
   '#/privacy': 'Privacy erasure',
   '#/retention': 'Data retention',
   '#/monitoring': 'Monitoring',
+  '#/monitoring/overview': 'Monitoring',
+  '#/monitoring/sources': 'Sources',
+  '#/monitoring/alerts': 'Alerts',
+  '#/monitoring/policies': 'Policies',
+  '#/problem-management': 'Problems',
   '#/backup': 'Backup &amp; DR',
   '#/sla-config': 'SLA config',
-  '#/kb': 'Knowledge Base',
   '#/users': 'Employees',
   '#/profile': 'My Profile',
   '#/lifecycle': 'Lifecycle Dashboard',
@@ -204,6 +182,8 @@ function crumbs(hash) {
   if (h.startsWith('#/privacy/')) return ['Administration', 'Privacy erasure'];
   if (h === '#/monitoring') return ['Administration', 'Monitoring'];
   if (h.startsWith('#/monitoring/')) return ['Administration', 'Monitoring'];
+  if (h === '#/problem-management') return ['Service Operations', 'Problems'];
+  if (h.startsWith('#/problem-management/')) return ['Service Operations', 'Problems', 'Problem'];
   if (h === '#/backup') return ['Administration', 'Backup & DR'];
   if (h.startsWith('#/backup/')) return ['Administration', 'Backup & DR'];
   if (h === '#/retention') return ['Administration', 'Data retention'];
@@ -252,9 +232,36 @@ function crumbs(hash) {
   return [TITLES[h] ?? 'Tickets'];
 }
 
-function matchRoute(hash) {
+function AccessDenied() {
+  return <div className="access-denied" role="alert">You do not have permission to access this page.</div>;
+}
+
+function UnavailableWorkflow({ title }) {
+  return (
+    <div className="panel panel-pad">
+      <h1>{title}</h1>
+      <p>Problem workflow unavailable</p>
+    </div>
+  );
+}
+
+function matchRoute(hash, auth) {
   const route = hash.split('?')[0];
   let m;
+  if (route.startsWith('#/monitoring')) {
+    if (!auth.canUseMonitoring) return <AccessDenied />;
+    if (route === '#/monitoring/overview') return <MonitoringOverview />;
+    if (route === '#/monitoring/sources') return auth.isAdmin ? <SourceManagement /> : <AccessDenied />;
+    if (route === '#/monitoring/alerts') return <AlertList />;
+    if ((m = route.match(/^#\/monitoring\/alerts\/(\d+)$/))) return <AlertDetail alertId={m[1]} />;
+    if (route === '#/monitoring/policies') return auth.canUseMonitoring ? <PolicyManagement /> : <AccessDenied />;
+  }
+  if (route.startsWith('#/problem-management')) {
+    if (!auth.canUseProblemManagement) return <AccessDenied />;
+    if (route === '#/problem-management') return <ProblemList />;
+    if (route === '#/problem-management/new') return <UnavailableWorkflow title="New Problem" />;
+    if ((m = route.match(/^#\/problem-management\/(\d+)$/))) return <ProblemDetail problemId={m[1]} />;
+  }
   if ((m = route.match(/^#\/tickets\/(\d+)\/edit$/))) return <TicketForm id={m[1]} />;
   if (route === '#/tickets/new') return <TicketForm />;
   if ((m = route.match(/^#\/tickets\/(\d+)$/))) return <TicketDetail id={m[1]} />;
@@ -341,6 +348,8 @@ function matchRoute(hash) {
     '#verify-email': <VerifyEmail />,
     '#reset-password': <ResetPassword />,
     '#/self-service': <SelfService />,
+    '#/changes': <ChangesPage />,
+    '#/cmdb': <CmdbDashboard />,
   };
   return routes[route] ?? <Tickets />;
 }
@@ -351,14 +360,15 @@ function isActive(hash, h) {
 
 function Shell() {
   const { access, logout, user, profileLoading, isAdmin, isStaff, canManageScheduledReports, canViewVendors, canViewProcurement, canViewProcurementReports } = useAuth();
-  const caps = { isStaff, isAdmin, canManageScheduledReports, canViewVendors, canViewProcurement, canViewProcurementReports };
-  const [hash, setHash] = useState(location.hash || '#/tickets');
+  const canUseMonitoring = !!isStaff && user?.is_active !== false;
+  const canUseProblemManagement = !!isStaff && user?.is_active !== false;
+  const caps = { isStaff, isAdmin, canManageScheduledReports, canViewVendors, canViewProcurement, canViewProcurementReports, canUseMonitoring, canUseProblemManagement };
+  const routerLocation = useLocation();
+  const hash = routerLocation.pathname === '/' ? '#/tickets' : `#${routerLocation.pathname}${routerLocation.search}`;
   const [navOpen, setNavOpen] = useState(false);
   useEffect(() => {
-    const fn = () => { setHash(location.hash || '#/tickets'); setNavOpen(false); };
-    addEventListener('hashchange', fn);
-    return () => removeEventListener('hashchange', fn);
-  }, []);
+    setNavOpen(false);
+  }, [hash]);
   if (!access) {
     if (hash.startsWith('#/verify-email')) return <VerifyEmail />;
     if (hash.startsWith('#/reset-password')) return <ResetPassword />;
@@ -371,7 +381,7 @@ function Shell() {
       </p>
     );
   }
-  const el = matchRoute(hash);
+  const el = matchRoute(hash, { isStaff, isAdmin, canUseMonitoring, canUseProblemManagement });
   const active = (h) => isActive(hash, h) ? 'active' : '';
   const nav = visibleNav(NAV, caps);
   return (
@@ -386,31 +396,11 @@ function Shell() {
           {nav.map((n, i) => n.section
             ? <div key={i} className="sidenav-section">{n.section}</div>
             : (
-              <a key={n.hash} href={n.hash} className={active(n.hash)} aria-current={isActive(hash, n.hash) ? 'page' : undefined}>
+              <a key={n.hash} href={n.hash} className={active(n.hash)} aria-current={isActive(hash, n.hash) ? 'page' : undefined} onClick={() => setNavOpen(false)}>
                 <span className="nav-label">{n.label}</span>
                 {n.badge && <NotifBadge />}
               </a>
             ))}
-          {isAdmin && (
-            <>
-              <div className="sidenav-section">Administration</div>
-              <a href="#/recycle" className={active('#/recycle')} aria-current={isActive(hash, '#/recycle') ? 'page' : undefined}>
-                <span className="nav-label">Recycle Bin</span>
-              </a>
-              <a href="#/audit" className={active('#/audit')} aria-current={isActive(hash, '#/audit') ? 'page' : undefined}>
-                <span className="nav-label">Audit Log</span>
-              </a>
-              <a href="#/privacy" className={active('#/privacy')} aria-current={isActive(hash, '#/privacy') ? 'page' : undefined}>
-                <span className="nav-label">Privacy erasure</span>
-              </a>
-              <a href="#/retention" className={active('#/retention')} aria-current={isActive(hash, '#/retention') ? 'page' : undefined}>
-                <span className="nav-label">Data retention</span>
-              </a>
-              <a href="#/sla-config" className={active('#/sla-config')} aria-current={isActive(hash, '#/sla-config') ? 'page' : undefined}>
-                <span className="nav-label">SLA config</span>
-              </a>
-            </>
-          )}
         </nav>
         <div className="sidebar-foot">
           <span className="user-chip">
@@ -441,8 +431,10 @@ function Shell() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <Shell />
-    </AuthProvider>
+    <HashRouter>
+      <AuthProvider>
+        <Shell />
+      </AuthProvider>
+    </HashRouter>
   );
 }

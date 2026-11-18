@@ -537,7 +537,9 @@ export function AssetDetail({ id }) {
         ? 'File is missing from storage.'
         : e?.response?.status === 404
           ? 'Attachment not available (deleted or no access).'
-          : 'Download failed.';
+          : e?.response?.status === 403
+            ? 'You do not have permission to download this file.'
+            : 'Download failed.';
       setDlError((d) => ({ ...d, [f.id]: msg }));
     } finally {
       setDlBusy(null);
@@ -657,7 +659,7 @@ export function AssetDetail({ id }) {
       {error && <div className="error-summary" role="alert">{error}</div>}
       <div className="detail-head">
         <div>
-          <h1>{a.asset_tag} — {a.name}</h1>
+          <h1>{a.name || a.asset_tag || 'Asset'}</h1>
           <div className="row-gap detail-badges">
             <Badge kind="status" value={a.status} />
             {a.has_open_maintenance && <Badge kind="status" value="scheduled" label="Open maintenance" />}
@@ -667,14 +669,20 @@ export function AssetDetail({ id }) {
         {isStaff && (
           <div className="row-gap">
             <a className="btn-secondary" href={`#/assets/${a.id}/edit`}>Edit</a>
-            <button
-              type="button" className="btn-secondary"
-              disabled={a.has_open_maintenance}
-              title={a.has_open_maintenance ? 'Complete or cancel open maintenance before assigning.' : undefined}
-              onClick={() => { setAssignError(''); setAssignOpen(true); }}
-            >Assign…</button>
-            {a.assigned_to && <button type="button" className="btn-ghost" onClick={() => setConfirm('return')}>Return…</button>}
-            <button type="button" className="btn-ghost" onClick={() => setConfirm('retire')}>Retire…</button>
+            {a.status === 'available' && (
+              <button
+                type="button" className="btn-secondary"
+                disabled={a.has_open_maintenance}
+                title={a.has_open_maintenance ? 'Complete or cancel open maintenance before assigning.' : undefined}
+                onClick={() => { setAssignError(''); setAssignOpen(true); }}
+              >Assign…</button>
+            )}
+            {a.status === 'assigned' && (
+              <button type="button" className="btn-ghost" onClick={() => setConfirm('return')}>Return…</button>
+            )}
+            {a.status !== 'available' && a.status !== 'assigned' && a.status !== 'in_repair' && a.status !== 'lost' && a.status !== 'retired' && a.status !== 'disposed' && (
+              <button type="button" className="btn-ghost" onClick={() => setConfirm('retire')}>Retire…</button>
+            )}
             <button type="button" className="btn-ghost" onClick={() => { setLostError(''); setLostOpen(true); }}>Mark lost…</button>
             {a.status !== 'disposed' && (
               <>
@@ -710,7 +718,16 @@ export function AssetDetail({ id }) {
       )}
 
       <section className="section">
-        <h4>Assignments</h4>
+        <h4>Overview</h4>
+        <div className="row-gap detail-badges">
+          <Badge kind="status" value={a.status} />
+          {a.has_open_maintenance && <Badge kind="status" value="scheduled" label="Open maintenance" />}
+          <span className="muted small">{a.category_name ?? ''}</span>
+        </div>
+      </section>
+
+      <section className="section">
+        <h4>Assignment</h4>
         {assignments.length === 0 ? <p className="muted">No assignment records.</p> : (
         <ul className="note-list">
           {assignments.map((x) => (

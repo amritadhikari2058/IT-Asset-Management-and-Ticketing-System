@@ -3,10 +3,10 @@
 from rest_framework import authentication
 from rest_framework import exceptions
 from django.utils.crypto import constant_time_compare
-from django.db import transaction
-from .models import MonitoringSource, MonitoringIngestionAttempt
+from .models import MonitoringSource
 import hashlib
 import hmac
+from datetime import timezone as datetime_timezone
 from ipaddress import ip_address, ip_network
 from django.utils import timezone
 
@@ -49,7 +49,7 @@ class MonitoringAuthentication(authentication.BaseAuthentication):
 
         tolerance = source.timestamp_tolerance_seconds or 300
         now = timezone.now()
-        request_time = timezone.datetime.fromtimestamp(timestamp_value, tz=timezone.utc)
+        request_time = timezone.datetime.fromtimestamp(timestamp_value, tz=datetime_timezone.utc)
 
         if abs((now - request_time).total_seconds()) > tolerance:
             raise exceptions.AuthenticationFailed("Invalid timestamp")
@@ -104,9 +104,6 @@ class MonitoringAuthentication(authentication.BaseAuthentication):
         if not valid:
             raise exceptions.AuthenticationFailed("Authentication failed")
 
-        if not self._check_replay_protection(source, request_id_header):
-            raise exceptions.AuthenticationFailed("Replay request rejected")
-
         request._monitoring_source = source
         request._monitoring_request_id = request_id_header
         request._monitoring_timestamp = timestamp_header
@@ -141,30 +138,3 @@ class MonitoringAuthentication(authentication.BaseAuthentication):
                 continue
 
         return False
-
-    def _check_replay_protection(self, source, request_id):
-        if not request_id:
-            return False
-
-        if len(request_id) > 128:
-            return False
-
-        try:
-            with transaction.atomic():
-                attempt, created = MonitoringIngestionAttempt.objects.select_for_update().get_or_create(
-                    source=source,
-                    request_id=request_id,
-                    defaults={
-                        "remote_address_hash": hashlib.sha256(
-                            request_id.encode("utf-8")
-                        ).hexdigest(),
-                        "authentication_result": MonitoringIngestionAttempt.AuthenticationResult.SUCCESS,
-                        "payload_size": 0,
-                        "status": MonitoringIngestionAttempt.Status.ACCEPTED,
-                    },
-                )
-                if not created:
-                    return False
-                return True
-        except Exception:
-            return False

@@ -33,7 +33,11 @@ In-app notification helpers:
 - `notify_watchers(ticket, actor, title, message)` — creates in-app
   notifications for all watchers of a ticket.
 """
-from common.models import UserNotificationPreference
+import re
+
+from django.db import transaction
+
+from common.models import Notification, UserNotificationPreference
 
 #: Transactional / security emails that are never suppressed by user
 #: notification preferences (verification, password reset, security alerts).
@@ -113,50 +117,111 @@ def scheduled_report_delivery_enabled():
     return True
 
 
-def notify_user(user, category, title, message):
-    """Create an in-app notification for a user.
+_SENSITIVE_RE = re.compile(
+    r"(?i)\b(password|passwd|secret|token|api[_-]?key|signature|authorization|"
+    r"credential|private[_-]?key)\b\s*[:=]\s*[\"']?[^\s,;}\"']+"
+)
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
-    This is a centralized helper used by ticket automation and other
-    subsystems to deliver in-app notifications without routing through
-    preference checks (in-app notifications are always delivered).
+
+def _safe_notification_text(value, limit):
+    text = "" if value is None else str(value)
+    text = _SENSITIVE_RE.sub(lambda match: f"{match.group(1)}=[redacted]", text)
+    text = _CONTROL_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def _notification_recipient_allowed(user, actor=None):
+    if user is None or not getattr(user, "pk", None):
+        return False
+    if not getattr(user, "is_active", True) or getattr(user, "is_deleted", False):
+        return False
+    if actor is not None and getattr(actor, "pk", None) == user.pk:
+        return False
+    return True
+
+
+def notify_user(
+    user,
+    category,
+    title,
+    message,
+    entity_type=None,
+    object_id=None,
+    actor=None,
+    dedupe=True,
+    post_commit=True,
+):
+    """Create a real in-app Notification after the caller's commit.
+
+    In-app delivery is independent of email preferences. Recipients are
+    validated, content is sanitized, and no monitoring code is invoked, so
+    notification delivery can never re-enter ticket automation.
     """
-    from common.models import AuditLog
-    from monitoring.models import MonitoringAlert
+    if not _notification_recipient_allowed(user, actor):
+        return None
 
-    # Minimal in-app notification record; actual delivery is handled by the
-    # frontend/notification dispatcher. We persist a record for auditability.
-    try:
-        AuditLog.objects.create(
-            user=user,
-            action="inapp_notification",
-            details={
-                "category": category,
-                "title": title,
-                "message": message,
-            },
+    safe_title = _safe_notification_text(title or "Notification", 255) or "Notification"
+    safe_body = _safe_notification_text(message, 2000)
+    safe_entity = _safe_notification_text(
+        entity_type or f"notification.{category or 'general'}", 100
+    ) or "notification.general"
+    safe_object_id = _safe_notification_text(object_id, 100)
+
+    def _write():
+        queryset = Notification.objects.filter(
+            recipient=user,
+            title=safe_title,
+            body=safe_body,
+            entity_type=safe_entity,
+            object_id=safe_object_id,
+            is_deleted=False,
         )
-    except Exception:
-        pass
-
-
-def notify_watchers(ticket, actor, title, message):
-    """Create in-app notifications for all watchers of a ticket.
-
-    This is a centralized helper used by ticket automation to notify
-    watchers when a ticket changes state.
-    """
-    from common.models import AuditLog
-
-    try:
-        AuditLog.objects.create(
-            user=None,
-            action="inapp_notification_watcher",
-            details={
-                "ticket_id": str(ticket.pk) if ticket else None,
-                "category": getattr(ticket, "category", None) if ticket else None,
-                "title": title,
-                "message": message,
-            },
+        if dedupe and queryset.exists():
+            return None
+        return Notification.objects.create(
+            recipient=user,
+            title=safe_title,
+            body=safe_body,
+            entity_type=safe_entity,
+            object_id=safe_object_id,
         )
-    except Exception:
-        pass
+
+    if post_commit:
+        transaction.on_commit(_write)
+        return None
+    return _write()
+
+
+def notify_watchers(
+    ticket,
+    actor,
+    title,
+    message,
+    category=None,
+    entity_type=None,
+    dedupe=True,
+    post_commit=True,
+):
+    """Notify distinct active watchers of ``ticket`` through Notification rows."""
+    if ticket is None or not getattr(ticket, "pk", None):
+        return
+
+    recipients = {}
+    for watch in ticket.watchers.filter(is_active=True, is_deleted=False):
+        if _notification_recipient_allowed(watch.user, actor):
+            recipients[watch.user_id] = watch.user
+
+    for watcher in sorted(recipients.values(), key=lambda item: item.pk):
+        notify_user(
+            watcher,
+            category,
+            title,
+            message,
+            entity_type=entity_type or "tickets.Ticket",
+            object_id=str(ticket.pk),
+            actor=actor,
+            dedupe=dedupe,
+            post_commit=post_commit,
+        )

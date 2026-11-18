@@ -23,7 +23,7 @@ import { ChangePIR } from './change-pir';
 import { ChangeCalendar } from './change-calendar';
 import { MaintenanceWindows } from './maintenance-windows';
 import { ChangeTemplates } from './change-templates';
-import { ReviewMeetings } from './review-meetings';
+import { ChangeReviewMeetings as ReviewMeetings } from './change-review-meetings';
 import { ChangeReports } from './change-reports';
 import { EmployeeOutages } from './outages';
 
@@ -46,7 +46,7 @@ export const changeRoutes = [
   { path: '#/outages', component: EmployeeOutages, title: 'Outages', breadcrumbs: ['Change Management', 'Outages'] },
 ];
 
-export default function ChangesPage() {
+export function ChangesPage() {
   useEffect(() => {
     // Document title based on route
     const handleHashChange = () => {

@@ -1,19 +1,32 @@
 """Monitoring API URL patterns."""
 
 from django.urls import path
+from rest_framework.routers import DefaultRouter
+
 from . import views
+from .dashboard_views import MonitoringDashboardView
+from .policy_views import MonitoringAutomationPolicyViewSet
+from .alert_subresource_views import AlertEventsViewSet, AlertHistoryViewSet, AlertTicketViewSet
+
+router = DefaultRouter()
+router.register(
+    "automation-policies",
+    MonitoringAutomationPolicyViewSet,
+    basename="monitoring-automation-policy",
+)
 
 urlpatterns = [
     # Source management
-    path("sources/", views.MonitoringSourceViewSet.as_view({"get": "list"})),
-    path("sources/<int:pk>/", views.MonitoringSourceViewSet.as_view({"get": "retrieve"})),
+    path("sources/", views.MonitoringSourceViewSet.as_view({"get": "list", "post": "create"})),
+    path("sources/<int:pk>/", views.MonitoringSourceViewSet.as_view({"get": "retrieve", "patch": "partial_update"})),
     path("sources/<int:pk>/rotate-secret/", views.MonitoringSourceViewSet.as_view({"post": "rotate_secret"})),
     path("sources/<int:pk>/disable/", views.MonitoringSourceViewSet.as_view({"post": "disable"})),
     path("sources/<int:pk>/enable/", views.MonitoringSourceViewSet.as_view({"post": "enable"})),
     path("sources/<int:pk>/test/", views.MonitoringSourceViewSet.as_view({"post": "test"})),
-    
-    # Alert actions
+    # Alert list (collection endpoint - required by frontend)
+    path("alerts/", views.MonitoringAlertViewSet.as_view({"get": "list"})),
     path("alerts/<int:pk>/", views.MonitoringAlertViewSet.as_view({"get": "retrieve"})),
+    # Alert actions
     path("alerts/<int:pk>/acknowledge/", views.MonitoringAlertViewSet.as_view({"post": "acknowledge"})),
     path("alerts/<int:pk>/assign/", views.MonitoringAlertViewSet.as_view({"post": "assign"})),
     path("alerts/<int:pk>/suppress/", views.MonitoringAlertViewSet.as_view({"post": "suppress"})),
@@ -21,15 +34,13 @@ urlpatterns = [
     path("alerts/<int:pk>/resolve/", views.MonitoringAlertViewSet.as_view({"post": "resolve"})),
     path("alerts/<int:pk>/close/", views.MonitoringAlertViewSet.as_view({"post": "close"})),
     path("alerts/<int:pk>/reopen/", views.MonitoringAlertViewSet.as_view({"post": "reopen"})),
-    path("alerts/<int:pk>/create-ticket/", views.MonitoringAlertViewSet.as_view({"post": "create_ticket"})),
-    path("alerts/<int:pk>/update-ticket/", views.MonitoringAlertViewSet.as_view({"post": "update_ticket"})),
-    path("alerts/<int:pk>/events/", views.MonitoringAlertViewSet.as_view({"get": "events"})),
-    path("alerts/<int:pk>/history/", views.MonitoringAlertViewSet.as_view({"get": "history"})),
-    path("alerts/<int:pk>/impact/", views.MonitoringAlertViewSet.as_view({"get": "impact"})),
-    path("alerts/<int:pk>/ticket/", views.MonitoringAlertViewSet.as_view({"get": "ticket"})),
+    # Alert subresources
+    path("alerts/<int:pk>/events/", AlertEventsViewSet.as_view({"get": "list"})),
+    path("alerts/<int:pk>/history/", AlertHistoryViewSet.as_view({"get": "list"})),
+    path("alerts/<int:pk>/ticket/", AlertTicketViewSet.as_view({"get": "retrieve"})),
     
     # Dashboard and reports
-    path("dashboard/", views.DashboardViewSet.as_view({"get": "list"})),
+    path("dashboard/", MonitoringDashboardView.as_view()),
     path("reports/alert-volume/", views.ReportViewSet.as_view({"get": "alert_volume"})),
     path("reports/acknowledgement-time/", views.ReportViewSet.as_view({"get": "acknowledgement_time"})),
     path("reports/recovery-time/", views.ReportViewSet.as_view({"get": "recovery_time"})),
@@ -46,3 +57,5 @@ urlpatterns = [
     path("ingest/<str:source_code>/batch/", views.MonitoringIngestionView.as_view()),
     path("manual-events/", views.manual_event),
 ]
+
+urlpatterns += router.urls

@@ -1,0 +1,57 @@
+{
+  "workstream": "problem-management-gate2-frontend",
+  "generated_for": "cross-application integration",
+  "api_prefix": "/api/problems",
+  "canonical_note": "Frontend uses the single-`problems` prefix (/api/problems/<id>/...). The backend also exposes the package under /api/problems/problems/<id>/... because problem_management.urls is included twice; that duplicate include is a backend cleanup item, not a frontend path.",
+  "workflows": {
+    "problem_crud": "operational",
+    "root_cause_analysis": "operational",
+    "five_whys": "operational",
+    "root_cause_factors": "operational",
+    "evidence_upload": "operational",
+    "evidence_archive": "operational",
+    "timeline": "operational",
+    "actions": "operational",
+    "workarounds": "operational",
+    "validations": "operational",
+    "exceptions": "operational",
+    "readiness": "read-only",
+    "linked_tickets": "read-only",
+    "linked_cis": "read-only",
+    "linked_assets": "read-only",
+    "linked_services": "read-only",
+    "linked_products": "read-only",
+    "linked_changes": "unsupported",
+    "evidence_unarchive": "unsupported"
+  },
+  "gaps": [
+    {
+      "area": "evidence_unarchive",
+      "status": "unsupported",
+      "detail": "The backend registers no unarchive route; the UI offers no action and no service exists."
+    },
+    {
+      "area": "linked_changes",
+      "status": "unsupported",
+      "detail": "No Change relation is exposed on the Problem API; no request, service or type exists, and the UI labels the section unsupported."
+    },
+    {
+      "area": "dual_url_include",
+      "status": "pending shared route integration",
+      "detail": "backend/config/urls.py includes problem_management.urls under both /api/ and /api/problems/. Canonical-route cleanup is a backend task; no frontend file depends on the duplicate prefix."
+    }
+  ],
+  "field_contracts": {
+    "rca": ["title", "description", "analysis_method", "findings", "concluded_at", "status", "version"],
+    "rca_unsupported": ["confidence", "limitation"],
+    "why": ["analysis", "question_number", "question_text", "answer"],
+    "factor": ["analysis", "category", "factor", "contribution"],
+    "evidence": ["id", "problem", "title", "description", "evidence_type", "checksum", "file_type", "file_size", "original_filename", "uploaded_at", "archived"],
+    "evidence_note": "original_filename is a storage-safe randomized basename, labelled 'Stored filename' in the UI.",
+    "timeline": ["event_type", "title", "description", "occurred_at", "source", "recorded_by_username"],
+    "action": ["title", "description", "action_type", "due_at", "root_cause_analysis", "status", "version"],
+    "workaround": ["title", "description", "steps", "status", "version"],
+    "validation": ["title", "description", "validation_type", "test_plan", "test_results", "passed", "status", "version"],
+    "exception": ["title", "description", "exception_type", "reason", "conditions", "expires_at", "status", "version"]
+  }
+}

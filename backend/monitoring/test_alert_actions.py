@@ -1,5 +1,7 @@
 """Alert action tests for monitoring module."""
 from django.test import TestCase
+from django.utils import timezone
+from accounts.models import User
 from monitoring.models import MonitoringSource, MonitoringAlert
 
 
@@ -10,6 +12,10 @@ class AlertActionTestCase(TestCase):
         """Set up test fixtures."""
         self.source = MonitoringSource.objects.create(
             name="Test Source", code="test_src"
+        )
+        self.user = User.objects.create_user(
+            username="alert-actor", email="alert-actor@example.test",
+            employee_id="ALERT-ACTOR", password="pw12345678", role="it_support",
         )
         self.event = None  # Will be set in each test
         self.alert = MonitoringAlert.objects.create(
@@ -24,13 +30,13 @@ class AlertActionTestCase(TestCase):
     def test_acknowledge(self):
         """Test acknowledge action."""
         self.alert.acknowledged_at = timezone.now()
-        self.alert.acknowledged_by_id = 1
+        self.alert.acknowledged_by_id = self.user.pk
         self.alert.save()
         self.assertIsNotNone(self.alert.acknowledged_at)
 
     def test_assign(self):
         """Test assign action."""
-        self.alert.assigned_to_id = 1
+        self.alert.assigned_to_id = self.user.pk
         self.alert.save()
         self.assertIsNotNone(self.alert.assigned_to_id)
 

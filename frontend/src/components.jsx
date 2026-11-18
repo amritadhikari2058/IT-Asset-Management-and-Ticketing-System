@@ -883,6 +883,31 @@ export function Alert({ variant = 'info', children }) {
   return <div className={cls} role={variant === 'danger' ? 'alert' : 'status'}>{children}</div>;
 }
 
+export function Form({ children }) {
+  return <div className="form">{children}</div>;
+}
+
+export function Textarea({ rows, placeholder, ...props }) {
+  return <textarea rows={rows} placeholder={placeholder} {...props} />;
+}
+
+export function Row({ children, className }) {
+  return <div className="row {className || ''}">{children}</div>;
+}
+
+export function Col({ children, sm, md, lg, xl, className }) {
+  const size = { sm: 'sm-', md: 'md-', lg: 'lg-', xl: 'xl-' };
+  const cls = size[sm] ? `${size[sm]}${sm}` : '';
+  const cls2 = size[md] ? `${size[md]}${md}` : '';
+  const cls3 = size[lg] ? `${size[lg]}${lg}` : '';
+  const cls4 = size[xl] ? `${size[xl]}${xl}` : '';
+  return <div className="col ${cls2} ${cls3} ${cls4} ${className || ''}">{children}</div>;
+}
+
+export function Card({ children, className }) {
+  return <div className="card {className || ''}">{children}</div>;
+}
+
 export function Input({ label, ...props }) {
   const el = (props.rows || props.type === 'textarea')
     ? <textarea className="input" {...props} />

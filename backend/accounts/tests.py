@@ -18,17 +18,33 @@ def auth(client, user):
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {token(user)}")
 
 
+def _make_user(employee_id, username, email, role, dep):
+    """Return a deterministic fixture user with a properly hashed password.
+
+    Uses get_or_create so the helper is idempotent within a test session, then
+    re-applies the canonical fields and re-hashes the password. Using
+    get_or_create's ``defaults={"password": ...}`` alone stores the raw
+    string, which never matches ``check_password``.
+    """
+    user, _ = User.objects.get_or_create(
+        employee_id=employee_id,
+        defaults={"username": username, "email": email,
+                  "role": role, "home_department": dep})
+    user.username = username
+    user.email = email
+    user.role = role
+    user.home_department = dep
+    user.is_active = True
+    user.set_password("pw12345678")
+    user.save()
+    return user
+
+
 def make_users():
-    dep = Department.objects.create(name="Eng", code="ENGX")
-    admin = User.objects.create_user(
-        username="a@x", email="a@x", employee_id="A1", password="pw12345678",
-        role="system_admin", home_department=dep)
-    mgr = User.objects.create_user(
-        username="m@x", email="m@x", employee_id="M1", password="pw12345678",
-        role="it_manager", home_department=dep)
-    emp = User.objects.create_user(
-        username="e@x", email="e@x", employee_id="E1", password="pw12345678",
-        role="employee", home_department=dep)
+    dep, _ = Department.objects.get_or_create(name="Eng", code="ENGX")
+    admin = _make_user("A1", "a@x", "a@x", "system_admin", dep)
+    mgr = _make_user("M1", "m@x", "m@x", "it_manager", dep)
+    emp = _make_user("E1", "e@x", "e@x", "employee", dep)
     return dep, admin, mgr, emp
 
 

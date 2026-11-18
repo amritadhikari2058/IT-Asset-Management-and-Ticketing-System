@@ -14,6 +14,11 @@ class MonitoringSourceRateThrottle(SimpleRateThrottle):
     - Disabled/unlimited semantics: throttle disabled when rate is 0 or None.
     """
 
+    def __init__(self):
+        self.rate = None
+        self.num_requests = None
+        self.duration = None
+
     def get_cache_key(self, request, view):
         """
         Generate a cache key based on the monitoring source code.
@@ -47,8 +52,11 @@ class MonitoringSourceRateThrottle(SimpleRateThrottle):
             # Still record the request if needed, but don't throttle
             return True
 
-        # Update the scope to use the source-specific rate
+        rate = int(rate)
         self.scope = f"monitoring_source_{getattr(request._monitoring_source, 'code', 'unknown')}"
+        self.rate = f"{rate}/min"
+        self.num_requests = rate
+        self.duration = 60
 
         # Call the parent fixed-window rate check
         return super().allow_request(request, view)

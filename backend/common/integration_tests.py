@@ -189,11 +189,18 @@ class EndToEndWorkflowTests(TestCase):
         """SLA breach escalation creates notification + email, dedupes on
         retry."""
         auth(self.c, self.mgr)
+        # The breach notification fires ``breach_hours`` *after* the SLA
+        # deadline (see TicketSLA.breach_deadline). The critical SLA created
+        # in setUp uses breach_hours=8, so the ticket must be overdue by
+        # more than that to exercise the breach path (a 1h-overdue ticket
+        # would only be in the "approaching" window).
+        breach_hours = TicketSLA.objects.get(priority="critical").breach_hours
         ticket = Ticket.objects.create(
             title="Critical outage", description="Down", category=self.tcat,
             priority="critical", requester=self.emp, assignee=self.mgr,
             department=self.dep, status="open",
-            sla_due_at=timezone.now() - timezone.timedelta(hours=1))
+            sla_due_at=timezone.now() - timezone.timedelta(
+                hours=breach_hours + 1))
 
         if not HAS_CELERY:
             self.skipTest("celery not installed in this environment")

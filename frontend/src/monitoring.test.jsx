@@ -89,7 +89,7 @@ describe('Monitoring page', () => {
     await screen.findByText('Background tasks');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByText('Background tasks');
-    expect(mockPost).toHaveBeenCalledWith('/common/tasks/retry/', { task_name: 'common.tasks.run_scheduled_reports' });
+    expect(mockPost).toHaveBeenCalledWith('/common/tasks/retry_task/', { task_name: 'common.tasks.run_scheduled_reports' });
   });
 
   it('lists application errors', async () => {

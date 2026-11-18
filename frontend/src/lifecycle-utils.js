@@ -314,6 +314,11 @@ const TRANSITION_OFFER = {
     employee_started: ['block', 'cancel'],
     blocked: ['unblock', 'cancel'],
     ready_for_closure: ['complete'],
+    // Additional backend-supported statuses
+    awaiting_asset_return: ['return_assets', 'cancel'],
+    awaiting_access_revocation: ['revoke_access', 'cancel'],
+    access_updated: [],
+    asset_changes_completed: ['complete', 'cancel'],
   },
   offboarding: {
     draft: ['plan'],
@@ -321,6 +326,11 @@ const TRANSITION_OFFER = {
     in_progress: ['block', 'cancel'],
     blocked: ['unblock', 'cancel'],
     ready_for_closure: ['complete'],
+    // Additional backend-supported statuses
+    awaiting_asset_return: ['return_assets', 'cancel'],
+    awaiting_access_revocation: ['revoke_access', 'cancel'],
+    access_updated: [],
+    asset_changes_completed: ['complete', 'cancel'],
   },
   transfer: {
     draft: ['plan'],
@@ -328,6 +338,11 @@ const TRANSITION_OFFER = {
     in_progress: ['block', 'cancel'],
     blocked: ['unblock', 'cancel'],
     ready_for_closure: ['complete'],
+    // Additional backend-supported statuses
+    awaiting_asset_return: ['return_assets', 'cancel'],
+    awaiting_access_revocation: ['revoke_access', 'cancel'],
+    access_updated: [],
+    asset_changes_completed: ['complete', 'cancel'],
   },
 };
 

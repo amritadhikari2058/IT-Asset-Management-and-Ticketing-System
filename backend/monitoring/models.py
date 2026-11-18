@@ -569,6 +569,11 @@ class MonitoringAlert(models.Model):
     version = models.PositiveIntegerField(default=1)
     auto_ticket_created = models.BooleanField(default=False)
     auto_resolved = models.BooleanField(default=False)
+    automation_error_code = models.CharField(max_length=50, blank=True, default="")
+    automation_error_summary = models.TextField(blank=True, default="")
+    automation_retry_count = models.PositiveIntegerField(default=0)
+    automation_last_attempt_at = models.DateTimeField(null=True, blank=True)
+    automation_snapshot = models.JSONField(default=dict, blank=True)
     resolution_reason = models.TextField(blank=True, default="")
     closed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -590,6 +595,7 @@ class MonitoringAlert(models.Model):
         ]
         constraints = [
             models.UniqueConstraint(fields=["fingerprint", "status"], name="unique_active_alert_per_fingerprint_status", condition=models.Q(status__in=["open", "acknowledged", "new"])),
+            models.UniqueConstraint(fields=["ticket"], name="unique_ticket_per_monitoring_alert", condition=models.Q(ticket__isnull=False)),
         ]
 
     def __str__(self):

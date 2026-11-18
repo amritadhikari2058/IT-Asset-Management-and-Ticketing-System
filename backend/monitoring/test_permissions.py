@@ -12,7 +12,8 @@ class SystemAdminTestCase(TestCase):
 
     def setUp(self):
         self.admin_user = User.objects.create_user(
-            username="admin", role="system_admin", is_active=True
+            username="admin", email="admin@example.test",
+            employee_id="PERM-ADMIN", role="system_admin", is_active=True
         )
 
     def test_system_admin_sources(self):
@@ -33,7 +34,8 @@ class ITSupportTestCase(TestCase):
 
     def setUp(self):
         self.support_user = User.objects.create_user(
-            username="support", role="it_support", is_active=True
+            username="support", email="support@example.test",
+            employee_id="PERM-SUP", role="it_support", is_active=True
         )
 
     def test_it_support_sources(self):
