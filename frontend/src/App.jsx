@@ -13,6 +13,18 @@ import { VendorForm, VendorsPage, VendorDetail } from './vendors';
 import { TicketForm, TicketDetail } from './tickets';
 import { ChangesPage } from './changes';
 import CmdbDashboard from './cmdb-dashboard';
+import { CmdbItemsList } from './cmdb-items';
+import { CiForm } from './cmdb-item-form';
+import { CiDetail } from './cmdb-item-detail';
+import { CiRelationshipsPage } from './cmdb-relationships';
+import { BaselinesPage } from './cmdb-baselines';
+import { DriftFindingsPage } from './cmdb-drift';
+import { VerificationQueuePage } from './cmdb-verification';
+import { ImpactAnalysisPage } from './cmdb-impact';
+import { DependencyMap } from './cmdb-dependency-map';
+import { CmdbReports } from './cmdb-reports';
+import { CiTypesPage } from './cmdb-types';
+import { ServiceMappingPage } from './cmdb-services';
 import { TicketQueuesPage } from './ticket-queues';
 import { TicketOperationsDashboard } from './ticket-operations';
 import { CannedResponsesPage } from './ticket-canned-responses';
@@ -25,6 +37,7 @@ import { Notifications, NotifBadge } from './notifications';
 import { Maintenance } from './maintenance';
 import { Disposals } from './disposals';
 import { Dashboard, DepartmentReports } from './dashboard';
+import { AssetReportsPage } from './asset-reports';
 import { SelfService } from "./self-service";
 import { SavedReports } from './saved-reports';
 import { ScheduledReports } from './scheduled-reports';
@@ -62,6 +75,7 @@ const NAV = [
   { hash: '#/services', label: 'Services' },
 { section: 'Asset Operations' },
   { hash: '#/assets', label: 'Assets', staffOnly: true },
+  { hash: '#/assets/reports', label: 'Asset Reports', staffOnly: true },
   { hash: '#/cmdb', label: 'CMDB', staffOnly: true },
   { section: 'Procurement' },
   { hash: '#/procurement', label: 'Procurement', staffOnly: true },
@@ -120,6 +134,7 @@ const TITLES = {
   '#/vendors': 'Vendors',
   '#/approvals': 'Approvals',
   '#/assets': 'Assets',
+  '#/assets/reports': 'Asset Reports',
   '#/workflow': 'Workflow',
   '#/maintenance': 'Maintenance',
   '#/disposals': 'Disposals',
@@ -142,6 +157,16 @@ const TITLES = {
   '#/sla-config': 'SLA config',
   '#/users': 'Employees',
   '#/profile': 'My Profile',
+  '#/cmdb': 'CMDB',
+  '#/cmdb/items': 'Configuration Items',
+  '#/cmdb/items/new': 'New Configuration Item',
+  '#/cmdb/types': 'CI Types',
+  '#/cmdb/relationships': 'CI Relationships',
+  '#/cmdb/baselines': 'Baselines',
+  '#/cmdb/drift': 'Drift Findings',
+  '#/cmdb/verification': 'Verification Queue',
+  '#/cmdb/reports': 'CMDB Reports',
+  '#/cmdb/services': 'Service Mapping',
   '#/lifecycle': 'Lifecycle Dashboard',
   '#/lifecycle/onboarding': 'Onboarding Cases',
   '#/lifecycle/offboarding': 'Offboarding Cases',
@@ -176,6 +201,7 @@ function crumbs(hash) {
   }
   if (h === '#/tickets/new') return ['Tickets', 'New'];
   if (h === '#/assets/new') return ['Assets', 'New'];
+  if (h === '#/assets/reports' || h.startsWith('#/assets/reports?')) return ['Assets', 'Asset Reports'];
   if (h === '#/vendors/new') return ['Vendors', 'New'];
   if (h === '#/recycle' || h === '#/audit') return ['Administration', TITLES[h]];
   if (h === '#/privacy') return ['Administration', 'Privacy erasure'];
@@ -192,6 +218,22 @@ function crumbs(hash) {
   if (h.startsWith('#/reports/')) return ['Reports', TITLES[h]];
   if (h.startsWith('#/settings/')) return ['Settings', TITLES[h]];
   if ((m = h.match(/^#\/users\/(\d+)$/))) return ['Employees', `Employee #${m[1]}`];
+  if (h === '#/cmdb') return ['CMDB'];
+  if (h.startsWith('#/cmdb/items/new')) return ['CMDB', 'Configuration Items', 'New'];
+  if ((m = h.match(/^#\/cmdb\/items\/(\d+)\/edit$/))) return ['CMDB', 'Configuration Items', `CI #${m[1]}`, 'Edit'];
+  if ((m = h.match(/^#\/cmdb\/items\/(\d+)\/impact$/))) return ['CMDB', 'Configuration Items', `CI #${m[1]}`, 'Impact'];
+  if ((m = h.match(/^#\/cmdb\/items\/(\d+)\/dependencies$/))) return ['CMDB', 'Configuration Items', `CI #${m[1]}`, 'Dependencies'];
+  if ((m = h.match(/^#\/cmdb\/items\/(\d+)\/relationships$/))) return ['CMDB', 'Configuration Items', `CI #${m[1]}`, 'Relationships'];
+  if ((m = h.match(/^#\/cmdb\/items\/(\d+)$/))) return ['CMDB', 'Configuration Items', `CI #${m[1]}`];
+  if (h.startsWith('#/cmdb/items')) return ['CMDB', 'Configuration Items'];
+  if (h.startsWith('#/cmdb/types')) return ['CMDB', 'CI Types'];
+  if (h.startsWith('#/cmdb/baselines')) return ['CMDB', 'Baselines'];
+  if (h.startsWith('#/cmdb/drift')) return ['CMDB', 'Drift Findings'];
+  if (h.startsWith('#/cmdb/verification')) return ['CMDB', 'Verification Queue'];
+  if (h.startsWith('#/cmdb/reports')) return ['CMDB', 'Reports'];
+  if (h.startsWith('#/cmdb/services')) return ['CMDB', 'Service Mapping'];
+  if (h.startsWith('#/cmdb/relationships')) return ['CMDB', 'Relationships'];
+  if (h.startsWith('#/cmdb')) return ['CMDB'];
   if (h === '#/services') return ['Services'];
   if (h === '#/service-requests') return ['Service requests'];
   if ((m = h.match(/^#\/service-requests\/(\d+)$/))) return ['Service requests', `Request #${m[1]}`];
@@ -255,6 +297,25 @@ function matchRoute(hash, auth) {
     if (route === '#/monitoring/alerts') return <AlertList />;
     if ((m = route.match(/^#\/monitoring\/alerts\/(\d+)$/))) return <AlertDetail alertId={m[1]} />;
     if (route === '#/monitoring/policies') return auth.canUseMonitoring ? <PolicyManagement /> : <AccessDenied />;
+  }
+  if (route.startsWith('#/cmdb')) {
+    if (!auth.isStaff) return <AccessDenied />;
+    if (route === '#/cmdb') return <CmdbDashboard />;
+    if (route === '#/cmdb/items') return <CmdbItemsList />;
+    if (route === '#/cmdb/items/new') return <CiForm />;
+    if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/edit$/))) return <CiForm id={m[1]} />;
+    if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/impact$/))) return <ImpactAnalysisPage id={m[1]} />;
+    if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/dependencies$/))) return <DependencyMap id={m[1]} />;
+    if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/relationships$/))) return <CiRelationshipsPage id={m[1]} />;
+    if ((m = route.match(/^#\/cmdb\/items\/(\d+)$/))) return <CiDetail id={m[1]} />;
+    if (route === '#/cmdb/types') return <CiTypesPage />;
+    if (route === '#/cmdb/baselines') return <BaselinesPage />;
+    if (route === '#/cmdb/drift') return <DriftFindingsPage />;
+    if (route === '#/cmdb/verification') return <VerificationQueuePage />;
+    if (route === '#/cmdb/reports') return <CmdbReports />;
+    if (route === '#/cmdb/services') return <ServiceMappingPage />;
+    if (route === '#/cmdb/relationships') return <CmdbItemsList />;
+    return <CmdbDashboard />;
   }
   if (route.startsWith('#/problem-management')) {
     if (!auth.canUseProblemManagement) return <AccessDenied />;
@@ -329,6 +390,7 @@ function matchRoute(hash, auth) {
     '#/reports/saved': <SavedReports />,
     '#/reports/schedules': <ScheduledReports />,
     '#/assets': <Assets />,
+    '#/assets/reports': <AssetReportsPage />,
     '#/vendors': <VendorsPage />,
     '#/vendors/new': <VendorForm />,
     '#/vendors/:id': <VendorDetail />,

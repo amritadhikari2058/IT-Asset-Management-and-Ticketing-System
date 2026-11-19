@@ -212,7 +212,7 @@ def _receipt_lines_for(po):
 class ProcurementSettingViewSet(viewsets.ModelViewSet):
     queryset = ProcurementSetting.objects.all()
     serializer_class = ProcurementSettingSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [CanManageProcurementFinance]
 
     def get_permissions(self):
         if self.action in ("list", "retrieve", "current"):
@@ -227,7 +227,7 @@ class ProcurementSettingViewSet(viewsets.ModelViewSet):
 class PurchaseRequestViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequest.objects.all()
     serializer_class = PurchaseRequestSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [CanViewProcurement]
     pagination_class = ProcurementPagination
 
     def get_queryset(self):
@@ -278,6 +278,19 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         log_action(actor=self.request.user, action="create", instance=pr,
                    reason="purchase request created")
 
+    def update(self, request, *args, **kwargs):
+        pr = self.get_object()
+        if pr.status not in ("draft", "returned_for_correction"):
+            return Response({"detail": "Only draft or returned requests can be edited."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not (is_manager_or_admin(request.user)
+                or pr.requester_id == request.user.pk):
+            raise PermissionDenied("Forbidden")
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
         pr = self.get_object()
@@ -285,6 +298,9 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Forbidden")
         if pr.status not in ("draft", "returned_for_correction"):
             return Response({"detail": "Cannot submit in current status"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not pr.items.exists():
+            return Response({"detail": "A purchase request needs at least one line item before submission."},
                             status=status.HTTP_400_BAD_REQUEST)
 
         settings = ProcurementSetting.get_settings()
@@ -346,6 +362,10 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         if pr.requires_system_admin_approval and role != "system_admin":
             return Response({"detail": "System Admin approval required"},
                             status=status.HTTP_403_FORBIDDEN)
+        reason = str(request.data.get("reason", "") or "").strip()
+        if not reason:
+            return Response({"reason": "A rejection reason is required."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         pr.status = "rejected"
         pr.approver = request.user
@@ -369,11 +389,15 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         if pr.status != "pending_approval":
             return Response({"detail": "Not pending approval"},
                             status=status.HTTP_400_BAD_REQUEST)
+        reason = str(request.data.get("reason", "") or "").strip()
+        if not reason:
+            return Response({"reason": "A reason is required."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         pr.status = "returned_for_correction"
         pr.approver = request.user
         pr.approval_decision = "returned"
-        pr.approval_reason = request.data.get("reason", "")
+        pr.approval_reason = reason
         pr.version = (pr.version or 1) + 1
         pr.save()
         ProcurementHistory.objects.create(
@@ -439,7 +463,7 @@ def _receipt_lines_for_order_pr(pr):
 class PurchaseRequestItemViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequestItem.objects.all()
     serializer_class = PurchaseRequestItemSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [CanViewProcurement]
     pagination_class = ProcurementPagination
 
     def get_queryset(self):
@@ -452,6 +476,60 @@ class PurchaseRequestItemViewSet(viewsets.ModelViewSet):
             qs = qs.filter(purchase_request_id=request_id)
         return qs
 
+    def _parent_editable(self, pr):
+        return pr.status in ("draft", "returned_for_correction")
+
+    def perform_create(self, serializer):
+        pr = serializer.validated_data.get("purchase_request")
+        if pr is None:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"purchase_request": "Purchase request is required."})
+        if not self._parent_editable(pr):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"purchase_request": "Items can only be added to draft or returned requests."})
+        if not (is_manager_or_admin(self.request.user) or pr.requester_id == self.request.user.pk):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Forbidden")
+        with transaction.atomic():
+            item = serializer.save()
+            self._recalculate_request_total(item.purchase_request)
+
+    def perform_update(self, serializer):
+        item = self.get_object()
+        if not self._parent_editable(item.purchase_request):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"detail": "Items can only be edited on draft or returned requests."})
+        if not (is_manager_or_admin(self.request.user) or item.purchase_request.requester_id == self.request.user.pk):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Forbidden")
+        with transaction.atomic():
+            updated = serializer.save()
+            self._recalculate_request_total(updated.purchase_request)
+
+    def perform_destroy(self, instance):
+        if not self._parent_editable(instance.purchase_request):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"detail": "Items can only be removed from draft or returned requests."})
+        if not (is_manager_or_admin(self.request.user) or instance.purchase_request.requester_id == self.request.user.pk):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Forbidden")
+        with transaction.atomic():
+            pr = instance.purchase_request
+            instance.delete()
+            self._recalculate_request_total(pr)
+
+    @staticmethod
+    def _recalculate_request_total(pr):
+        from decimal import Decimal
+        total = Decimal("0")
+        for it in pr.items.all():
+            line_total = it.estimated_total
+            if line_total is None:
+                line_total = (it.quantity or 0) * (it.estimated_unit_price or 0)
+            total += Decimal(str(line_total or 0))
+        pr.estimated_total = total
+        pr.save(update_fields=["estimated_total", "updated_at"])
+
 
 # ---------------------------------------------------------------------------
 # Quotations
@@ -460,7 +538,7 @@ class PurchaseRequestItemViewSet(viewsets.ModelViewSet):
 class PurchaseQuotationViewSet(viewsets.ModelViewSet):
     queryset = PurchaseQuotation.objects.all()
     serializer_class = PurchaseQuotationSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [CanViewProcurement]
     pagination_class = ProcurementPagination
 
     def get_queryset(self):
@@ -489,6 +567,13 @@ class PurchaseQuotationViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
+        pr = serializer.validated_data.get("purchase_request")
+        if pr is not None and pr.status != "approved":
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"purchase_request": "Quotations can only be added to approved requests."})
+        if not is_manager_or_admin(self.request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Forbidden")
         serializer.save(created_by=self.request.user)
 
     @action(detail=True, methods=["post"])
@@ -516,7 +601,7 @@ class PurchaseQuotationViewSet(viewsets.ModelViewSet):
 class PurchaseOrderViewSet(viewsets.ModelViewSet):
     queryset = PurchaseOrder.objects.all()
     serializer_class = PurchaseOrderSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [CanViewProcurement]
     pagination_class = ProcurementPagination
 
     def get_queryset(self):
@@ -559,6 +644,18 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             {"created_at", "expected_delivery_date", "total", "po_number", "status"},
             ["-created_at"],
         ).distinct()
+
+    def update(self, request, *args, **kwargs):
+        po = self.get_object()
+        if po.status not in ("draft", "pending_approval", "rejected"):
+            return Response({"detail": "This purchase order can no longer be edited."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not is_manager_or_admin(request.user):
+            raise PermissionDenied("Forbidden")
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
 
     def create(self, request, *args, **kwargs):
         """Purchase orders are generated, never created directly.
@@ -932,7 +1029,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
 class PurchaseOrderItemViewSet(viewsets.ModelViewSet):
     queryset = PurchaseOrderItem.objects.all()
     serializer_class = PurchaseOrderItemSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [CanViewProcurement]
     pagination_class = ProcurementPagination
 
     def get_queryset(self):
@@ -953,7 +1050,7 @@ class PurchaseOrderItemViewSet(viewsets.ModelViewSet):
 class GoodsReceiptViewSet(viewsets.ModelViewSet):
     queryset = GoodsReceipt.objects.all()
     serializer_class = GoodsReceiptSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [CanViewProcurement]
     pagination_class = ProcurementPagination
 
     def get_queryset(self):
@@ -999,12 +1096,18 @@ class GoodsReceiptViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         po = serializer.validated_data.get("purchase_order")
-        if po and po.status in ("closed", "cancelled"):
-            from rest_framework.exceptions import ValidationError
-            raise ValidationError(
-                {"purchase_order": "This purchase order can no longer accept "
-                                   "receipts."})
         with transaction.atomic():
+            if po is not None:
+                locked_po = PurchaseOrder.objects.select_for_update().get(pk=po.pk)
+                if locked_po.status in ("closed", "cancelled"):
+                    from rest_framework.exceptions import ValidationError
+                    raise ValidationError(
+                        {"purchase_order": "This purchase order can no longer accept "
+                                           "receipts."})
+                if locked_po.status not in ("approved", "sent_to_vendor", "partially_received"):
+                    from rest_framework.exceptions import ValidationError
+                    raise ValidationError(
+                        {"purchase_order": "Receipts can only be recorded against approved or issued orders."})
             gr = serializer.save(received_by=self.request.user)
             ProcurementHistory.objects.create(
                 purchase_order=gr.purchase_order, actor=self.request.user,
@@ -1017,7 +1120,7 @@ class GoodsReceiptViewSet(viewsets.ModelViewSet):
 class GoodsReceiptItemViewSet(viewsets.ModelViewSet):
     queryset = GoodsReceiptItem.objects.all()
     serializer_class = GoodsReceiptItemSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [CanViewProcurement]
     pagination_class = ProcurementPagination
 
     def get_queryset(self):
@@ -1048,8 +1151,22 @@ class GoodsReceiptItemViewSet(viewsets.ModelViewSet):
                 raise ValidationError(
                     {"goods_receipt": "This purchase order can no longer accept "
                                       "receipts."})
+            if gr.purchase_order.status not in ("approved", "sent_to_vendor", "partially_received"):
+                from rest_framework.exceptions import ValidationError
+                raise ValidationError(
+                    {"goods_receipt": "Receipts can only be recorded against approved or issued orders."})
             line = PurchaseOrderItem.objects.select_for_update().get(
                 pk=serializer.validated_data["purchase_order_item"].pk)
+            received = serializer.validated_data.get(
+                "quantity_received", 0) or 0
+            booked = (line.received_qty or 0) + (line.rejected_qty or 0) + (line.damaged_qty or 0)
+            remaining = max(0, (line.quantity or 0) - booked)
+            if received > remaining:
+                from rest_framework.exceptions import ValidationError
+                raise ValidationError({
+                    "quantity_received": (
+                        f"Only {remaining} unit(s) remain to be received on this "
+                        "purchase order line.")})
             arrival = serializer.save()
             accepted = max(
                 0,
@@ -1113,7 +1230,7 @@ class ProcurementAssetReceiptItemViewSet(viewsets.ModelViewSet):
 
     queryset = ProcurementAssetReceiptItem.objects.all()
     serializer_class = ProcurementAssetReceiptItemSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [CanViewProcurement]
     pagination_class = ProcurementPagination
     http_method_names = ["get", "head", "options", "post"]
 
@@ -1258,7 +1375,7 @@ def _can_access_parent(user, attachment):
 class ProcurementAttachmentViewSet(viewsets.ModelViewSet):
     queryset = ProcurementAttachment.objects.all()
     serializer_class = ProcurementAttachmentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [CanViewProcurement]
     pagination_class = ProcurementPagination
     http_method_names = ["get", "post", "head", "options"]
 
@@ -1383,7 +1500,7 @@ def _dashboard_scope(user):
 
 
 @api_view(["GET"])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([CanViewProcurement])
 def procurement_dashboard(request):
     if not can_view_procurement(request.user):
         raise PermissionDenied("Procurement is not available to your role.")

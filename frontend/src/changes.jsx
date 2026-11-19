@@ -21,6 +21,7 @@ import { ChangeConflicts } from './change-conflicts';
 import { ChangeImplementation } from './change-implementation';
 import { ChangePIR } from './change-pir';
 import { ChangeCalendar } from './change-calendar';
+import { ChangeScheduleView } from './change-schedule-view';
 import { MaintenanceWindows } from './maintenance-windows';
 import { ChangeTemplates } from './change-templates';
 import { ChangeReviewMeetings as ReviewMeetings } from './change-review-meetings';
@@ -31,6 +32,7 @@ export const changeRoutes = [
   { path: '#/changes', component: ChangeList, title: 'Changes', breadcrumbs: ['Change Management'] },
   { path: '#/changes/new', component: ChangeForm, title: 'New Change', breadcrumbs: ['Change Management', 'New Change'] },
   { path: '#/changes/calendar', component: ChangeCalendar, title: 'Change Calendar', breadcrumbs: ['Change Management', 'Calendar'] },
+  { path: '#/changes/schedule', component: ChangeScheduleView, title: 'Change Schedule', breadcrumbs: ['Change Management', 'Schedule'] },
   { path: '#/changes/dashboard', component: () => import('./change-dashboard'), title: 'Change Dashboard', breadcrumbs: ['Change Management', 'Dashboard'] },
   { path: '#/changes/:id', component: ChangeDetail, title: 'Change Detail', breadcrumbs: ['Change Management'] },
   { path: '#/changes/:id/edit', component: ChangeForm, title: 'Edit Change', breadcrumbs: ['Change Management', 'Edit Change'] },

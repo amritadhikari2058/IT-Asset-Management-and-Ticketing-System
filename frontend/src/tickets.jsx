@@ -15,11 +15,15 @@ const STATUSES = ['open', 'in_progress', 'resolved', 'closed', 'reopened', 'arch
 // authority (it still returns a 400 for anything invalid) - this just
 // stops the UI from advertising rejected options.
 const VALID_TRANSITIONS = {
-  open: ['in_progress', 'resolved', 'closed', 'archived'],
-  in_progress: ['open', 'resolved', 'closed'],
-  resolved: ['closed', 'reopened'],
-  closed: ['reopened', 'archived'],
-  reopened: ['in_progress', 'resolved', 'closed'],
+  open: ["in_progress", "waiting_requester", "waiting_third_party", "resolved", "closed", "cancelled", "merged", "archived"],
+  in_progress: ["waiting_requester", "waiting_third_party", "resolved", "closed", "cancelled", "merged", "open", "archived"],
+  waiting_requester: ["in_progress", "resolved", "cancelled", "merged"],
+  waiting_third_party: ["in_progress", "waiting_requester", "resolved", "closed", "cancelled", "merged"],
+  resolved: ["closed", "reopened", "merged"],
+  closed: ["reopened", "archived", "merged"],
+  reopened: ["in_progress", "resolved", "closed"],
+  cancelled: [],
+  merged: [],
   archived: [],
 };
 

@@ -93,15 +93,19 @@ from licensing.services import (
     bulk_allocate_licenses,
     bulk_revoke_allocations,
     evaluate_license_compliance,
+    get_offboarding_allocation_preview,
     recalculate_agreement_capacity,
     record_installation,
+    remediate_compliance_finding,
     record_license_history,
     remove_installation,
+    release_allocation,
     resolve_compliance_finding,
     resume_agreement,
     retire_agreement,
     review_renewal_request,
     revoke_allocation,
+    revoke_allocations_for_offboarding,
     submit_renewal_request,
     suspend_agreement,
     terminate_agreement,
@@ -675,20 +679,26 @@ class LicenseAllocationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def activate(self, request, pk=None):
         alloc = self.get_object()
-        alloc.status = "active"
-        alloc.activated_at = timezone.now()
-        alloc.activation_confirmed_by = request.user
-        alloc.save(update_fields=["status", "activated_at", "activation_confirmed_by", "updated_at"])
-        alloc.agreement.recalculate_counters(save=True)
-        return Response(LicenseAllocationSerializer(alloc, context={"request": request}).data)
+        with transaction.atomic():
+            locked = LicenseAllocation.objects.select_for_update().get(pk=alloc.pk)
+            locked.status = "active"
+            locked.activated_at = timezone.now()
+            locked.activation_confirmed_by = request.user
+            locked.last_verified_at = timezone.now()
+            locked.last_verified_by = request.user
+            locked.save(update_fields=["status", "activated_at", "activation_confirmed_by", "last_verified_at", "last_verified_by", "updated_at"])
+            locked.agreement.recalculate_counters(save=True)
+        return Response(LicenseAllocationSerializer(locked, context={"request": request}).data)
 
     @action(detail=True, methods=["post"])
     def suspend(self, request, pk=None):
         alloc = self.get_object()
-        alloc.status = "suspended"
-        alloc.save(update_fields=["status", "updated_at"])
-        alloc.agreement.recalculate_counters(save=True)
-        return Response(LicenseAllocationSerializer(alloc, context={"request": request}).data)
+        with transaction.atomic():
+            locked = LicenseAllocation.objects.select_for_update().get(pk=alloc.pk)
+            locked.status = "suspended"
+            locked.save(update_fields=["status", "updated_at"])
+            locked.agreement.recalculate_counters(save=True)
+        return Response(LicenseAllocationSerializer(locked, context={"request": request}).data)
 
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):
@@ -699,6 +709,52 @@ class LicenseAllocationViewSet(viewsets.ModelViewSet):
             return Response(LicenseAllocationSerializer(res, context={"request": request}).data)
         except (ValidationError, DjangoValidationError) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=["post"])
+    def release(self, request, pk=None):
+        alloc = self.get_object()
+        reason = request.data.get("reason", "").strip()
+        try:
+            res = release_allocation(alloc, request.user, reason=reason)
+            return Response(LicenseAllocationSerializer(res, context={"request": request}).data)
+        except (ValidationError, DjangoValidationError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=["get"])
+    def history(self, request, pk=None):
+        alloc = self.get_object()
+        hist = alloc.history.all().select_related("actor")[:100]
+        serializer = LicenseHistorySerializer(hist, many=True, context={"request": request})
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], url_path="offboarding-preview")
+    def offboarding_preview(self, request):
+        from accounts.models import User
+        user_id = request.query_params.get("user")
+        if not user_id:
+            return Response({"detail": "user query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        preview = get_offboarding_allocation_preview(user)
+        return Response({"user_id": user.pk, "allocations": preview, "count": len(preview)})
+
+    @action(detail=False, methods=["post"], url_path="offboard")
+    def offboard(self, request):
+        from accounts.models import User
+        user_id = request.data.get("user_id") or request.data.get("user")
+        reason = (request.data.get("reason") or "").strip()
+        if not user_id:
+            return Response({"detail": "user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not reason:
+            reason = f"Employee offboarding for {user.email}"
+        result = revoke_allocations_for_offboarding(user=user, actor=request.user, reason=reason)
+        return Response(result, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
     def verify(self, request, pk=None):
@@ -889,7 +945,23 @@ class LicenseComplianceFindingViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = ComplianceResolveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         note = serializer.validated_data["resolution_note"]
-        res = resolve_compliance_finding(finding, request.user, resolution_note=note, is_false_positive=False)
+        try:
+            res = resolve_compliance_finding(finding, request.user, resolution_note=note, is_false_positive=False)
+        except (ValidationError, DjangoValidationError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(LicenseComplianceFindingSerializer(res, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"])
+    def remediate(self, request, pk=None):
+        finding = self.get_object()
+        note = (request.data.get("remediation_note") or request.data.get("resolution_note") or "").strip()
+        reevaluate = bool(request.data.get("reevaluate", False))
+        if not note:
+            return Response({"detail": "A remediation note is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            res = remediate_compliance_finding(finding, request.user, remediation_note=note, reevaluate=reevaluate)
+        except (ValidationError, DjangoValidationError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(LicenseComplianceFindingSerializer(res, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="false-positive")
@@ -1017,6 +1089,27 @@ def licensing_dashboard(request):
     available_seats = max(0, total_purchased - total_allocated)
     utilization_pct = round((total_allocated / total_purchased * 100), 2) if total_purchased > 0 else 0.0
 
+    pending_renewals_count = LicenseRenewal.objects.filter(status="pending_review").count()
+
+    # Expiring agreements list (within 90 days)
+    expiring_agreements_list = [
+        {
+            "id": a.pk,
+            "agreement_number": a.agreement_number,
+            "product_name": a.software_product.name,
+            "expiry_date": str(a.expiry_date) if a.expiry_date else None,
+        }
+        for a in agr_qs.filter(expiry_date__gte=now, expiry_date__lte=d90).select_related("software_product")[:20]
+    ]
+    pending_renewals_list = [
+        {
+            "id": r.pk,
+            "agreement_number": r.agreement.agreement_number,
+            "status": r.status,
+        }
+        for r in LicenseRenewal.objects.filter(status="pending_review").select_related("agreement")[:20]
+    ]
+
     # Financial breakdown grouped by currency (NO fake cross-currency conversion)
     cost_by_currency = {}
     if not is_employee(user):
@@ -1041,21 +1134,34 @@ def licensing_dashboard(request):
         "active_products": active_products,
         "active_agreements": active_agreements,
         "expired_agreements": expired_agreements,
+        "expired": expired_agreements,
         "expiring_in_30_days": expiring_30,
         "expiring_in_60_days": expiring_60,
         "expiring_in_90_days": expiring_90,
+        "expiring_30": expiring_30,
+        "expiring_60": expiring_60,
+        "expiring_90": expiring_90,
         "total_purchased_seats": total_purchased,
         "total_allocated_seats": total_allocated,
+        "purchased_seats": total_purchased,
+        "allocated_seats": total_allocated,
         "available_seats": available_seats,
         "utilization_percent": utilization_pct,
+        "pending_renewals": pending_renewals_count,
         "annual_cost_by_currency": cost_by_currency,
+        "annual_recurring_cost_by_currency": cost_by_currency,
         "findings": {
             "unused_allocations": unused_findings,
             "unlicensed_installations": unlicensed_insts,
             "prohibited_software": prohibited_sw,
             "inactive_user_allocations": inactive_user_allocs,
         },
+        "unused_findings": unused_findings,
+        "unlicensed_installations": unlicensed_insts,
+        "prohibited_findings": prohibited_sw,
         "recent_findings": recent_findings,
+        "expiring_agreements": expiring_agreements_list,
+        "pending_renewals_list": pending_renewals_list,
     })
 
 

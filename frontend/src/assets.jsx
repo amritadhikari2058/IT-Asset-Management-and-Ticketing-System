@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'react';
 import api from './api';
-import { useAuth } from './auth';
-import {
-  Badge, CategorySelect, ConfirmDialog, DepartmentSelect, ErrorSummary, Field,
-  Modal, PageHeader, UserSelect,
+import { useAuth } from './auth';import { Badge, CategorySelect, ConfirmDialog, DepartmentSelect, ErrorSummary, Field,
+  Link, LoadingRows, Modal, PageHeader, UserSelect,
 } from './components';
 import { fieldMsg, parseApiError } from './api-utils';
 import { MaintenanceFormModal } from './maintenance';
 import { DisposalFormModal } from './disposals';
 
-const STATUSES = ['available', 'assigned', 'in_repair', 'retired', 'lost'];
+const STATUSES = ['available', 'assigned', 'in_repair', 'retired', 'lost', 'disposed'];
 // Generic edits may only move between these two; assigned/retired/lost
 // require their dedicated workflows (backend rejects those jumps).
 const EDITABLE_STATUSES = ['available', 'in_repair'];
@@ -25,6 +23,24 @@ function isImageFilename(name) {
 }
 const ATTACHMENT_MAX_MB = 10;
 
+const fmtDate = (d) => (d ? new Date(`${d}T00:00:00`).toLocaleDateString() : '—');
+const fmtMoney = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n)
+    ? n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : String(v);
+};
+
+function AssetKpi({ label, value, sub }) {
+  return (
+    <div className="kpi">
+      <div className="kpi-label">{label}</div>
+      <div className="kpi-value">{value}</div>
+      {sub ? <div className="kpi-sub">{sub}</div> : null}
+    </div>
+  );
+}
+
 /** Warranty expiry alert badge. Returns a Badge element or null. */
 const warrantyBadge = (expiry) => {
   if (!expiry) return null;
@@ -33,7 +49,7 @@ const warrantyBadge = (expiry) => {
   today.setHours(0, 0, 0, 0);
   const days = Math.round((due - today) / (1000 * 60 * 60 * 24));
   if (days < 0) return <Badge kind="status" value="overdue" label="Warranty expired" />;
-  if (days <= 30) return <Badge kind="status" value="in_repair" label="Warranty expiring" />;
+  if (days <= 30) return <Badge kind="status" value="warning" label="Warranty expiring" />;
   return null;
 };
 
@@ -420,6 +436,9 @@ export function AssetDetail({ id }) {
   const [disposals, setDisposals] = useState([]);
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [disposalOpen, setDisposalOpen] = useState(false);
+  const [maintCostSummary, setMaintCostSummary] = useState(null);
+  const [maintCostLoading, setMaintCostLoading] = useState(false);
+  const [maintCostError, setMaintCostError] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -446,6 +465,11 @@ export function AssetDetail({ id }) {
         const d = await api.get('/assets/disposals/', { params: { asset: id, page_size: 100 } });
         setDisposals(d.data.results ?? d.data ?? []);
       } catch { setDisposals([]); }
+      // Load maintenance cost summary for this asset
+      try {
+        const cs = await api.get('/assets/reports/maintenance/', { params: { asset: id, report: 'maintenance' } });
+        setMaintCostSummary(cs.data);
+      } catch { setMaintCostSummary(null); }
     } catch (e) {
       setError(parseApiError(e).global || 'Could not load asset.');
     } finally {
@@ -680,7 +704,7 @@ export function AssetDetail({ id }) {
             {a.status === 'assigned' && (
               <button type="button" className="btn-ghost" onClick={() => setConfirm('return')}>Return…</button>
             )}
-            {a.status !== 'available' && a.status !== 'assigned' && a.status !== 'in_repair' && a.status !== 'lost' && a.status !== 'retired' && a.status !== 'disposed' && (
+            {a.status !== 'retired' && a.status !== 'lost' && a.status !== 'disposed' && (
               <button type="button" className="btn-ghost" onClick={() => setConfirm('retire')}>Retire…</button>
             )}
             <button type="button" className="btn-ghost" onClick={() => { setLostError(''); setLostOpen(true); }}>Mark lost…</button>
@@ -758,6 +782,26 @@ export function AssetDetail({ id }) {
           )}
         </section>
       )}
+
+      <section className="section">
+        <div className="panel-head">
+          <h4>Maintenance cost summary</h4>
+        </div>
+        {maintCostLoading ? (
+          <div className="panel-pad"><LoadingRows n={4} /></div>
+        ) : maintCostError ? (
+          <div className="error-summary" role="alert">{maintCostError}</div>
+        ) : maintCostSummary ? (
+          <div className="kpi-grid" style={{ marginTop: 0 }}>
+            <AssetKpi label="Total spent" value={fmtMoney(maintCostSummary.total_cost)} sub={`${maintCostSummary.total_records} records`} />
+            <AssetKpi label="Completed spend" value={fmtMoney(maintCostSummary.completed_cost)} sub="Completed maintenance" />
+            <AssetKpi label="Pending / in-progress" value={maintCostSummary.pending_count} sub="Open maintenance records" />
+            <AssetKpi label="Most recent" value={maintCostSummary.most_recent_maintenance ? fmtDate(maintCostSummary.most_recent_maintenance) : '—'} />
+          </div>
+        ) : (
+          <p className="muted">No maintenance records for this asset.</p>
+        )}
+      </section>
 
       <section className="section">
         <div className="panel-head">

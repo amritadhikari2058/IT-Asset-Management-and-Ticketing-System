@@ -11,7 +11,7 @@ import { AssetBulkCreateModal, EmployeeCreateModal, EmployeeImportModal, ReportT
 
 const TICKET_STATUSES = ['', 'open', 'in_progress', 'resolved', 'closed', 'reopened', 'archived'];
 const TICKET_PRIORITIES = ['', 'low', 'medium', 'high', 'critical'];
-const ASSET_STATUSES = ['', 'available', 'assigned', 'in_repair', 'retired', 'lost'];
+const ASSET_STATUSES = ['', 'available', 'assigned', 'in_repair', 'retired', 'lost', 'disposed'];
 
 export function Login() {
   const { login } = useAuth();
@@ -317,7 +317,7 @@ const warrantyBadge = (expiry) => {
   today.setHours(0, 0, 0, 0);
   const days = Math.round((due - today) / (1000 * 60 * 60 * 24));
   if (days < 0) return <Badge kind="status" value="overdue" label="Warranty expired" />;
-  if (days <= 30) return <Badge kind="status" value="in_repair" label="Warranty expiring" />;
+  if (days <= 30) return <Badge kind="status" value="warning" label="Warranty expiring" />;
   return null;
 };
 
@@ -333,7 +333,7 @@ function pageFromUrl(url) {
  * are simply omitted from the query string. */
 function buildAssetListUrl(f, ordering) {
   const p = new URLSearchParams();
-  for (const k of ['q', 'status', 'category', 'department']) {
+  for (const k of ['q', 'status', 'category', 'department', 'vendor']) {
     if (f[k] !== '' && f[k] != null) p.set(k, f[k]);
   }
   if (ordering) p.set('ordering', ordering);
@@ -392,11 +392,12 @@ export function Assets() {
   const [loading, setLoading] = useState(false);
   const [listError, setListError] = useState('');
   const [sel, setSel] = useState(new Set());
-  const [f, setF] = useState({ q: '', status: '', category: '', department: '' });
+  const [f, setF] = useState({ q: '', status: '', category: '', department: '', vendor: '' });
   const [showBulkCreate, setShowBulkCreate] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [sort, changeSort, orderingParam] = useSort();
   const [lastUrl, setLastUrl] = useState('/assets/');
+  const [vendors, setVendors] = useState([]);
   // Destructive/secondary confirmations and per-row action state.
   const [retireConfirm, setRetireConfirm] = useState(false);
   const [retireBusy, setRetireBusy] = useState(false);
@@ -433,6 +434,7 @@ export function Assets() {
       : <span className="cell-muted">—</span>) },
     { key: 'category', label: 'Category', render: (a) => a.category_name ?? <span className="cell-muted">—</span> },
     { key: 'department', label: 'Department', render: (a) => a.department_name ?? <span className="cell-muted">None</span> },
+    { key: 'vendor', label: 'Vendor', render: (a) => a.vendor_name ?? <span className="cell-muted">—</span> },
     { key: 'assigned_to', label: 'Assignee', render: (a) => a.assigned_to_email ?? <span className="cell-muted">Unassigned</span> },
     { key: 'location', label: 'Location', render: (a) => a.location
       ? <span className="ellipsis" title={a.location}>{a.location}</span>
@@ -470,8 +472,8 @@ export function Assets() {
     'assets',
     ASSET_COLUMNS.map((c) => c.key),
     isStaff
-      ? ['asset_tag', 'name', 'status', 'maintenance', 'category', 'department', 'assigned_to', 'location', 'actions']
-      : ['asset_tag', 'name', 'status', 'maintenance', 'category', 'department', 'assigned_to', 'location'],
+      ? ['asset_tag', 'name', 'status', 'maintenance', 'category', 'department', 'vendor', 'assigned_to', 'location', 'actions']
+      : ['asset_tag', 'name', 'status', 'maintenance', 'category', 'department', 'vendor', 'assigned_to', 'location'],
   );
   const assetColumns = ASSET_COLUMNS.filter((c) => visibleAssetColumns.has(c.key));
 
@@ -506,6 +508,14 @@ export function Assets() {
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
   }, [builtUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/assets/vendors/?is_deleted=false&page_size=100').then((r) => {
+      if (!cancelled) setVendors(r.data.results || r.data || []);
+    }).catch(() => { if (!cancelled) setVendors([]); });
+    return () => { cancelled = true; };
+  }, []);
 
   const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
@@ -666,6 +676,15 @@ export function Assets() {
         <div className="field-inline">
           <div className="caption">Department</div>
           <DepartmentSelect value={f.department} onChange={(v) => setF((prev) => ({ ...prev, department: v ?? '' }))} />
+        </div>
+        <div className="field-inline">
+          <div className="caption">Vendor</div>
+          <select className="input" value={f.vendor} onChange={(e) => setF((prev) => ({ ...prev, vendor: e.target.value }))} aria-label="Filter by vendor">
+            <option value="">All vendors</option>
+            {vendors.map((v) => (
+              <option key={v.id} value={v.id}>{v.name}</option>
+            ))}
+          </select>
         </div>
         {filtersActive && (
           <button

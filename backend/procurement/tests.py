@@ -69,7 +69,7 @@ class ProcurementAPITestCase(TestCase):
                 "item_name": "Laptop",
                 "quantity": 2,
                 "estimated_unit_price": "250.00",
-                "estimated_total": "500.00",
+                "estimated_total": total,
             },
             format="json",
         )
@@ -406,12 +406,30 @@ class ProcurementAPITestCase(TestCase):
 
     def test_it_support_only_sees_own_purchase_requests(self):
         own = self.make_request()
-        other = self.make_request(user=self.employee)
+        other_user = make_user("other-support@example.test", "it_support", "T-SUP2")
+        other = self.make_request(user=other_user)
         resp = self.client_for(self.support).get("/api/procurement/purchase-requests/")
         self.assertEqual(resp.status_code, 200)
         ids = {row["id"] for row in resp.data["results"]}
         self.assertIn(own.pk, ids)
         self.assertNotIn(other.pk, ids)
+
+    def test_receipt_rejected_for_pending_approval_order(self):
+        pr = self._approved_request_with_quote()
+        po_data = self.client_for(self.manager).post(
+            f"/api/procurement/purchase-orders/{pr.pk}/generate_from_pr/",
+            {}, format="json",
+        ).data
+        po = PurchaseOrder.objects.get(pk=po_data["id"])
+        resp = self.client_for(self.support).post(
+            "/api/procurement/goods-receipts/",
+            {"purchase_order": po.pk}, format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_employee_denied_procurement_access(self):
+        resp = self.client_for(self.employee).get("/api/procurement/purchase-requests/")
+        self.assertEqual(resp.status_code, 403)
 
     def test_procurement_history_is_written(self):
         pr = self.make_request()

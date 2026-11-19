@@ -435,8 +435,24 @@ def schedule_change(change, user, planned_start, planned_end, expected_downtime_
     Conflict detection is delegated to the conflict detection service; this
     function records the schedule and history.
     """
-    if change.status != "approved":
-        raise ValidationError("Only approved changes can be scheduled.")
+    # Only approved changes can be initially scheduled.
+    if change.status not in ("approved", "on_hold"):
+        raise ValidationError(
+            f"Only approved or on_hold changes can be scheduled. Current status: {change.status}"
+        )
+
+    # Cannot schedule changes that have already started implementation.
+    if change.status in ("in_progress", "validation", "completed", "pir_required", "closed",
+                          "failed", "rolled_back"):
+        raise ValidationError(
+            f"Cannot schedule a change that is {change.status}. Rescheduling is not allowed once implementation has begun."
+        )
+
+    # Validate date range.
+    if planned_end <= planned_start:
+        raise ValidationError(
+            "Planned end must be after planned start."
+        )
 
     with transaction.atomic():
         change.planned_start = planned_start
@@ -456,6 +472,15 @@ def schedule_change(change, user, planned_start, planned_end, expected_downtime_
             ]
         )
 
+        # Detect and record conflicts for the new schedule
+        try:
+            from changes.conflicts import detect_conflicts, upsert_conflicts
+            conflicts = detect_conflicts(change)
+            upsert_conflicts(change, conflicts)
+        except Exception:
+            # Don't fail scheduling if conflict detection has issues
+            pass
+
         ChangeHistory.objects.create(
             change=change,
             actor=user,
@@ -474,6 +499,16 @@ def schedule_change(change, user, planned_start, planned_end, expected_downtime_
             },
         )
         return change
+
+
+def get_schedule_conflicts(change):
+    """Get schedule conflicts for display purposes.
+
+    Returns conflict information suitable for the schedule UI,
+    including overlap details, shared CIs/services, and conflict types.
+    """
+    from changes.conflicts import detect_schedule_conflicts
+    return detect_schedule_conflicts(change)
 
 
 def start_implementation(change, user):
@@ -546,9 +581,16 @@ def complete_implementation(change, user, validation_passed=True, notes=""):
     if change.status != "in_progress":
         raise ValidationError("Only in-progress changes can be completed.")
 
+    if not notes:
+        raise ValidationError(
+            "Implementation notes are required to complete an implementation."
+        )
+
     if validation_passed is False:
         change.status = "validation"
-        change.save(update_fields=["status", "updated_at"])
+        change.actual_end = timezone.now()
+        change.implementation_notes = notes
+        change.save(update_fields=["status", "actual_end", "implementation_notes", "updated_at"])
         ChangeHistory.objects.create(
             change=change,
             actor=user,
@@ -584,6 +626,11 @@ def fail_implementation(change, user, failure_reason):
     """Mark an implementation as failed."""
     if change.status != "in_progress":
         raise ValidationError("Only in-progress changes can fail.")
+
+    if not failure_reason:
+        raise ValidationError(
+            "A failure reason is required to mark an implementation as failed."
+        )
 
     change.status = "failed"
     change.failure_reason = failure_reason
@@ -621,7 +668,17 @@ def start_rollback(change, user):
         change=change,
         actor=user,
         event_type="rollback_started",
-        detail="Rollback started.",
+        detail=f"Rollback started by {user.employee_id}.",
+    )
+    log_action(
+        actor=user,
+        action="update",
+        instance=change,
+        reason="Rollback started",
+        details={
+            "change_number": change.change_number,
+            "rollback_started_at": str(change.rollback_started_at),
+        },
     )
     return change
 
@@ -639,7 +696,17 @@ def complete_rollback(change, user):
         change=change,
         actor=user,
         event_type="rollback_completed",
-        detail="Rollback completed.",
+        detail=f"Rollback completed by {user.employee_id}.",
+    )
+    log_action(
+        actor=user,
+        action="update",
+        instance=change,
+        reason="Rollback completed",
+        details={
+            "change_number": change.change_number,
+            "rollback_completed_at": str(change.rollback_completed_at),
+        },
     )
     return change
 
@@ -679,7 +746,11 @@ def close_change(change, user, closure_summary):
             pir = change.pir
         except PostImplementationReview.DoesNotExist:
             pir = None
-        if not pir or pir.status != "completed":
+        if not pir:
+            raise ValidationError(
+                "A post-implementation review is required before closing this change."
+            )
+        if pir.status != "completed":
             raise ValidationError(
                 "A completed post-implementation review is required before closing."
             )
@@ -693,14 +764,17 @@ def close_change(change, user, closure_summary):
         change=change,
         actor=user,
         event_type="closed",
-        detail="Change closed.",
+        detail=f"Change closed. {closure_summary}".strip(),
     )
     log_action(
         actor=user,
         action="update",
         instance=change,
         reason="Change closed",
-        details={"change_number": change.change_number},
+        details={
+            "change_number": change.change_number,
+            "closure_summary": closure_summary,
+        },
     )
     return change
 

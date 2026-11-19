@@ -186,6 +186,26 @@ class LicenseAgreementSerializer(serializers.ModelSerializer):
             "version",
         ]
 
+    def validate(self, attrs):
+        instance = self.instance
+        start_date = attrs.get("start_date", getattr(instance, "start_date", None) if instance else None)
+        expiry_date = attrs.get("expiry_date", getattr(instance, "expiry_date", None) if instance else None)
+        renewal_date = attrs.get("renewal_date", getattr(instance, "renewal_date", None) if instance else None)
+        purchase_date = attrs.get("purchase_date", getattr(instance, "purchase_date", None) if instance else None)
+        support_expiry_date = attrs.get("support_expiry_date", getattr(instance, "support_expiry_date", None) if instance else None)
+
+        if start_date and expiry_date and expiry_date < start_date:
+            raise serializers.ValidationError({"expiry_date": "Expiry date cannot be earlier than start date."})
+        if renewal_date and expiry_date and renewal_date > expiry_date:
+            raise serializers.ValidationError({"renewal_date": "Renewal date cannot be later than expiry date."})
+        if renewal_date and start_date and renewal_date < start_date:
+            raise serializers.ValidationError({"renewal_date": "Renewal date cannot be earlier than start date."})
+        if purchase_date and start_date and purchase_date > start_date:
+            raise serializers.ValidationError({"purchase_date": "Purchase date cannot be later than start date."})
+        if support_expiry_date and expiry_date and support_expiry_date > expiry_date:
+            raise serializers.ValidationError({"support_expiry_date": "Support expiry date cannot be later than license expiry date."})
+        return attrs
+
     def create(self, validated_data):
         from licensing.services import generate_agreement_number
         validated_data["agreement_number"] = generate_agreement_number()
@@ -487,9 +507,18 @@ class LicenseRenewalSerializer(serializers.ModelSerializer):
     """Full LicenseRenewal serializer."""
 
     agreement_number = serializers.CharField(source="agreement.agreement_number", read_only=True)
+    agreement_status = serializers.CharField(source="agreement.status", read_only=True)
     product_name = serializers.CharField(source="agreement.software_product.name", read_only=True)
     requested_by_email = serializers.CharField(source="requested_by.email", read_only=True)
     reviewed_by_email = serializers.CharField(source="reviewed_by.email", read_only=True)
+
+    def validate(self, attrs):
+        instance = self.instance
+        proposed_start = attrs.get("proposed_start_date", getattr(instance, "proposed_start_date", None) if instance else None)
+        proposed_expiry = attrs.get("proposed_expiry_date", getattr(instance, "proposed_expiry_date", None) if instance else None)
+        if proposed_start and proposed_expiry and proposed_expiry <= proposed_start:
+            raise serializers.ValidationError({"proposed_expiry_date": "Proposed expiry date must be strictly after proposed start date."})
+        return attrs
 
     class Meta:
         model = LicenseRenewal
@@ -497,6 +526,7 @@ class LicenseRenewalSerializer(serializers.ModelSerializer):
             "id",
             "agreement",
             "agreement_number",
+            "agreement_status",
             "product_name",
             "previous_start_date",
             "previous_expiry_date",

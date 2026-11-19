@@ -252,6 +252,163 @@ def detect_conflicts(change, horizon_days=90):
                 "fingerprint": _conflict_fingerprint(change, other, "high_risk_overlap"),
             })
 
+    # --- Schedule time overlap: direct time window conflicts ---
+    # Identify changes with overlapping planned start/end times.
+    # This is informational unless other factors make it critical.
+    overlapping = ChangeRequest.objects.filter(
+        status__in=["scheduled", "in_progress", "approved"],
+        planned_start__isnull=False,
+        planned_end__isnull=False,
+    ).exclude(pk=change.pk)
+    for other in overlapping:
+        if not _overlaps(cs, ce, other.planned_start, other.planned_end):
+            continue
+        
+        # Check if this is already covered by asset/service/department overlap
+        # to avoid duplicate informational conflicts
+        existing_types = {c["conflict_type"] for c in conflicts}
+        if "asset_overlap" in existing_types or "service_overlap" in existing_types:
+            # Already have a more specific conflict for this overlap
+            continue
+        
+        # Determine if changes share any CIs or services via impact tables
+        other_asset_ids = set(
+            ChangeAssetImpact.objects.filter(change=other).values_list(
+                "asset_id", flat=True
+            )
+        )
+        this_asset_ids = set(asset_ids)
+        shared_assets = this_asset_ids & other_asset_ids
+        
+        other_service_ids = set(
+            ChangeServiceImpact.objects.filter(change=other).values_list(
+                "service_catalogue_item_id", flat=True
+            )
+        )
+        this_service_ids = set(service_ids)
+        shared_services = this_service_ids & other_service_ids
+        
+        if shared_assets or shared_services:
+            # Shared CI/service - more significant conflict
+            conflict_type = "asset_overlap" if shared_assets else "service_overlap"
+            severity = _severity_for(change, other, "high" if shared_assets else "medium")
+            conflicts.append({
+                "change": change,
+                "conflicting_change": other,
+                "conflict_type": conflict_type,
+                "severity": severity,
+                "fingerprint": _conflict_fingerprint(change, other, conflict_type),
+            })
+        elif change.department_id and other.department_id == change.department_id:
+            # Same department - already covered by department_overlap above
+            continue
+        else:
+            # No shared CIs/services - purely time-based overlap, informational
+            conflicts.append({
+                "change": change,
+                "conflicting_change": other,
+                "conflict_type": "schedule_overlap",
+                "severity": "info",
+                "fingerprint": _conflict_fingerprint(change, other, "schedule_overlap"),
+            })
+
+    return conflicts
+
+
+def detect_schedule_conflicts(change, horizon_days=90):
+    """Detect schedule conflicts focusing on time-based overlaps.
+
+    Returns a list of dicts suitable for display in schedule views.
+    This is a lighter-weight alternative to full conflict detection,
+    focused on identifying what else is scheduled in the same time window.
+    """
+    now = timezone.now()
+    horizon_end = now + timedelta(days=horizon_days)
+
+    conflicts = []
+
+    # Only for scheduled or in_progress changes with planned times
+    if change.status not in ("scheduled", "in_progress"):
+        return conflicts
+
+    cs = change.planned_start
+    ce = change.planned_end
+    if not cs or not ce:
+        return conflicts
+
+    # Find all changes scheduled in the same time window
+    overlapping = ChangeRequest.objects.filter(
+        status__in=["scheduled", "in_progress"],
+        planned_start__isnull=False,
+        planned_end__isnull=False,
+        planned_start__lte=ce,
+        planned_end__gte=cs,
+    ).exclude(pk=change.pk).select_related(
+        "change_owner", "department", "implementation_lead"
+    )
+
+    for other in overlapping:
+        # Determine overlap details
+        overlap_start = max(cs, other.planned_start)
+        overlap_end = min(ce, other.planned_end)
+        overlap_minutes = (overlap_end - overlap_start).total_seconds() / 60
+
+        # Check for shared CIs/services
+        this_assets = set(
+            ChangeAssetImpact.objects.filter(change=change).values_list(
+                "asset_id", flat=True
+            )
+        )
+        other_assets = set(
+            ChangeAssetImpact.objects.filter(change=other).values_list(
+                "asset_id", flat=True
+            )
+        )
+        shared_assets = this_assets & other_assets
+
+        this_services = set(
+            ChangeServiceImpact.objects.filter(change=change).values_list(
+                "service_catalogue_item_id", flat=True
+            )
+        )
+        other_services = set(
+            ChangeServiceImpact.objects.filter(change=other).values_list(
+                "service_catalogue_item_id", flat=True
+            )
+        )
+        shared_services = this_services & other_services
+
+        # Determine conflict severity and type.
+        # Different departments with no shared assets/services are not conflicts.
+        # Same department or no department on either change = potential conflict.
+        if shared_assets:
+            conflict_type = "asset_overlap"
+            severity = "high"
+        elif shared_services:
+            conflict_type = "service_overlap"
+            severity = "medium"
+        elif change.department_id and other.department_id and change.department_id != other.department_id:
+            # Different departments, no shared assets/services - skip.
+            continue
+        elif change.department_id and other.department_id == change.department_id:
+            conflict_type = "department_overlap"
+            severity = "low"
+        else:
+            conflict_type = "schedule_overlap"
+            severity = "info"
+
+        conflicts.append({
+            "change": change,
+            "conflicting_change": other,
+            "conflict_type": conflict_type,
+            "severity": severity,
+            "overlap_start": overlap_start,
+            "overlap_end": overlap_end,
+            "overlap_minutes": overlap_minutes,
+            "shared_assets": list(shared_assets),
+            "shared_services": list(shared_services),
+        })
+
     return conflicts
 
 

@@ -86,6 +86,26 @@ class AssetSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
+    def validate(self, attrs):
+        """Cross-field validation for warranty and purchase data.
+
+        - Warranty expiry must be on or after warranty start.
+        - Purchase cost must be non-negative when provided.
+        """
+        warranty_start = attrs.get("warranty_start") or self.instance.warranty_start if self.instance else None
+        warranty_expiry = attrs.get("warranty_expiry") or self.instance.warranty_expiry if self.instance else None
+        purchase_cost = attrs.get("purchase_cost", self.instance.purchase_cost if self.instance else None)
+
+        if warranty_start and warranty_expiry and warranty_expiry < warranty_start:
+            raise serializers.ValidationError(
+                {"warranty_expiry": "Warranty expiry must be on or after the warranty start date."})
+
+        if purchase_cost is not None and purchase_cost < 0:
+            raise serializers.ValidationError(
+                {"purchase_cost": "Purchase cost must be zero or more."})
+
+        return super().validate(attrs)
+
     def validate_serial_number(self, value):
         """Trim and check uniqueness of a non-blank serial number.
 

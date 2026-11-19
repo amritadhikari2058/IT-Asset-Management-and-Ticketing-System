@@ -12,7 +12,7 @@ Response-shape notes (frontend contract):
 """
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Prefetch, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -311,19 +311,35 @@ class ConfigurationItemViewSet(viewsets.ModelViewSet):
             from rest_framework.exceptions import PermissionDenied
 
             raise PermissionDenied("Only managers/admins may delete CIs.")
-        active_rels = ConfigurationItemRelationship.objects.filter(
-            is_deleted=False, status="active",
-        ).filter(
-            Q(source_ci=instance) | Q(target_ci=instance),
-        )
-        for rel in active_rels:
-            rel.status = "inactive"
-            rel.save(update_fields=["status", "updated_at"])
-        log_action(
-            actor=self.request.user, action="soft_delete", instance=instance,
-            reason="CI deleted",
-        )
-        super().perform_destroy(instance)
+        with transaction.atomic():
+            active_rels = ConfigurationItemRelationship.objects.filter(
+                is_deleted=False, status="active",
+            ).filter(
+                Q(source_ci=instance) | Q(target_ci=instance),
+            ).select_for_update()
+            for rel in active_rels:
+                previous = rel.status
+                rel.status = "inactive"
+                rel.save(update_fields=["status", "updated_at"])
+                ConfigurationItemHistory.objects.create(
+                    configuration_item=instance,
+                    relationship=rel,
+                    actor=self.request.user,
+                    event_type="relationship_deactivated",
+                    previous_status=previous,
+                    new_status="inactive",
+                    detail=(
+                        f"Deactivated on deletion of {instance.ci_number}: "
+                        f"{rel.relationship_type}"
+                    ),
+                    source="manual",
+                )
+            log_action(
+                actor=self.request.user, action="soft_delete", instance=instance,
+                reason="CI deleted",
+                details={"ci_number": instance.ci_number},
+            )
+            super().perform_destroy(instance)
 
     # -- actions ---------------------------------------------------------
 
@@ -551,9 +567,9 @@ class ConfigurationItemRelationshipViewSet(viewsets.ModelViewSet):
             value = params.get(param)
             if value:
                 qs = qs.filter(**{param: value})
-        if params.get("target") or params.get("with_ci"):
-            value = params.get("target") or params.get("with_ci")
-            qs = qs.filter(Q(source_ci=value) | Q(target_ci=value))
+        ci_value = params.get("ci") or params.get("target") or params.get("with_ci")
+        if ci_value:
+            qs = qs.filter(Q(source_ci=ci_value) | Q(target_ci=ci_value))
         q = params.get("search")
         if q:
             qs = qs.filter(
@@ -585,6 +601,31 @@ class ConfigurationItemRelationshipViewSet(viewsets.ModelViewSet):
             detail=f"{obj.relationship_type} -> {obj.target_ci.ci_number}",
             source="manual",
         )
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            ConfigurationItemHistory.objects.create(
+                configuration_item=instance.source_ci,
+                relationship=instance,
+                actor=self.request.user,
+                event_type="relationship_deleted",
+                previous_status=instance.status or "",
+                new_status="deleted",
+                detail=f"{instance.relationship_type} -> {instance.target_ci.ci_number}",
+                source="manual",
+            )
+            log_action(
+                actor=self.request.user,
+                action="soft_delete",
+                instance=instance,
+                reason="relationship deleted",
+                details={
+                    "source_ci": instance.source_ci_id,
+                    "target_ci": instance.target_ci_id,
+                    "relationship_type": instance.relationship_type,
+                },
+            )
+            super().perform_destroy(instance)
 
     @action(detail=True, methods=["post"])
     def activate(self, request, pk=None):
@@ -703,14 +744,7 @@ class ConfigurationBaselineViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user)
 
     def perform_update(self, serializer):
-        new_cis = serializer.validated_data.get("configuration_items")
-        obj = serializer.save()
-        if new_cis is not None and obj.status == "draft":
-            obj.configuration_items.set(new_cis)
-            try:
-                baseline_service.refresh_snapshot(obj)
-            except ValueError:
-                pass
+        serializer.save()
 
     @action(detail=True, methods=["post", "patch"])
     def approve(self, request, pk=None):
@@ -771,7 +805,16 @@ class ConfigurationBaselineViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         results = []
-        for ci in baseline.configuration_items.all()[:200]:
+        cis = baseline.configuration_items.select_related("ci_type").prefetch_related(
+            Prefetch(
+                "outgoing_relationships",
+                queryset=ConfigurationItemRelationship.objects.filter(
+                    status="active", is_deleted=False,
+                ).select_related("target_ci"),
+                to_attr="active_outgoing_relationships",
+            ),
+        )[:200]
+        for ci in cis:
             for diff in baseline_service.compare_ci_to_baseline(ci, baseline):
                 entry = dict(diff)
                 entry["ci_id"] = ci.id
@@ -957,7 +1000,12 @@ class CMDBServiceProfileViewSet(viewsets.ModelViewSet):
             raise PermissionDenied(
                 "Only managers/admins may manage service profiles.",
             )
-        serializer.save()
+        try:
+            serializer.save()
+        except IntegrityError as exc:
+            raise DRFValidationError(
+                {"detail": "A service profile for this service already exists."},
+            ) from exc
 
     def perform_update(self, serializer):
         if not is_it_manager(self.request.user):
@@ -966,7 +1014,12 @@ class CMDBServiceProfileViewSet(viewsets.ModelViewSet):
             raise PermissionDenied(
                 "Only managers/admins may manage service profiles.",
             )
-        serializer.save()
+        try:
+            serializer.save()
+        except IntegrityError as exc:
+            raise DRFValidationError(
+                {"detail": "A service profile for this service already exists."},
+            ) from exc
 
 
 class ServiceConfigurationItemLinkViewSet(viewsets.ModelViewSet):
@@ -995,7 +1048,12 @@ class ServiceConfigurationItemLinkViewSet(viewsets.ModelViewSet):
                              ServiceConfigurationItemLinkSerializer, cap=500)
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        try:
+            serializer.save(created_by=self.request.user)
+        except IntegrityError as exc:
+            raise DRFValidationError(
+                {"detail": "A matching service-CI link already exists."},
+            ) from exc
 
 
 class ConfigurationItemTicketLinkViewSet(viewsets.ModelViewSet):
@@ -1018,7 +1076,12 @@ class ConfigurationItemTicketLinkViewSet(viewsets.ModelViewSet):
                              ConfigurationItemTicketLinkSerializer, cap=500)
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        try:
+            serializer.save(created_by=self.request.user)
+        except IntegrityError as exc:
+            raise DRFValidationError(
+                {"detail": "A matching ticket-CI link already exists."},
+            ) from exc
 
 
 class ConfigurationItemChangeLinkViewSet(viewsets.ModelViewSet):
@@ -1041,7 +1104,12 @@ class ConfigurationItemChangeLinkViewSet(viewsets.ModelViewSet):
                              ConfigurationItemChangeLinkSerializer, cap=500)
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        try:
+            serializer.save(created_by=self.request.user)
+        except IntegrityError as exc:
+            raise DRFValidationError(
+                {"detail": "A matching change-CI link already exists."},
+            ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1514,32 +1582,41 @@ def build_report(kind, params):
         )
         if params.get("department"):
             assets = assets.filter(department_id=params["department"])
+        total_assets = assets.count()
+        assets_with_ci = assets.filter(
+            configuration_items__is_deleted=False,
+        ).distinct().count()
+        assets_without_ci = max(total_assets - assets_with_ci, 0)
+        manual_cis = ConfigurationItem.objects.filter(
+            asset__in=assets, source="manual", is_deleted=False,
+        ).values("asset_id").distinct().count()
+
+        sample = list(assets.order_by("asset_tag")[:500])
+        asset_ids = [a.id for a in sample]
+        ci_map = {}
+        for ci in ConfigurationItem.objects.filter(
+            asset_id__in=asset_ids, is_deleted=False,
+        ).order_by("id"):
+            ci_map.setdefault(ci.asset_id, ci)
+
         rows = []
-        with_ci = without_ci = manual_cis = 0
-        for asset in assets.order_by("asset_tag")[:500]:
-            ci = ConfigurationItem.objects.filter(
-                asset=asset, is_deleted=False,
-            ).first()
+        for asset in sample:
+            ci = ci_map.get(asset.id)
             if ci:
-                with_ci += 1
-                if ci.source == "manual":
-                    manual_cis += 1
                 rows.append({
                     "label": f"{asset.asset_tag} {asset.name}",
                     "value": f"{ci.ci_number} ({ci.source})",
                     "count": 1,
                 })
             else:
-                without_ci += 1
                 rows.append({
                     "label": f"{asset.asset_tag} {asset.name}",
                     "value": "missing CI", "count": 0,
                 })
-        total_assets = assets.count()
         summary = {
             "assets_total": total_assets,
-            "assets_with_ci": with_ci,
-            "assets_without_ci": without_ci,
+            "assets_with_ci": assets_with_ci,
+            "assets_without_ci": assets_without_ci,
             "manual_cis": manual_cis,
         }
         columns = [_LABEL_COL, _VALUE_COL, _COUNT_COL]
@@ -1548,31 +1625,41 @@ def build_report(kind, params):
         from licensing.models import SoftwareProduct
 
         products = SoftwareProduct.objects.filter(is_deleted=False)
+        total_products = products.count()
+        products_with_ci = products.filter(
+            configuration_items__is_deleted=False,
+        ).distinct().count()
+        products_without_ci = max(total_products - products_with_ci, 0)
+        manual_cis = ConfigurationItem.objects.filter(
+            software_product__in=products, source="manual", is_deleted=False,
+        ).values("software_product_id").distinct().count()
+
+        sample = list(products.order_by("name")[:500])
+        product_ids = [p.id for p in sample]
+        ci_map = {}
+        for ci in ConfigurationItem.objects.filter(
+            software_product_id__in=product_ids, is_deleted=False,
+        ).order_by("id"):
+            ci_map.setdefault(ci.software_product_id, ci)
+
         rows = []
-        with_ci = without_ci = manual_cis = 0
-        for product in products.order_by("name")[:500]:
-            ci = ConfigurationItem.objects.filter(
-                software_product=product, is_deleted=False,
-            ).first()
+        for product in sample:
+            ci = ci_map.get(product.id)
             if ci:
-                with_ci += 1
-                if ci.source == "manual":
-                    manual_cis += 1
                 rows.append({
                     "label": product.name,
                     "value": f"{ci.ci_number} ({ci.source})",
                     "count": 1,
                 })
             else:
-                without_ci += 1
                 rows.append({
                     "label": product.name,
                     "value": "missing CI", "count": 0,
                 })
         summary = {
-            "products_total": products.count(),
-            "products_with_ci": with_ci,
-            "products_without_ci": without_ci,
+            "products_total": total_products,
+            "products_with_ci": products_with_ci,
+            "products_without_ci": products_without_ci,
             "manual_cis": manual_cis,
         }
         columns = [_LABEL_COL, _VALUE_COL, _COUNT_COL]
@@ -1604,6 +1691,9 @@ class ReportsView(APIView):
 
 def _verification_rows(params):
     qs = find_unverified_configuration_items(VERIFICATION_THRESHOLD_DAYS)
+    qs = qs.select_related(
+        "asset", "service_catalogue_item", "vendor", "support_group",
+    )
     if params.get("ci_type") or params.get("type"):
         qs = qs.filter(ci_type_id=params.get("ci_type") or params.get("type"))
     if params.get("department"):

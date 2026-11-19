@@ -87,6 +87,8 @@ class ChangeRequest(SoftDeleteModel):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, default="")
     business_reason = models.TextField(blank=True, default="")
+    implementation_notes = models.TextField(blank=True, default="")
+    rollback_started_at = models.DateTimeField(null=True, blank=True)
     change_type = models.CharField(max_length=20, choices=CHANGE_TYPE_CHOICES)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
     status = models.CharField(
@@ -148,6 +150,11 @@ class ChangeRequest(SoftDeleteModel):
     failure_reason = models.TextField(blank=True, default="")
     rollback_reason = models.TextField(blank=True, default="")
     emergency_reason = models.TextField(blank=True, default="")
+    rollback_completed_at = models.DateTimeField(null=True, blank=True)
+    rollback_completed_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="change_rollback_completed_by",
+    )
 
     approval_required = models.BooleanField(default=True)
     current_approver = models.ForeignKey(

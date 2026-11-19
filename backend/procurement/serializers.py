@@ -23,6 +23,19 @@ class PurchaseRequestItemSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ["created_at"]
 
+    def validate(self, attrs):
+        item_name = attrs.get("item_name", getattr(self.instance, "item_name", ""))
+        if not str(item_name or "").strip():
+            raise serializers.ValidationError({"item_name": "Item name is required."})
+        quantity = attrs.get("quantity", getattr(self.instance, "quantity", 1))
+        if quantity is None or int(quantity) <= 0:
+            raise serializers.ValidationError({"quantity": "Quantity must be greater than zero."})
+        for field in ("estimated_unit_price", "estimated_total"):
+            value = attrs.get(field, getattr(self.instance, field, None))
+            if value is not None and value < 0:
+                raise serializers.ValidationError({field: "Value cannot be negative."})
+        return attrs
+
 
 class PurchaseQuotationSerializer(serializers.ModelSerializer):
     vendor_detail = VendorSerializer(source="vendor", read_only=True)
@@ -32,6 +45,15 @@ class PurchaseQuotationSerializer(serializers.ModelSerializer):
         model = PurchaseQuotation
         fields = "__all__"
         read_only_fields = ["created_at", "selected_by", "selected_at"]
+
+    def validate(self, attrs):
+        amount = attrs.get("quoted_amount", getattr(self.instance, "quoted_amount", None))
+        if amount is None or amount <= 0:
+            raise serializers.ValidationError({"quoted_amount": "Quoted amount must be greater than zero."})
+        delivery_days = attrs.get("delivery_days", getattr(self.instance, "delivery_days", None))
+        if delivery_days is not None and delivery_days < 0:
+            raise serializers.ValidationError({"delivery_days": "Delivery days cannot be negative."})
+        return attrs
 
 
 class ProcurementHistorySerializer(serializers.ModelSerializer):
@@ -57,6 +79,15 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
             return None
         return {"id": po.pk, "po_number": po.po_number, "status": po.status}
 
+    def validate(self, attrs):
+        reason = attrs.get("reason", getattr(self.instance, "reason", ""))
+        if not str(reason or "").strip():
+            raise serializers.ValidationError({"reason": "Business justification is required."})
+        total = attrs.get("estimated_total", getattr(self.instance, "estimated_total", 0))
+        if total is not None and total < 0:
+            raise serializers.ValidationError({"estimated_total": "Estimated total cannot be negative."})
+        return attrs
+
     class Meta:
         model = PurchaseRequest
         fields = "__all__"
@@ -70,6 +101,16 @@ class PurchaseOrderItemSerializer(serializers.ModelSerializer):
         model = PurchaseOrderItem
         fields = "__all__"
         read_only_fields = ["created_at"]
+
+    def validate(self, attrs):
+        quantity = attrs.get("quantity", getattr(self.instance, "quantity", 1))
+        if quantity is None or int(quantity) <= 0:
+            raise serializers.ValidationError({"quantity": "Quantity must be greater than zero."})
+        for field in ("unit_price", "tax", "discount", "total"):
+            value = attrs.get(field, getattr(self.instance, field, None))
+            if value is not None and value < 0:
+                raise serializers.ValidationError({field: "Value cannot be negative."})
+        return attrs
 
 
 class GoodsReceiptItemSerializer(serializers.ModelSerializer):

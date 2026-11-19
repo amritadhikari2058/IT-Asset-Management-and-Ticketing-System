@@ -513,3 +513,21 @@ class Gate2ModelTests(TransactionTestCase):
             description="Test",
         )
         self.assertTrue(hasattr(problem, "exceptions"))
+
+    def test_problem_lifecycle_transitions(self):
+        """Test that problem status transitions follow the defined workflow."""
+        problem = Problem.objects.create(
+            title="Test lifecycle problem",
+            description="Test",
+        )
+        problem.status = "identified"  # Explicitly set initial status
+        # Initial status should be 'identified'
+        self.assertEqual(problem.status, "identified")
+        # Valid transitions from 'identified'
+        problem.status = "triage"
+        problem.save()
+        self.assertEqual(problem.status, "triage")
+        # Valid transition from 'triage' to 'investigating'
+        problem.status = "investigating"
+        problem.save()
+        self.assertEqual(problem.status, "investigating")

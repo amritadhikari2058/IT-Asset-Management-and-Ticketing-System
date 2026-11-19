@@ -49,12 +49,20 @@ export function CiTypesPage() {
   const saveType = async () => {
     setError('');
     try {
+      const payload = {
+        name: form.name,
+        code: form.code,
+        description: form.description || '',
+        category: form.category || 'other',
+        icon: form.icon || '',
+        color: form.color || '',
+        is_active: !!form.is_active,
+      };
       if (form.id) {
-        await api.patch(`/cmdb/types/${form.id}`, form);
+        await api.patch(`/cmdb/types/${form.id}/`, payload);
       } else {
-        await api.post(CMDB_API_CONTRACT.typeCreate.endpoint, form);
+        await api.post(`${CMDB_API_CONTRACT.typesList.endpoint}/`, payload);
       }
-      setError('');
       const saved = await api.get(CMDB_API_CONTRACT.typesList.endpoint);
       setTypes(safeResults(saved.data?.results ?? saved.data));
       setForm({ name: '', code: '', description: '', category: 'other',

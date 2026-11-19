@@ -24,18 +24,18 @@ export function LicensingDashboard() {
   const kpis = [
     ['Active Products', data.active_products],
     ['Active Agreements', data.active_agreements],
-    ['Purchased Seats', data.purchased_seats],
-    ['Allocated Seats', data.allocated_seats],
+    ['Purchased Seats', data.purchased_seats ?? data.total_purchased_seats],
+    ['Allocated Seats', data.allocated_seats ?? data.total_allocated_seats],
     ['Available Seats', data.available_seats],
-    ['Utilization', data.utilization_percent != null ? `${data.utilization_percent}%` : '—'],
-    ['Expiring 30d', data.expiring_30],
-    ['Expiring 60d', data.expiring_60],
-    ['Expiring 90d', data.expiring_90],
-    ['Expired', data.expired],
+    ['Utilization', (data.utilization_percent != null ? `${data.utilization_percent}%` : '—')],
+    ['Expiring 30d', data.expiring_30 ?? data.expiring_in_30_days],
+    ['Expiring 60d', data.expiring_60 ?? data.expiring_in_60_days],
+    ['Expiring 90d', data.expiring_90 ?? data.expiring_in_90_days],
+    ['Expired', data.expired ?? data.expired_agreements],
     ['Pending Renewals', data.pending_renewals],
-    ['Unused Findings', data.unused_findings],
-    ['Unlicensed Installations', data.unlicensed_installations],
-    ['Prohibited Findings', data.prohibited_findings],
+    ['Unused Findings', data.unused_findings ?? data.findings?.unused_allocations],
+    ['Unlicensed Installations', data.unlicensed_installations ?? data.findings?.unlicensed_installations],
+    ['Prohibited Findings', data.prohibited_findings ?? data.findings?.prohibited_software],
   ];
   return (
     <div className="licensing-dashboard">
@@ -50,11 +50,11 @@ export function LicensingDashboard() {
           </div>
         ))}
       </div>
-      {canViewLicenseReports && data.annual_recurring_cost_by_currency && (
+      {canViewLicenseReports && (data.annual_recurring_cost_by_currency || data.annual_cost_by_currency) && (
         <div className="card mb-3"><div className="card-body">
           <h5>Annual Recurring Cost by Currency</h5>
           <ul className="list-unstyled mb-0">
-            {Object.entries(data.annual_recurring_cost_by_currency).map(([c, v]) => (
+            {Object.entries(data.annual_recurring_cost_by_currency || data.annual_cost_by_currency).map(([c, v]) => (
               <li key={c}>{c}: {formatMoney(v, c)}</li>
             ))}
           </ul>

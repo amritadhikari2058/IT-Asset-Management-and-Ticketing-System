@@ -158,6 +158,18 @@ class ProblemReadinessView(APIView):
 class LinkedTicketsView(ProblemCollectionView):
     model = ProblemTicketLink
     serializer_class = ProblemTicketLinkSerializer
+    
+    def get_queryset(self):
+        qs = super().get_queryset()
+        # Annotate with ticket details for display
+        from tickets.models import Ticket
+        qs = qs.select_related("ticket").annotate(
+            ticket_number=F("ticket__ticket_number"),
+            ticket_title=F("ticket__title"),
+            ticket_status=F("ticket__status"),
+            ticket_priority=F("ticket__priority"),
+        ).order_by("-linked_at")
+        return qs
 
 
 class LinkedCIsView(ProblemCollectionView):

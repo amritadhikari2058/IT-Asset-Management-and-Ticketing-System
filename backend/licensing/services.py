@@ -138,6 +138,9 @@ def activate_agreement(agreement: LicenseAgreement, actor) -> LicenseAgreement:
             f"Software product '{product.name}' is {product.approved_status} and cannot be activated."
         )
 
+    if locked_agreement.start_date and locked_agreement.expiry_date and locked_agreement.expiry_date < locked_agreement.start_date:
+        raise ValidationError({"expiry_date": "Expiry date cannot be earlier than start date."})
+
     previous_status = locked_agreement.status
     locked_agreement.status = "active"
     locked_agreement.recalculate_counters(save=False)
@@ -274,6 +277,9 @@ def terminate_agreement(
     if locked_agreement.status in ("terminated", "retired"):
         raise ValidationError(f"Agreement is already {locked_agreement.status}.")
 
+    if locked_agreement.status not in ("active", "expiring", "expired", "suspended"):
+        raise ValidationError(f"Cannot terminate agreement in '{locked_agreement.status}' status.")
+
     active_allocs = locked_agreement.allocations.filter(status__in=["assigned", "active", "reserved"])
     active_count = active_allocs.count()
 
@@ -341,8 +347,11 @@ def retire_agreement(agreement: LicenseAgreement, actor, reason: str = "") -> Li
         .get(pk=agreement.pk)
     )
 
-    if locked_agreement.status == "retired":
-        raise ValidationError("Agreement is already retired.")
+    if locked_agreement.status in ("terminated", "retired"):
+        raise ValidationError(f"Cannot retire agreement in '{locked_agreement.status}' status.")
+
+    if locked_agreement.status not in ("draft", "active", "expiring", "expired", "suspended"):
+        raise ValidationError(f"Cannot retire agreement in '{locked_agreement.status}' status.")
 
     previous_status = locked_agreement.status
     locked_agreement.status = "retired"
@@ -519,6 +528,8 @@ def allocate_license(
     # Recalculate agreement counters
     locked_agreement.recalculate_counters(save=True)
 
+    evaluate_license_compliance(agreement=locked_agreement, actor=actor)
+
     record_license_history(
         event_type="allocation_activated" if auto_activate else "allocation_assigned",
         actor=actor,
@@ -598,6 +609,7 @@ def revoke_allocation(
     # Recalculate agreement counters under row lock
     agreement = LicenseAgreement.objects.select_for_update().get(pk=locked_alloc.agreement_id)
     agreement.recalculate_counters(save=True)
+    evaluate_license_compliance(agreement=agreement, actor=actor)
 
     record_license_history(
         event_type="allocation_revoked",
@@ -628,6 +640,34 @@ def revoke_allocation(
         )
 
     return locked_alloc
+
+
+@transaction.atomic
+def release_allocation(
+    allocation: LicenseAllocation,
+    actor,
+    reason: str = "",
+) -> LicenseAllocation:
+    """Release (revoke) an allocation seat and restore agreement capacity."""
+    resolved_reason = (reason or "").strip() or "Released"
+    return revoke_allocation(allocation, actor, reason=resolved_reason)
+
+
+def get_offboarding_allocation_preview(user) -> List[Dict[str, Any]]:
+    """Return active allocations that would be reclaimed during offboarding."""
+    allocations = get_active_allocations_for_user(user)
+    return [
+        {
+            "id": alloc.pk,
+            "agreement_number": alloc.agreement.agreement_number,
+            "product_name": alloc.agreement.software_product.name,
+            "allocation_reference": alloc.allocation_reference,
+            "allocation_type": alloc.allocation_type,
+            "status": alloc.status,
+            "assigned_at": alloc.assigned_at.isoformat() if alloc.assigned_at else None,
+        }
+        for alloc in allocations
+    ]
 
 
 def bulk_allocate_licenses(
@@ -881,6 +921,9 @@ def submit_renewal_request(
     procurement_purchase_order=None,
 ) -> LicenseRenewal:
     """Submit a license agreement renewal proposal for review."""
+    if agreement.status in ("draft", "terminated", "retired"):
+        raise ValidationError(f"Cannot submit renewal for agreement in '{agreement.status}' status.")
+
     # Only one active pending review allowed per agreement
     existing_pending = LicenseRenewal.objects.filter(
         agreement=agreement,
@@ -1030,6 +1073,15 @@ def apply_approved_renewal(
         .get(pk=locked_renewal.agreement_id)
     )
 
+    if agreement.status in ("terminated", "retired"):
+        raise ValidationError(f"Cannot apply renewal to a {agreement.status} agreement.")
+
+    if agreement.status in ("terminated", "retired"):
+        raise ValidationError(f"Cannot apply renewal to a {agreement.status} agreement.")
+
+    if locked_renewal.proposed_expiry_date <= locked_renewal.proposed_start_date:
+        raise ValidationError("Proposed expiry date must be strictly after proposed start date.")
+
     # Apply proposed dates and terms
     agreement.start_date = locked_renewal.proposed_start_date
     agreement.expiry_date = locked_renewal.proposed_expiry_date
@@ -1173,6 +1225,33 @@ def evaluate_license_compliance(
             findings.append(fnd)
 
     # --------------------------------------------------------------------------
+    # 2b. Missing or Incomplete Agreement Information
+    # --------------------------------------------------------------------------
+    for agr in agr_qs:
+        missing = []
+        if not agr.start_date:
+            missing.append("start date")
+        if not agr.expiry_date:
+            missing.append("expiry date")
+        if not agr.is_unlimited and (not agr.quantity_purchased or agr.quantity_purchased <= 0):
+            missing.append("purchased quantity")
+        if missing:
+            fp = compute_finding_fingerprint("missing_documentation", agreement_id=agr.pk, product_id=agr.software_product_id)
+            fnd, _ = LicenseComplianceFinding.objects.update_or_create(
+                fingerprint=fp,
+                defaults={
+                    "finding_type": "missing_documentation",
+                    "severity": "medium",
+                    "agreement": agr,
+                    "software_product": agr.software_product,
+                    "status": "open",
+                    "title": f"Missing license information for {agr.agreement_number}",
+                    "description": f"Agreement is missing required information: {', '.join(missing)}.",
+                },
+            )
+            findings.append(fnd)
+
+    # --------------------------------------------------------------------------
     # 3. Allocations to Inactive Employees or Retired Assets
     # --------------------------------------------------------------------------
     alloc_qs = LicenseAllocation.objects.filter(status__in=["assigned", "active"]).select_related("assigned_user", "assigned_asset", "agreement__software_product")
@@ -1295,6 +1374,100 @@ def evaluate_license_compliance(
     return findings
 
 
+def finding_condition_persists(finding: LicenseComplianceFinding) -> bool:
+    """Determine whether the underlying condition for a finding still exists."""
+    if finding.finding_type == "expired_agreement" and finding.agreement_id:
+        agr = finding.agreement
+        today = timezone.now().date()
+        return bool(agr and agr.expiry_date and agr.expiry_date < today and agr.status not in ("terminated", "retired"))
+    if finding.finding_type == "expiring_agreement" and finding.agreement_id:
+        agr = finding.agreement
+        today = timezone.now().date()
+        return bool(agr and agr.renewal_date and today >= agr.renewal_date and agr.expiry_date >= today)
+    if finding.finding_type == "over_allocated" and finding.agreement_id:
+        agr = finding.agreement
+        if not agr or agr.is_unlimited:
+            return False
+        limit = agr.concurrent_limit if agr.license_model == "concurrent" else agr.quantity_purchased
+        active_seats = agr.allocations.filter(status__in=["assigned", "active"]).count()
+        return active_seats > limit
+    if finding.finding_type == "allocation_to_inactive_user" and finding.allocation_id:
+        alloc = finding.allocation
+        user = alloc.assigned_user if alloc else None
+        return bool(alloc and alloc.status in ("assigned", "active") and user and (not user.is_active or getattr(user, "is_deleted", False)))
+    if finding.finding_type == "allocation_to_retired_asset" and finding.allocation_id:
+        alloc = finding.allocation
+        asset = alloc.assigned_asset if alloc else None
+        return bool(alloc and alloc.status in ("assigned", "active") and asset and (asset.status in ("retired", "lost", "disposed") or getattr(asset, "is_deleted", False)))
+    if finding.finding_type == "missing_documentation" and finding.agreement_id:
+        agr = finding.agreement
+        if not agr:
+            return False
+        if not agr.start_date or not agr.expiry_date:
+            return True
+        if not agr.is_unlimited and (not agr.quantity_purchased or agr.quantity_purchased <= 0):
+            return True
+        return False
+    if finding.finding_type == "unused_license" and finding.allocation_id:
+        alloc = finding.allocation
+        if not alloc or alloc.status not in ("assigned", "active"):
+            return False
+        unused_threshold_days = getattr(settings, "LICENSE_UNUSED_DAYS", 90)
+        cutoff = timezone.now() - timezone.timedelta(days=unused_threshold_days)
+        check_date = alloc.last_verified_at or alloc.assigned_at
+        return bool(check_date and check_date < cutoff)
+    if finding.finding_type == "unlicensed_installation" and finding.installation_id:
+        inst = finding.installation
+        return bool(inst and inst.status == "installed" and inst.software_product.license_required and not inst.allocation_id)
+    if finding.finding_type == "prohibited_software" and finding.installation_id:
+        inst = finding.installation
+        return bool(inst and inst.status == "installed" and inst.software_product.approved_status == "prohibited")
+    return False
+
+
+@transaction.atomic
+def remediate_compliance_finding(
+    finding: LicenseComplianceFinding,
+    actor,
+    remediation_note: str,
+    reevaluate: bool = False,
+) -> LicenseComplianceFinding:
+    """Record a remediation action without forcing resolution."""
+    if not is_it_manager(actor):
+        raise ValidationError("Only IT Managers or System Admins can record remediation actions.")
+    if not remediation_note or not remediation_note.strip():
+        raise ValidationError("A remediation note is required.")
+
+    locked = LicenseComplianceFinding.objects.select_for_update().get(pk=finding.pk)
+    now = timezone.now()
+    note = f"[{now:%Y-%m-%d %H:%M} {getattr(actor, 'email', actor)}] {remediation_note.strip()}"
+    locked.resolution_note = f"{locked.resolution_note}\n{note}".strip() if locked.resolution_note else note
+    if locked.status == "open":
+        locked.status = "acknowledged"
+    locked.save(update_fields=["status", "resolution_note", "updated_at"])
+
+    record_license_history(
+        event_type="compliance_changed",
+        actor=actor,
+        agreement=locked.agreement,
+        allocation=locked.allocation,
+        installation=locked.installation,
+        detail={"finding_id": locked.pk, "action": "remediation_recorded", "note": remediation_note.strip()},
+    )
+
+    if reevaluate:
+        evaluate_license_compliance(
+            software_product=locked.software_product,
+            agreement=locked.agreement,
+            asset=locked.asset,
+            user=locked.user,
+            actor=actor,
+        )
+        locked.refresh_from_db()
+
+    return locked
+
+
 @transaction.atomic
 def resolve_compliance_finding(
     finding: LicenseComplianceFinding,
@@ -1308,6 +1481,9 @@ def resolve_compliance_finding(
 
     if not resolution_note or not resolution_note.strip():
         raise ValidationError("A resolution note is required.")
+
+    if not is_false_positive and finding_condition_persists(finding):
+        raise ValidationError("Cannot resolve finding while the underlying condition still exists.")
 
     finding.status = "false_positive" if is_false_positive else "resolved"
     finding.resolved_at = timezone.now()

@@ -24,6 +24,8 @@ from assets.models import (
     Asset, AssetAttachment, AssetCategory, AssetHistory, Assignment,
     Disposal, Maintenance, Vendor,
 )
+from assets import reports
+from assets import reports
 from assets.serializers import (
     AssetAssignSerializer, AssetAttachmentSerializer,
     AssetCategorySerializer, AssetHistorySerializer, AssetSerializer,
@@ -2041,6 +2043,53 @@ class KnowledgeBaseFeedbackViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         serializer.save(user=self.request.user)
+
+
+class AssetReportViewSet(viewsets.ReadOnlyModelViewSet):
+    """Asset reporting and analytics endpoints (IT staff only).
+
+    Read-only aggregation endpoints:
+    - /assets/reports/financial/  — purchase cost overview
+    - /assets/reports/maintenance/ — maintenance analytics
+    - /assets/reports/warranty/ — warranty monitoring
+    - /assets/reports/utilization/ — asset utilization insights
+    - /assets/reports/inventory/ — filtered asset inventory for export
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsITStaff()]
+        return super().get_permissions()
+
+    def list(self, request):
+        """Route to the appropriate report based on ?report= query param.
+
+        Supported reports: financial, maintenance, warranty, utilization, inventory.
+        """
+        report = (request.query_params.get("report") or "").strip()
+        params = dict(request.query_params)
+        # Strip routing params
+        params.pop("report", None)
+        params.pop("page", None)
+        params.pop("page_size", None)
+
+        if report == "financial":
+            data = reports.financial_overview_data()
+        elif report == "maintenance":
+            data = reports.maintenance_analytics_data(params)
+        elif report == "warranty":
+            data = reports.warranty_monitoring_data(params)
+        elif report == "utilization":
+            data = reports.utilization_data()
+        elif report == "inventory":
+            data = reports.asset_report_data(params)
+        else:
+            return Response(
+                {"detail": "Unsupported report. Supported: financial, maintenance, warranty, utilization, inventory."},
+                status=400)
+
+        return Response(data)
 
 
 class VendorViewSet(viewsets.ModelViewSet):

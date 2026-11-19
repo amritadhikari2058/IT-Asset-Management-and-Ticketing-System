@@ -119,8 +119,17 @@ export default function Dashboard() {
     <div>
       <PageHeader
         title="CMDB Dashboard"
-        sub={`Updated ${formatDateTime(d.generated_at)}`}
-        actions={[]}
+        sub={`Configuration and relationship overview${d.generated_at ? ` · Updated ${formatDateTime(d.generated_at)}` : ''}`}
+        actions={(
+          <>
+            <a className="btn-primary" href="#/cmdb/items">Configuration Items</a>
+            <a className="btn-small" href="#/cmdb/types">CI Types</a>
+            <a className="btn-small" href="#/cmdb/baselines">Baselines</a>
+            <a className="btn-small" href="#/cmdb/drift">Drift</a>
+            <a className="btn-small" href="#/cmdb/verification">Verification</a>
+            <a className="btn-small" href="#/cmdb/reports">Reports</a>
+          </>
+        )}
       />
 
       <div className="kpi-grid">
@@ -140,7 +149,7 @@ export default function Dashboard() {
           label="Critical CIs"
           value={d.critical_cis != null ? d.critical_cis.toString() : '—'}
           sub={criticalityBadgeVariant('critical')}
-          href="#/cmdb/items/:id"
+          href="#/cmdb/items"
         />
         <Kpi
           label="Unverified CIs"
@@ -161,7 +170,7 @@ export default function Dashboard() {
           <div className="panel-head">
             <h2>Recent CI Updates</h2>
           </div>
-          <p className="muted">No recent CI updates loaded. <a href="#/cmdb/items/history">View CI history</a>.</p>
+          <p className="muted">Use the CI list and item history views to review recent configuration changes. <a href="#/cmdb/items">Browse configuration items</a>.</p>
         </div>
         <div className="panel panel-pad">
           <div className="panel-head">

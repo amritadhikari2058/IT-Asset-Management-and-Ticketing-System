@@ -560,6 +560,16 @@ class ChangeSchedulingSerializer(serializers.Serializer):
             )
         return attrs
 
+    def validate_planned_start(self, value):
+        # Prevent scheduling in the past (unless already passed within last hour)
+        from django.utils import timezone
+        now = timezone.now()
+        if value < now - timezone.timedelta(hours=1):
+            raise serializers.ValidationError(
+                "Planned start cannot be in the past."
+            )
+        return value
+
 
 class ChangeImplementationStartSerializer(serializers.Serializer):
     pass

@@ -972,9 +972,9 @@ def inverse_exists(source_ci, target_ci, relationship_type, status="active"):
 def would_create_hierarchy_cycle(source_ci, target_ci, relationship_type):
     """Detect structural cycles for hierarchy-invalid relationship types.
 
-    Walks the child -> parent direction through all active hierarchy
-    relationships; a cycle exists when walking up from the candidate child
-    reaches that child again.
+    Adding this relationship makes `child` depend structurally on `parent`;
+    a cycle exists if `child` is already reachable from `parent` by following
+    existing active hierarchy edges upward (child -> parent).
     """
     direction = HIERARCHY_PARENT_DIRECTION.get(relationship_type)
     if not direction:
@@ -988,13 +988,14 @@ def would_create_hierarchy_cycle(source_ci, target_ci, relationship_type):
 
     hierarchy_types = tuple(HIERARCHY_PARENT_DIRECTION)
     visited = set()
-    current = parent.id
+    queue = [parent.id]
     steps = 0
-    while current is not None and steps < 500:
+    while queue and steps < 1000:
+        current = queue.pop(0)
         if current == child.id:
             return True
         if current in visited:
-            return False
+            continue
         visited.add(current)
         rels = ConfigurationItemRelationship.objects.filter(
             status="active", is_deleted=False,
@@ -1002,19 +1003,26 @@ def would_create_hierarchy_cycle(source_ci, target_ci, relationship_type):
         ).filter(
             models.Q(source_ci_id=current) | models.Q(target_ci_id=current),
         ).values_list("source_ci_id", "target_ci_id", "relationship_type")
-        nxt = None
         for src_id, tgt_id, rtype in rels:
-            if HIERARCHY_PARENT_DIRECTION.get(rtype) == "target_to_source":
-                # child=tgt, parent=src: if current is child (tgt), parent is src
+            parent_dir = HIERARCHY_PARENT_DIRECTION.get(rtype)
+            if not parent_dir:
+                continue
+            if parent_dir == "target_to_source":
+                # source is parent of target
                 if tgt_id == current:
                     nxt = src_id
-                    break
+                else:
+                    continue
             else:
-                # child=src, parent=tgt: if current is child (src), parent is tgt
+                # target is parent of source
                 if src_id == current:
                     nxt = tgt_id
-                    break
-        current = nxt
+                else:
+                    continue
+            if nxt == child.id:
+                return True
+            if nxt and nxt not in visited:
+                queue.append(nxt)
         steps += 1
     return False
 

@@ -292,9 +292,10 @@ export function buildCIListUrl(filters = {}) {
     'vendor', 'source', 'verified', 'monitoring_state',
     'data_classification', 'validated_system_impact',
     'created_date_range', 'updated_date_range', 'search',
+    'page', 'ordering',
   ];
   for (const [key, value] of Object.entries(filters)) {
-    if (allowed.includes(key) && value) {
+    if (allowed.includes(key) && value !== '' && value != null) {
       params.append(key, String(value));
     }
   }

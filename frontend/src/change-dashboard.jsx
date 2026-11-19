@@ -1,31 +1,39 @@
 /* 
- * Change Dashboard - change KPI dashboard
+ * Change Dashboard - change KPI dashboard with operational metrics
  * Route: #/changes/dashboard
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Card, Badge } from './components';
+import { PageHeader, Card, Badge, Row, Col } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError } from './changes-utils';
 
 export function ChangeDashboard() {
-  const { isStaff, role } = useAuth();
+  const { isStaff } = useAuth();
   const [kpi, setKPI] = useState({
     draft: 0,
-    pending_risk: 0,
+    pending_risk_assessment: 0,
     pending_technical_review: 0,
     pending_approval: 0,
     approved_unscheduled: 0,
-    scheduled_7_days: 0,
-    scheduled_30_days: 0,
+    scheduled_next_7_days: 0,
+    scheduled_next_30_days: 0,
     in_progress: 0,
-    validation: 0,
+    validation_pending: 0,
     pir_overdue: 0,
     failed: 0,
     rolled_back: 0,
-    emergency: 0,
+    emergency_changes: 0,
     open_conflicts: 0,
     critical_conflicts: 0,
+    scheduled_past_due: 0,
+    in_progress_overdue: 0,
+    awaiting_pir: 0,
+    changes_with_conflicts: 0,
+    success_rate: 0,
+    rollback_rate: 0,
+    emergency_rate: 0,
+    average_implementation_duration_hours: 0,
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -33,10 +41,12 @@ export function ChangeDashboard() {
   useEffect(() => {
     if (!isStaff) {
       setKPI({
-        draft: 0, pending_risk: 0, pending_technical_review: 0, pending_approval: 0,
-        approved_unscheduled: 0, scheduled_7_days: 0, scheduled_30_days: 0,
-        in_progress: 0, validation: 0, pir_overdue: 0, failed: 0, rolled_back: 0,
-        emergency: 0, open_conflicts: 0, critical_conflicts: 0,
+        draft: 0, pending_risk_assessment: 0, pending_technical_review: 0, pending_approval: 0,
+        approved_unscheduled: 0, scheduled_next_7_days: 0, scheduled_next_30_days: 0,
+        in_progress: 0, validation_pending: 0, pir_overdue: 0, failed: 0, rolled_back: 0,
+        emergency_changes: 0, open_conflicts: 0, critical_conflicts: 0,
+        scheduled_past_due: 0, in_progress_overdue: 0, awaiting_pir: 0, changes_with_conflicts: 0,
+        success_rate: 0, rollback_rate: 0, emergency_rate: 0, average_implementation_duration_hours: 0,
       });
       setLoading(false);
       return;
@@ -53,51 +63,196 @@ export function ChangeDashboard() {
   }, [isStaff]);
 
   if (loading) {
-    return <div className="mt-3"><p>Loading dashboard…</p></div>;
+    return <div className="mt-3"><p>Loading dashboard...</p></div>;
   }
 
   if (error) {
     return <div className="mt-3"><p className="text-danger">Error: {error.global ?? 'Unknown error'}</p></div>;
   }
 
-  const renderKPI = (key, label) => (
-    <Card style={{ width: '18rem' }} key={key}>
-      <Card.Body>
-        <Card.Title>{label}</Card.Title>
-        <Card.Text>{kpi[key] || 0}</Card.Text>
-      </Card.Body>
-    </Card>
+  const KPICard = ({ label, value, href }) => (
+    <Col sm={6} md={4} lg={3} className="mb-3">
+      <Card className="h-100">
+        <Card.Body>
+          <Card.Subtitle className="text-muted" style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            {label}
+          </Card.Subtitle>
+          <Card.Title style={{ fontSize: '2rem', fontWeight: 'bold' }}>
+            {value}
+          </Card.Title>
+        </Card.Body>
+        {href && (
+          <Card.Footer>
+            <a href={href} className="btn btn-sm btn-primary">View Details</a>
+          </Card.Footer>
+        )}
+      </Card>
+    </Col>
   );
+
+  const statusHref = (status) => `#/changes?status=${status}`;
+  const priorityHref = (priority) => `#/changes?priority=${priority}`;
+  const riskHref = (risk) => `#/changes?risk=${risk}`;
 
   return (
     <div>
       <PageHeader title="Change Dashboard" />
-      <div className="mt-3 row">
-        {['draft', 'pending_risk', 'pending_technical_review', 'pending_approval',
-          'approved_unscheduled', 'scheduled_7_days', 'scheduled_30_days',
-          'in_progress', 'validation', 'pir_overdue', 'failed', 'rolled_back',
-          'emergency', 'open_conflicts', 'critical_conflicts'].map(key => (
-          <React.Fragment key={key}>
-            {renderKPI(key, {
-              draft: 'Draft',
-              pending_risk: 'Pending Risk',
-              pending_technical_review: 'Pending Technical Review',
-              pending_approval: 'Pending Approval',
-              approved_unscheduled: 'Approved Unscheduled',
-              scheduled_7_days: 'Scheduled 7 Days',
-              scheduled_30_days: 'Scheduled 30 Days',
-              in_progress: 'In Progress',
-              validation: 'Validation',
-              pir_overdue: 'PIR Overdue',
-              failed: 'Failed',
-              rolled_back: 'Rolled Back',
-              emergency: 'Emergency',
-              open_conflicts: 'Open Conflicts',
-              critical_conflicts: 'Critical Conflicts',
-            }[key])}
-          </React.Fragment>
-        ))}
-      </div>
+
+      {/* Request Pipeline */}
+      <h5 className="mt-4">Change Request Pipeline</h5>
+      <Row className="mt-2">
+        <KPICard 
+          label="Draft"
+          value={kpi.draft}
+          href={statusHref('draft')}
+        />
+        <KPICard 
+          label="Pending Risk Assessment"
+          value={kpi.pending_risk_assessment}
+          href={statusHref('risk_assessment')}
+        />
+        <KPICard 
+          label="Pending Technical Review"
+          value={kpi.pending_technical_review}
+          href={statusHref('technical_review')}
+        />
+        <KPICard 
+          label="Pending Approval"
+          value={kpi.pending_approval}
+          href={statusHref('pending_approval')}
+        />
+      </Row>
+
+      {/* Scheduling */}
+      <h5 className="mt-4">Scheduling</h5>
+      <Row className="mt-2">
+        <KPICard 
+          label="Approved, Unscheduled"
+          value={kpi.approved_unscheduled}
+          href={statusHref('approved')}
+        />
+        <KPICard 
+          label="Scheduled (Next 7 Days)"
+          value={kpi.scheduled_next_7_days}
+          href="#/changes/schedule?status=scheduled"
+        />
+        <KPICard 
+          label="Scheduled (Next 30 Days)"
+          value={kpi.scheduled_next_30_days}
+          href="#/changes/schedule?status=scheduled"
+        />
+        <KPICard 
+          label="Past Due (Scheduled)"
+          value={kpi.scheduled_past_due}
+          href="#/changes?status=scheduled&overdue=true"
+          variant={kpi.scheduled_past_due > 0 ? 'danger' : 'secondary'}
+        />
+      </Row>
+
+      {/* Implementation */}
+      <h5 className="mt-4">Implementation</h5>
+      <Row className="mt-2">
+        <KPICard 
+          label="In Progress"
+          value={kpi.in_progress}
+          href={statusHref('in_progress')}
+        />
+        <KPICard 
+          label="Validation Pending"
+          value={kpi.validation_pending}
+          href={statusHref('validation')}
+        />
+        <KPICard 
+          label="In Progress Overdue"
+          value={kpi.in_progress_overdue}
+          href="#/changes?status=in_progress&overdue=true"
+          variant={kpi.in_progress_overdue > 0 ? 'warning' : 'secondary'}
+        />
+        <KPICard 
+          label="Avg. Implementation (hrs)"
+          value={kpi.average_implementation_duration_hours.toFixed(1)}
+        />
+      </Row>
+
+      {/* Outcomes */}
+      <h5 className="mt-4">Outcomes</h5>
+      <Row className="mt-2">
+        <KPICard 
+          label="Success Rate"
+          value={kpi.success_rate > 0 ? kpi.success_rate.toFixed(1) + '%' : '—'}
+          href={statusHref('completed')}
+        />
+        <KPICard 
+          label="Failed"
+          value={kpi.failed}
+          href={statusHref('failed')}
+          variant={kpi.failed > 0 ? 'danger' : 'secondary'}
+        />
+        <KPICard 
+          label="Rolled Back"
+          value={kpi.rolled_back}
+          href={statusHref('rolled_back')}
+          variant={kpi.rolled_back > 0 ? 'warning' : 'secondary'}
+        />
+        <KPICard 
+          label="Rollback Rate"
+          value={kpi.rollback_rate > 0 ? kpi.rollback_rate.toFixed(1) + '%' : '—'}
+        />
+      </Row>
+
+      {/* PIR */}
+      <h5 className="mt-4">Post-Implementation Review</h5>
+      <Row className="mt-2">
+        <KPICard 
+          label="Awaiting PIR"
+          value={kpi.awaiting_pir}
+          href={statusHref('pir_required')}
+          variant={kpi.awaiting_pir > 0 ? 'warning' : 'secondary'}
+        />
+        <KPICard 
+          label="PIR Overdue"
+          value={kpi.pir_overdue}
+          href="#/changes?pir_overdue=true"
+          variant={kpi.pir_overdue > 0 ? 'danger' : 'secondary'}
+        />
+      </Row>
+
+      {/* Conflicts */}
+      <h5 className="mt-4">Scheduling Conflicts</h5>
+      <Row className="mt-2">
+        <KPICard 
+          label="Open Conflicts"
+          value={kpi.open_conflicts}
+          href="#/changes?has_conflicts=true"
+          variant={kpi.open_conflicts > 0 ? 'warning' : 'secondary'}
+        />
+        <KPICard 
+          label="Critical Conflicts"
+          value={kpi.critical_conflicts}
+          href="#/changes?has_conflicts=true&severity=critical"
+          variant={kpi.critical_conflicts > 0 ? 'danger' : 'secondary'}
+        />
+        <KPICard 
+          label="Changes with Conflicts"
+          value={kpi.changes_with_conflicts}
+          href="#/changes?has_conflicts=true"
+        />
+      </Row>
+
+      {/* Other */}
+      <h5 className="mt-4">Other</h5>
+      <Row className="mt-2">
+        <KPICard 
+          label="Emergency Changes"
+          value={kpi.emergency_changes}
+          href={priorityHref('emergency')}
+          variant={kpi.emergency_changes > 0 ? 'warning' : 'secondary'}
+        />
+        <KPICard 
+          label="Emergency Rate"
+          value={kpi.emergency_rate.toFixed(1) + '%'}
+        />
+      </Row>
     </div>
   );
 }

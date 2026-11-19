@@ -163,6 +163,63 @@ def _require_manager_or_admin(user):
 def _is_terminal(status):
     return status in ("closed", "rejected", "cancelled", "failed", "rolled_back")
 
+# Valid status transitions - authoritative state machine
+VALID_TRANSITIONS = {
+    "draft": {"submitted", "cancelled"},
+    "submitted": {"risk_assessment", "draft", "cancelled", "rejected"},
+    "risk_assessment": {"technical_review", "submitted", "cancelled", "rejected"},
+    "technical_review": {"pending_approval", "submitted", "cancelled", "rejected"},
+    "pending_approval": {"approved", "rejected", "submitted", "cancelled"},
+    "approved": {"scheduled", "on_hold", "cancelled"},
+    "scheduled": {"in_progress", "on_hold", "approved", "cancelled"},
+    "in_progress": {"validation", "failed", "rolled_back", "on_hold"},
+    "validation": {"completed", "failed", "in_progress", "on_hold"},
+    "completed": {"pir_required", "closed"},
+    "pir_required": {"closed"},
+    "on_hold": {"approved", "scheduled", "in_progress", "cancelled"},
+    "rejected": set(),
+    "cancelled": set(),
+    "failed": {"rolled_back", "closed"},
+    "rolled_back": {"closed"},
+    "closed": set(),
+}
+
+# Fields that become immutable after approval or implementation starts
+IMMUTABLE_AFTER_APPROVAL = [
+    "change_type", "category", "priority",
+]
+
+IMMUTABLE_AFTER_SCHEDULED = [
+    "planned_start", "planned_end",
+]
+
+IMMUTABLE_AFTER_IMPLEMENTATION = [
+    "implementation_plan", "rollback_plan",
+]
+
+
+def _validate_status_transition(change, new_status, user):
+    """Validate that a status transition is allowed.
+
+    Returns the validated new status or raises ValidationError.
+    """
+    current = change.status
+    if new_status == current:
+        return new_status
+
+    allowed = VALID_TRANSITIONS.get(current, set())
+    if new_status not in allowed:
+        raise ValidationError(
+            f"Cannot transition from '{current}' to '{new_status}'. "
+            f"Allowed transitions: {', '.join(sorted(allowed)) or 'none (terminal state)'}."
+        )
+
+    # Terminal states cannot be changed except by cancel/close
+    if _is_terminal(current) and new_status not in ("closed",):
+        raise ValidationError(f"Cannot modify a {current} change.")
+
+    return new_status
+
 
 # ---------------------------------------------------------------------------
 # ChangeRequest
@@ -222,11 +279,33 @@ class ChangeRequestViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         user = self.request.user
         instance = self.get_object()
-        # Stale-version protection handled by frontend; here we just bump version.
+        
+        # Enforce immutability after approval/implementation
+        if instance.status in ("approved", "scheduled", "in_progress", "validation",
+                                "completed", "pir_required", "closed", "on_hold"):
+            # Check immutable fields
+            mutable_data = serializer.validated_data if hasattr(serializer, 'validated_data') else {}
+            for field in IMMUTABLE_AFTER_APPROVAL:
+                if field in mutable_data and mutable_data[field] != getattr(instance, field):
+                    raise ValidationError(
+                        {field: f"{field} is immutable after approval."}
+                    )
+            for field in IMMUTABLE_AFTER_SCHEDULED:
+                if field in mutable_data and mutable_data[field] != getattr(instance, field):
+                    raise ValidationError(
+                        {field: f"{field} is immutable after scheduling."}
+                    )
+            for field in IMMUTABLE_AFTER_IMPLEMENTATION:
+                if field in mutable_data and mutable_data[field] != getattr(instance, field):
+                    raise ValidationError(
+                        {field: f"{field} is immutable after implementation starts."}
+                    )
+
+        # Only draft or submitted changes can be edited
         if instance.status not in ("draft", "submitted"):
             raise ValidationError("Only draft or submitted changes can be edited.")
-        # Non-staff cannot change staff-only fields (handled at serializer/view
-        # level); here we bump version on any material change.
+        
+        # Stale-version protection handled by frontend; here we just bump version.
         instance.version = (instance.version or 1) + 1
         serializer.save(updated_by=user)
         ChangeHistory.objects.create(
@@ -255,6 +334,26 @@ class ChangeRequestViewSet(viewsets.ModelViewSet):
         change = self.get_object()
         if change.status != "draft":
             raise ValidationError("Only draft changes can be submitted.")
+        
+        # Validate required fields before submission
+        errors = {}
+        if not change.title:
+            errors["title"] = "Title is required before submission."
+        if not change.change_type:
+            errors["change_type"] = "Change type is required before submission."
+        if not change.category:
+            errors["category"] = "Category is required before submission."
+        if not change.priority:
+            errors["priority"] = "Priority is required before submission."
+        if not change.business_reason:
+            errors["business_reason"] = "Business reason is required before submission."
+        if not change.implementation_plan:
+            errors["implementation_plan"] = "Implementation plan is required before submission."
+        if not change.rollback_plan:
+            errors["rollback_plan"] = "Rollback plan is required before submission."
+        if errors:
+            raise ValidationError(errors)
+        
         with transaction.atomic():
             change.status = "submitted"
             change.submitted_at = timezone.now()
@@ -569,6 +668,54 @@ class ChangeRequestViewSet(viewsets.ModelViewSet):
             "conflicting_change"
         )
         return Response(ChangeConflictSerializer(conflicts, many=True).data)
+
+    @action(detail=True, methods=["get"])
+    def schedule_conflicts(self, request, pk=None):
+        """Get schedule conflicts for display in scheduling UI.
+
+        Returns time-based overlaps with other scheduled changes,
+        including shared CIs/services and overlap details.
+        """
+        # Retrieve the object without queryset scoping so we can check
+        # permissions even for changes the user doesn't own.
+        try:
+            change = ChangeRequest.objects.get(pk=pk)
+        except ChangeRequest.DoesNotExist:
+            raise NotFound(detail="Change not found.")
+        if request.user != change.requester and not _is_staff(request.user):
+            raise PermissionDenied("You can only view schedule conflicts for your own changes.")
+        try:
+            from changes.services import get_schedule_conflicts
+            conflicts = get_schedule_conflicts(change)
+        except Exception:
+            conflicts = []
+
+        data = []
+        for c in conflicts:
+            other = c.get("conflicting_change")
+            if not other:
+                continue
+            data.append({
+                "id": other.id,
+                "change_number": other.change_number,
+                "title": other.title,
+                "status": other.status,
+                "risk_level": other.risk_level,
+                "priority": other.priority,
+                "change_type": other.change_type,
+                "planned_start": other.planned_start,
+                "planned_end": other.planned_end,
+                "department": other.department.name if other.department else None,
+                "conflict_type": c.get("conflict_type"),
+                "severity": c.get("severity"),
+                "overlap_start": c.get("overlap_start"),
+                "overlap_end": c.get("overlap_end"),
+                "overlap_minutes": c.get("overlap_minutes"),
+                "shared_assets": c.get("shared_assets", []),
+                "shared_services": c.get("shared_services", []),
+                "detail_path": f"/api/changes/{other.pk}/",
+            })
+        return Response(data)
 
     @action(detail=True, methods=["get"])
     def timeline(self, request, pk=None):
@@ -1139,6 +1286,20 @@ class ChangeDashboardViewSet(viewsets.ViewSet):
             "emergency_changes": qs.filter(change_type="emergency").count(),
             "open_conflicts": ChangeConflict.objects.filter(status="open").count(),
             "critical_conflicts": ChangeConflict.objects.filter(severity="critical", status="open").count(),
+            # Additional operational metrics
+            "scheduled_past_due": qs.filter(
+                status__in=["scheduled", "in_progress"],
+                planned_end__lt=now,
+            ).exclude(status="in_progress").count(),
+            "in_progress_overdue": qs.filter(
+                status="in_progress",
+                planned_end__lt=now,
+            ).count(),
+            "awaiting_pir": qs.filter(status="pir_required").count(),
+            "changes_with_conflicts": ChangeConflict.objects.filter(
+                status="open",
+                change__status__in=["scheduled", "in_progress", "approved"],
+            ).values("change").distinct().count(),
         }
 
         # Rates.
@@ -1160,6 +1321,30 @@ class ChangeDashboardViewSet(viewsets.ViewSet):
             data["average_implementation_duration_hours"] = round(sum(durations) / len(durations), 2)
         else:
             data["average_implementation_duration_hours"] = 0
+
+        # Upcoming scheduled changes for the schedule view
+        upcoming = qs.filter(
+            status__in=["scheduled", "in_progress"],
+            planned_start__isnull=False,
+        ).order_by("planned_start")[:20]
+        data["upcoming_changes"] = [
+            {
+                "id": c.id,
+                "change_number": c.change_number,
+                "title": c.title,
+                "status": c.status,
+                "risk_level": c.risk_level,
+                "priority": c.priority,
+                "change_type": c.change_type,
+                "planned_start": c.planned_start,
+                "planned_end": c.planned_end,
+                "actual_start": c.actual_start,
+                "actual_end": c.actual_end,
+                "department": c.department.name if c.department else None,
+                "detail_path": f"/api/changes/{c.pk}/",
+            }
+            for c in upcoming
+        ]
 
         return Response(data)
 

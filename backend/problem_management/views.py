@@ -336,9 +336,27 @@ class ProblemTaskViewSet(viewsets.ModelViewSet):
         serializer.instance = task
 
     def perform_update(self, serializer):
-        # Status/sequence/completion fields are read-only in the serializer;
-        # ordinary PATCH only updates operational fields.
-        serializer.save()
+        # Use ProblemUpdateSerializer for lifecycle-aware updates that validate
+        # status transitions and required fields (root cause, resolution summary, etc.)
+        # Ordinary operational updates still pass through the original serializer.
+        if serializer.validated_data.get("status") is not None:
+            # Update involving status change - use ProblemUpdateSerializer for validation
+            update_serializer = ProblemUpdateSerializer(
+                instance=serializer.instance,
+                data=serializer.validated_data,
+                partial=True,
+                context=self.get_serializer_context(),
+            )
+            if update_serializer.is_valid(raise_exception=True):
+                # Record history before saving
+                problem = update_serializer.instance
+                from .services import record_history
+                previous_status = serializer.instance.status if hasattr(serializer, 'instance') and serializer.instance else None
+                # We'll let the service layer handle history recording
+                update_serializer.save()
+        else:
+            # Ordinary operational update without status change
+            serializer.save()
 
     def perform_destroy(self, instance):
         instance.soft_delete(by_user=self.request.user)

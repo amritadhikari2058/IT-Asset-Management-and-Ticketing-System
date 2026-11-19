@@ -237,6 +237,12 @@ class ConfigurationItemSerializer(serializers.ModelSerializer):
         creating = self.instance is None
         self._check_expected_version(attrs)
         self._enforce_support_limits(attrs, creating)
+        if not creating:
+            for field in ("status", "lifecycle_state"):
+                if field in attrs and attrs[field] in ("retired", "disposed"):
+                    raise serializers.ValidationError({
+                        field: "Use the retire action to retire configuration items.",
+                    })
         self._validate_unique_links(attrs)
 
         ci_type = attrs.get(
@@ -256,6 +262,18 @@ class ConfigurationItemSerializer(serializers.ModelSerializer):
         elif creating and ci_type is not None:
             try:
                 validate_ci_attributes({}, ci_type)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError(
+                    {"attributes": exc.messages},
+                )
+        elif not creating and (
+            "ci_type" in attrs or "attributes" in attrs
+        ):
+            attributes = attrs.get(
+                "attributes", getattr(self.instance, "attributes", {}),
+            )
+            try:
+                validate_ci_attributes(attributes or {}, ci_type)
             except DjangoValidationError as exc:
                 raise serializers.ValidationError(
                     {"attributes": exc.messages},
@@ -424,14 +442,25 @@ class ConfigurationBaselineSerializer(serializers.ModelSerializer):
         )
 
     def update(self, instance, validated_data):
-        validated_data.pop("configuration_items", None)
+        cis = validated_data.pop("configuration_items", None)
         validated_data.pop("code", None)
         validated_data.pop("status", None)
         if instance.status not in ("draft", "pending_approval"):
             raise serializers.ValidationError(
                 "Only draft/pending baselines can be edited.",
             )
-        return super().update(instance, validated_data)
+        if cis is not None and instance.status != "draft":
+            raise serializers.ValidationError(
+                {"configuration_items":
+                 "Baseline scope can only be changed while the baseline is a draft."},
+            )
+        instance = super().update(instance, validated_data)
+        if cis is not None:
+            instance.configuration_items.set(cis)
+            from .baselines import refresh_snapshot
+            refresh_snapshot(instance)
+            instance.refresh_from_db()
+        return instance
 
 
 class ConfigurationDriftFindingSerializer(serializers.ModelSerializer):

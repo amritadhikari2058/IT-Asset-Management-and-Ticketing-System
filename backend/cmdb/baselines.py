@@ -326,9 +326,14 @@ def compare_ci_to_baseline(ci, baseline):
         (r["type"], r["target"]) for r in entry.get("relationships", []) or []
     }
     live_rels = set()
-    for rel in ConfigurationItemRelationship.objects.filter(
-        source_ci=ci, status="active", is_deleted=False,
-    ).select_related("target_ci"):
+    prefetched_rels = getattr(ci, "active_outgoing_relationships", None)
+    if prefetched_rels is not None:
+        rel_iter = prefetched_rels
+    else:
+        rel_iter = ConfigurationItemRelationship.objects.filter(
+            source_ci=ci, status="active", is_deleted=False,
+        ).select_related("target_ci")
+    for rel in rel_iter:
         live_rels.add((rel.relationship_type, rel.target_ci.ci_number))
     for rel_type, target in sorted(snap_rels - live_rels):
         diffs.append({

@@ -39,9 +39,9 @@ export function VerificationQueuePage() {
     if (!form.ci) return;
     setError('');
     try {
-      await api.post(`/cmdb/verification/${form.ci}/verify`, {
-        verification_note: form.verification_note,
-        expected_record_version: form.expected_record_version,
+      await api.post(`/cmdb/items/${form.ci}/verify/`, {
+        verification_note: form.verification_note || '',
+        expected_record_version: form.expected_record_version ?? undefined,
       });
       setItems((prev) => prev.filter((item) => item.id !== form.ci));
       setForm({ ci: null, verification_note: '', expected_record_version: null });

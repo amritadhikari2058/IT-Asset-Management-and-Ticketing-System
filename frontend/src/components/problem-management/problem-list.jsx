@@ -14,6 +14,8 @@ const EMPTY_FILTERS = {
   category: '',
   search: '',
   is_open: false,
+  // Recurrence filter: show problems with linked tickets above this count
+  min_ticket_count: '',
 };
 
 const toLabel = (value) => String(value).replaceAll('_', ' ').replace(/^./, (c) => c.toUpperCase());
@@ -83,6 +85,27 @@ export function ProblemList() {
     { key: 'owner_username', label: 'Owner', render: (r) => r.owner_username || '—' },
     { key: 'service_name', label: 'Service', render: (r) => r.service_name || '—' },
     { key: 'category_name', label: 'Category', render: (r) => r.category_name || '—' },
+    {
+      key: 'linked_ticket_count',
+      label: 'Tickets',
+      render: (r) => {
+        const count = r.linked_ticket_count || 0;
+        if (count === 0) return <span className="muted">—</span>;
+        return <span>{count}</span>;
+      },
+    },
+    {
+      key: 'recurrence_risk',
+      label: 'Risk',
+      render: (r) => {
+        const count = r.linked_ticket_count || 0;
+        if (count === 0) return <span className="muted">—</span>;
+        if (count >= 5) return <Tag kind="critical">High recurrence</Tag>;
+        if (count >= 3) return <Tag kind="warning">Medium recurrence</Tag>;
+        if (count >= 1) return <Tag kind="info">Low recurrence</Tag>;
+        return <span className="muted">—</span>;
+      },
+    },
   ];
 
   return (

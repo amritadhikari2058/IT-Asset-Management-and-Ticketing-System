@@ -35,6 +35,125 @@ SERVER_ONLY_PROBLEM_FIELDS = [
     "created_by", "created_at", "updated_at", "source",
 ]
 
+# Problem status lifecycle states
+PROBLEM_LIFECYCLE_STATES = [
+    "identified", "triage", "investigating", "investigation_complete",
+    "resolving", "resolved", "closed", "rejected", "cancelled",
+]
+
+# Valid status transitions map
+# Key: current status, Value: set of allowed next states
+PROBLEM_VALID_TRANSITIONS = {
+    "identified": {"triage", "cancelled"},
+    "triage": {"investigating", "cancelled"},
+    "investigating": {"investigation_complete", "cancelled"},
+    "investigation_complete": {"resolving", "cancelled"},
+    "resolving": {"resolved", "cancelled"},
+    "resolved": {"closed", "reopened", "cancelled"},
+    "closed": {},  # Closed problems cannot be directly modified
+    "rejected": {},  # Rejected problems cannot be directly modified
+    "cancelled": {},  # Cancelled problems cannot be directly modified
+}
+
+
+def _validate_lifecycle_fields(attrs, is_creation=False):
+    """Validate that required lifecycle fields are present for the target status."""
+    problem = attrs.get("problem")  # For update serializers
+    status = attrs.get("status")
+    
+    if not status:
+        return attrs
+    
+    # During creation, set initial status
+    if is_creation:
+        # Default to 'identified' for new problems
+        if not status:
+            attrs["status"] = "identified"
+        return attrs
+    
+    # For updates, validate transition and required fields
+    if problem and hasattr(problem, "status"):
+        current_status = problem.status
+        target_status = status
+        
+        # Check if transition is valid
+        allowed_transitions = PROBLEM_VALID_TRANSITIONS.get(current_status, set())
+        if target_status not in allowed_transitions:
+            raise serializers.ValidationError(
+                f"Invalid status transition from '{current_status}' to '{target_status}'. "
+                f"Allowed transitions: {', '.join(sorted(allowed_transitions))}"
+            )
+        
+        # Require root cause identified before investigation complete
+        if current_status == "investigating" and target_status == "investigation_complete":
+            if not problem.root_cause_identified_at:
+                raise serializers.ValidationError(
+                    "Root cause must be identified before moving investigation to complete."
+                )
+        
+        # Require resolution summary before closure
+        if target_status == "closed" and not problem.resolution_summary:
+            raise serializers.ValidationError(
+                "Resolution summary is required before closing the problem."
+            )
+        
+        # Require closure reason when closing
+        if target_status == "closed" and not attrs.get("closure_reason"):
+            raise serializers.ValidationError(
+                "Closure reason is required when closing the problem."
+            )
+        
+        # Require permanent fix planned before resolving if it's a permanent fix problem
+        if current_status == "investigation_complete" and target_status == "resolving":
+            # Check if permanent_fix_planned_at should be set
+            if not problem.permanent_fix_planned_at and not attrs.get("permanent_fix_planned_at"):
+                # This is a warning, not a hard requirement at this stage
+                pass  # Could be optional depending on problem type
+    
+    return attrs
+
+
+class ProblemUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for problem status updates and lifecycle management."""
+    
+    class Meta:
+        model = Problem
+        fields = [
+            "status", "root_cause_identified_at", "workaround_available_at",
+            "known_error_at", "permanent_fix_planned_at", "permanent_fix_implemented_at",
+            "resolved_at", "closed_at", "reopened_at", "resolution_summary",
+            "closure_reason", "root_cause_summary", "workaround_summary",
+            "permanent_fix_summary",
+        ]
+        read_only_fields = [
+            "problem_number", "record_version", "created_by", "created_at",
+        ]
+    
+    def validate(self, attrs):
+        """Validate lifecycle field requirements."""
+        return _validate_lifecycle_fields(attrs, is_creation=False)
+
+
+class ProblemCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating new problems."""
+    
+    class Meta:
+        model = Problem
+        fields = [
+            "title", "problem_type", "source", "severity", "priority",
+            "department", "service", "category", "environment",
+            "affected_ci", "affected_asset", "affected_service",
+            "affected_software_product", "description",
+        ]
+    
+    def create(self, validated_data):
+        """Create problem with initial status 'identified'."""
+        validated_data["status"] = "identified"
+        validated_data["created_by"] = self.context["request"].user
+        validated_data["problem_manager"] = self.context["request"].user
+        problem = super().create(validated_data)
+        return problem
+
 
 class ExpectedVersionMixin(serializers.Serializer):
     expected_record_version = serializers.IntegerField(
