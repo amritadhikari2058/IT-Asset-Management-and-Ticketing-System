@@ -47,7 +47,7 @@ export function ImpactAnalysisPage({ id: idProp, match }) {
   const selectedCi = useMemo(() => affectedCIs.find((c) => Number(c.id) === Number(selectedCiId)) || null, [affectedCIs, selectedCiId]);
 
   if (role === 'employee') {
-    return <div className="error-summary" role="alert">Employees have no impact analysis access.</div>;
+    return <div className="error-summary" role="alert">Employees have no CMDB impact analysis access.</div>;
   }
 
   const risk = impact?.risk_summary || {};
@@ -72,12 +72,13 @@ export function ImpactAnalysisPage({ id: idProp, match }) {
           </>
         )}
       />
+      <p className="muted">Impact analysis is based on recorded CMDB relationships.</p>
 
       {error && <div className="error-summary" role="alert">{error}</div>}
 
       <div className="panel panel-pad" style={{ marginBottom: 16 }}>
         <div className="split-grid split-4">
-          <Field label="Traversal Depth">
+          <Field label="Maximum Depth">
             <Select value={String(depth)} onChange={(e) => setDepth(Number(e.target.value))}>
               {[1, 2, 3, 4, 5].map((d) => <option key={d} value={String(d)}>{d}</option>)}
             </Select>

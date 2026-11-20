@@ -66,6 +66,7 @@ describe('CMDB Frontend Behavior', () => {
         access: 'token', user: { id: 1, email: 'mgr@local', employee_id: 'E1', role: 'it_manager', is_active: true },
         profileLoading: false, isStaff: true, isAdmin: false,
       });
+      mockGet.mockResolvedValueOnce(EMPTY_PAGE);
       mockGet.mockResolvedValueOnce({ data: [{ id: 1, ci_number: 'CI-2026-000001', name: 'Test CI', status: 'active', criticality: 'medium' }] });
       render(<CmdbItemsList />);
       await screen.findByText('CI Number');

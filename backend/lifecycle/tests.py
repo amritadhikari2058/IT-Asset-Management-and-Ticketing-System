@@ -499,6 +499,31 @@ class OffboardingTests(BaseLifecycle):
         self.assertFalse(self.emp.is_deleted)
         self.assertFalse(self.emp.is_active)
 
+    def test_deactivation_revokes_active_license_allocations(self):
+        """Offboarding deactivation reclaims the employee's software licenses."""
+        from licensing.models import LicenseAgreement, SoftwareProduct
+        from licensing.services import allocate_license
+
+        product = SoftwareProduct.objects.create(
+            name="Office Pro", publisher="Example Publisher")
+        agreement = LicenseAgreement.objects.create(
+            agreement_number="AGR-DEACT-1", software_product=product,
+            status="active", quantity_purchased=5, created_by=self.sysadmin)
+        alloc = allocate_license(
+            agreement=agreement, allocation_type="user",
+            assigned_user=self.emp, actor=self.itmgr)
+        self.assertEqual(alloc.status, "active")
+
+        from lifecycle.services import deactivate_account
+        deactivate_account(self.emp, self.sysadmin)
+        self.emp.refresh_from_db()
+        self.assertFalse(self.emp.is_active)
+
+        alloc.refresh_from_db()
+        self.assertEqual(alloc.status, "revoked")
+        self.assertEqual(alloc.revoked_by, self.sysadmin)
+        self.assertIn("Account deactivated", alloc.revocation_reason)
+
 
 # ---------------------------------------------------------------------------
 # Transfer workflow

@@ -2,7 +2,7 @@
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import F, Sum
 from django.utils import timezone
 
 from inventory.models import StockMovement
@@ -81,8 +81,9 @@ def reverse_stock_for_return_line(return_line, actor):
         qty_to_reverse = previous
     if qty_to_reverse <= 0:
         return None
-    stock.quantity = previous - qty_to_reverse
-    stock.save(update_fields=["quantity", "updated_at"])
+    StockItem.objects.filter(pk=stock.pk).update(
+        quantity=F("quantity") - qty_to_reverse)
+    stock.refresh_from_db()
     movement = StockMovement.objects.create(
         stock_item=stock,
         movement_type="return",

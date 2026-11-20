@@ -107,6 +107,26 @@ class MaintenanceWindowAdmin(admin.ModelAdmin):
     raw_id_fields = ["created_by", "approved_by", "department", "service"]
 
 
+@admin.register(models.BlackoutPeriod)
+class BlackoutPeriodAdmin(admin.ModelAdmin):
+    list_display = ["code", "name", "period_type", "start_at", "end_at"]
+    list_filter = ["period_type"]
+    search_fields = ["code", "name"]
+    raw_id_fields = ["created_by"]
+
+
+@admin.register(models.ChangeSchedulingException)
+class ChangeSchedulingExceptionAdmin(admin.ModelAdmin):
+    list_display = ["change", "blackout_period", "maintenance_window", "status", "decided_by", "decision_timestamp"]
+    list_filter = ["status"]
+    search_fields = ["change__change_number", "justification"]
+    raw_id_fields = ["change", "requesting_user", "decided_by"]
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related("change", "blackout_period", "maintenance_window", "requesting_user", "decided_by")
+
+
 @admin.register(models.ChangeConflict)
 class ChangeConflictAdmin(admin.ModelAdmin):
     list_display = ["change", "conflicting_change", "conflict_type", "severity", "status"]

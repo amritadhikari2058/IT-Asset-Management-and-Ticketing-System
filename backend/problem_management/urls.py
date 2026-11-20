@@ -19,9 +19,10 @@ from .gate2_endpoints import (
 )
 from .gate2_transitions import TransitionView
 from .gate2_views import (
-    EvidenceCollection, LinkedAssetsView, LinkedCIsView, LinkedProductsView,
-    LinkedServicesView, LinkedTicketsView, ProblemReadinessView,
-    ProblemRootCauseAnalysisView, ProblemTaskCollection, TimelineCollection,
+    EvidenceCollection, LinkedAssetsView, LinkedCIsView, LinkedKBsView,
+    LinkedProductsView, LinkedServicesView, LinkedTicketsView,
+    ProblemReadinessView, ProblemRootCauseAnalysisView, ProblemTaskCollection,
+    TimelineCollection,
 )
 from .gate2_whys import FactorViewSet, WhyViewSet
 
@@ -46,6 +47,10 @@ router.register(
 router.register(
     r"software-links", views.ProblemSoftwareProductLinkViewSet,
     basename="problem-software-link",
+)
+router.register(
+    r"kb-links", views.ProblemKbArticleLinkViewSet,
+    basename="problem-kb-link",
 )
 router.register(r"tasks", views.ProblemTaskViewSet, basename="problem-task")
 router.register(r"history", views.ProblemHistoryViewSet, basename="problem-history")
@@ -81,6 +86,7 @@ nested = [
     ("linked-assets", LinkedAssetsView, "problem-linked-assets"),
     ("linked-services", LinkedServicesView, "problem-linked-services"),
     ("linked-products", LinkedProductsView, "problem-linked-products"),
+    ("linked-kbs", LinkedKBsView, "problem-linked-kbs"),
 ]
 
 TRANSITION_RE = (

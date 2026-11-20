@@ -15,16 +15,17 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.models import User
-from assets.models import Asset, AssetCategory
+from assets.models import Asset, AssetCategory, KnowledgeBaseArticle, KnowledgeBaseCategory
 from cmdb.models import ConfigurationItem, ConfigurationItemType
 from licensing.models import SoftwareProduct
 from services.models import ServiceCatalogueItem
-from tickets.models import Ticket, TicketCategory
+from tickets.models import Ticket, TicketCategory, TicketKbArticle
 
 from .models import (
     Problem,
     ProblemConfigurationItemLink,
     ProblemHistory,
+    ProblemKbArticleLink,
     ProblemNumberSequence,
     ProblemTask,
     ProblemTicketLink,
@@ -108,6 +109,23 @@ def make_product():
     return SoftwareProduct.objects.create(
         name=f"Product {tag}",
         publisher="Example Publisher",
+    )
+
+
+def make_article(status="published", **overrides):
+    tag = uuid.uuid4().hex[:8]
+    category, _created = KnowledgeBaseCategory.objects.get_or_create(
+        name=f"KB Cat {tag}",
+        defaults={"code": f"kb-cat-{tag}"},
+    )
+    return KnowledgeBaseArticle.objects.create(
+        title=f"KB Article {tag}",
+        slug=f"kb-article-{tag}",
+        summary="Test article summary.",
+        content="Test article content.",
+        status=status,
+        category=category,
+        **overrides,
     )
 
 
@@ -646,6 +664,124 @@ class ObjectLinkTests(ProblemTestBase):
         asset.refresh_from_db()
         self.assertEqual(asset.status, original_status)
         self.assertFalse(asset.is_deleted)
+
+
+# ---------------------------------------------------------------------------
+# KB article links
+# ---------------------------------------------------------------------------
+
+class KbLinkTests(ProblemTestBase):
+    def _link(self, client, problem, article, **extra):
+        body = {"problem": problem.pk, "article": article.pk}
+        body.update(extra)
+        return client.post(f"{BASE}kb-links/", body, format="json")
+
+    def test_create_link_returns_article_metadata(self):
+        problem = self.make_problem()
+        article = make_article(status="published")
+        res = self._link(api_client(self.support), problem, article,
+                         relation_type="workaround_source", relevance="confirmed")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["article_title"], article.title)
+        self.assertEqual(res.data["article_status"], article.status)
+        self.assertEqual(res.data["article_slug"], article.slug)
+        self.assertEqual(res.data["relation_type"], "workaround_source")
+        self.assertEqual(res.data["relevance"], "confirmed")
+        self.assertEqual(res.data["linked_by"], self.support.pk)
+        problem.refresh_from_db()
+        self.assertEqual(problem.kb_links.filter(is_deleted=False).count(), 1)
+        self.assertTrue(
+            problem.history_records.filter(event_type="kb_linked").exists(),
+        )
+
+    def test_duplicate_active_link_rejected(self):
+        problem = self.make_problem()
+        article = make_article()
+        self._link(api_client(self.support), problem, article)
+        res = self._link(api_client(self.support), problem, article)
+        self.assertEqual(res.status_code, 400)
+
+    def test_invalid_article_id_rejected(self):
+        problem = self.make_problem()
+        res = api_client(self.support).post(
+            f"{BASE}kb-links/",
+            {"problem": problem.pk, "article": 999999},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_unlink_soft_deletes_and_records_history(self):
+        problem = self.make_problem()
+        article = make_article()
+        res = self._link(api_client(self.support), problem, article)
+        link_id = res.data["id"]
+        res = api_client(self.support).delete(f"{BASE}kb-links/{link_id}/")
+        self.assertEqual(res.status_code, 204, res.data)
+        link = ProblemKbArticleLink.all_objects.get(pk=link_id)
+        self.assertTrue(link.is_deleted)
+        self.assertEqual(
+            problem.kb_links.filter(is_deleted=False).count(), 0,
+        )
+        self.assertTrue(
+            problem.history_records.filter(event_type="unlinked").exists(),
+        )
+
+    def test_archived_article_can_be_linked_and_status_surfaced(self):
+        problem = self.make_problem()
+        article = make_article(status="archived")
+        res = self._link(api_client(self.support), problem, article)
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["article_status"], "archived")
+
+    def test_linked_article_not_mutated(self):
+        problem = self.make_problem()
+        article = make_article()
+        original_status = article.status
+        self._link(api_client(self.support), problem, article)
+        article.refresh_from_db()
+        self.assertEqual(article.status, original_status)
+
+    def test_employee_cannot_link_or_list(self):
+        problem = self.make_problem()
+        article = make_article()
+        client = api_client(self.employee)
+        self.assertEqual(
+            self._link(client, problem, article).status_code, 403,
+        )
+        self.assertEqual(client.get(f"{BASE}kb-links/").status_code, 403)
+
+    def test_linked_kbs_endpoint_representation(self):
+        problem = self.make_problem()
+        article = make_article(status="published")
+        self._link(api_client(self.support), problem, article)
+        client = api_client(self.support)
+        res = client.get(f"{BASE}problems/{problem.pk}/linked-kbs/")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(len(res.data), 1)
+        row = res.data[0]
+        self.assertEqual(row["article"], article.pk)
+        self.assertEqual(row["article_title"], article.title)
+        self.assertEqual(row["article_status"], article.status)
+        self.assertEqual(row["article_slug"], article.slug)
+
+    def test_ticket_to_kb_link_unaffected(self):
+        """Existing TicketKbArticle relationships are untouched by problem KB links."""
+        problem = self.make_problem()
+        ticket = make_ticket(self.requester, self.category)
+        article = make_article(status="published")
+        # Staff can still link a KB article to a ticket via the tickets API.
+        res = api_client(self.support).post(
+            "/api/tickets/kb-articles/",
+            {"ticket": ticket.pk, "article": article.pk},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(TicketKbArticle.objects.count(), 1)
+        # The problem KB link is a separate model: linking a KB article to the
+        # problem does not touch the ticket-KB link.
+        self._link(api_client(self.support), problem, article)
+        self.assertEqual(ProblemKbArticleLink.objects.count(), 1)
+        self.assertEqual(TicketKbArticle.objects.count(), 1)
 
 
 # ---------------------------------------------------------------------------

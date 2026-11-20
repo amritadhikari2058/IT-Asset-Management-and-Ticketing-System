@@ -88,6 +88,7 @@ describe('CMDB Workflows', () => {
 
   it('it_manager can view CI list', async () => {
     makeManagerAuth();
+    mockGet.mockResolvedValueOnce(EMPTY_PAGE);
     mockGet.mockResolvedValueOnce({ data: [CI_ITEM] });
     render(<CmdbItemsList />);
     await screen.findByText('CI Number');

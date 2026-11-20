@@ -200,15 +200,20 @@ class LicenseCompliancePermission(BasePermission):
 
     - IT Staff can view findings.
     - Acknowledgment: IT Support, IT Manager, System Admin.
-    - Resolution / False Positive: IT Manager, System Admin.
+    - Remediation / Resolution / False Positive: IT Manager, System Admin.
     - Employees: Denied.
+
+    Manager-only actions are rejected here, before the view body runs, so direct
+    API calls cannot reach the service and receive a misleading 400.
     """
+
+    MANAGER_ACTIONS = ("remediate", "resolve", "false_positive")
 
     def has_permission(self, request, view):
         return is_it_staff(request.user)
 
     def has_object_permission(self, request, view, obj):
-        if view.action in ("resolve", "false_positive"):
+        if view.action in self.MANAGER_ACTIONS:
             return is_it_manager(request.user)
         return is_it_staff(request.user)
 

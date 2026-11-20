@@ -4,7 +4,8 @@ All figures calculated from real ticket data via database aggregation.
 No fabricated trends.
 """
 from django.contrib.auth import get_user_model
-from django.db.models import Avg, Count, Q
+from django.db.models import Avg, Case, Count, Q, DurationField, ExpressionWrapper, F, OuterRef, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from datetime import timedelta
 
@@ -33,6 +34,55 @@ class PermissionDenied(Exception):
 class ValidationError(Exception):
     pass
 
+
+def _compute_overdue_and_breached(qs, now):
+    """Count overdue and breached tickets using effective SLA deadlines.
+
+    Uses the effective deadline (sla_due_at + paused duration) so that
+    tickets currently paused are not incorrectly marked overdue, and
+    resumed tickets use their adjusted effective deadline.
+    """
+    paused_statuses = {"waiting_requester", "waiting_third_party"}
+
+    # Exclude tickets currently in SLA-paused statuses from the SQL filter,
+    # as their SLA clock is stopped during these statuses.
+    open_qs = qs.filter(status__in=OPEN_STATUSES).exclude(
+        status__in=paused_statuses)
+
+    # Annotate with effective deadline (sla_due_at + accumulated pause time).
+    # We use a subquery to add the total paused duration for each ticket.
+    pause_subquery = TicketSlaPause.objects.filter(
+        ticket=OuterRef('pk'),
+        is_deleted=False
+    ).values('ticket').annotate(
+        total_pause=Sum(
+            Case(
+                When(ended_at__isnull=False, then=F('ended_at') - F('started_at')),
+                When(ended_at__isnull=True, then=Value(timezone.now()) - F('started_at')),
+                output_field=DurationField()
+            )
+        )
+    ).values('total_pause')[:1]
+
+    annotated = open_qs.annotate(
+        effective_due=ExpressionWrapper(
+            F('sla_due_at') + Coalesce(pause_subquery, Value(timedelta(0))),
+            output_field=DateTimeField()
+        )
+    )
+
+    overdue_count = annotated.filter(effective_due__lt=now).count()
+
+    # A ticket is breached if it's open/closed and past its effective deadline,
+    # or if it's resolved after its effective deadline.
+    breached_count = qs.filter(
+        Q(status__in=OPEN_STATUSES, effective_due__lt=now) |
+        Q(status="resolved", resolved_at__gt=F('effective_due'))
+    ).count()
+
+    return overdue_count, breached_count
+
+
 def operations_dashboard(filters, user):
     if not _is_it_staff(user):
         raise PermissionDenied("Metrics are IT-staff only.")
@@ -45,9 +95,7 @@ def operations_dashboard(filters, user):
     in_progress = qs.filter(status="in_progress").count()
     waiting_req = qs.filter(status="waiting_requester").count()
     waiting_third = qs.filter(status="waiting_third_party").count()
-    overdue = qs.filter(status__in=OPEN_STATUSES,
-                        sla_due_at__lt=now).count()
-    breached = qs.filter(sla_breached=True).count()
+    overdue, breached = _compute_overdue_and_breached(qs, now)
     urgent = qs.filter(priority="critical", status__in=OPEN_STATUSES).count()
     oldest = qs.order_by("created_at").first()
     oldest_age = (now - oldest.created_at).days if oldest else None

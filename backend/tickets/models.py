@@ -171,6 +171,10 @@ class Ticket(SoftDeleteModel):
         on_delete=models.SET_NULL, related_name="resolved_tickets_by",
     )
     reopened_at = models.DateTimeField(null=True, blank=True)
+    reopened_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="reopened_tickets_by",
+        help_text="User who reopened this ticket.")
     reopen_count = models.PositiveIntegerField(default=0)
     version = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -217,6 +221,121 @@ class Ticket(SoftDeleteModel):
             return False
         from django.utils import timezone
         return timezone.now() > self.sla_due_at
+
+    def get_paused_duration(self, as_of=None):
+        """Total paused time for this ticket.
+
+        Completed pause intervals are counted once. An active pause is
+        counted up to ``as_of`` (defaults to now). Overlapping intervals
+        are merged so they cannot be double-counted.
+        """
+        from django.utils import timezone
+
+        if as_of is None:
+            as_of = timezone.now()
+
+        intervals = []
+        for pause in self.sla_pauses.filter(is_deleted=False):
+            start = pause.started_at
+            end = pause.ended_at if pause.ended_at is not None else as_of
+            if end < start:
+                end = start
+            intervals.append((start, end))
+
+        intervals.sort()
+        total = timedelta()
+        current_start = None
+        current_end = None
+        for start, end in intervals:
+            if current_end is None or start > current_end:
+                if current_end is not None:
+                    total += current_end - current_start
+                current_start, current_end = start, end
+            else:
+                current_end = max(current_end, end)
+        if current_end is not None:
+            total += current_end - current_start
+        return total
+
+    def get_sla_due_at(self):
+        """Effective SLA deadline after accounting for paused time.
+        
+        This is the authoritative calculation that considers:
+        - The original sla_due_at
+        - All completed pause intervals
+        - Any currently active pause interval (counted up to now)
+        - Multiple pause/resume cycles
+        - Overlapping intervals (merged, no double-counting)
+        - Tickets with no pause records (returns sla_due_at)
+        - Tickets with null sla_due_at (returns None)
+        """
+        if not self.sla_due_at:
+            return None
+        return self.sla_due_at + self.get_paused_duration()
+
+    def get_effective_sla_due_at(self):
+        """Alias for ``get_sla_due_at`` for clarity in consumer code.
+        
+        Use ``get_sla_due_at`` or ``get_effective_sla_due_at`` interchangeably;
+        both compute the effective deadline by adding accumulated paused
+        duration to the persisted ``sla_due_at``.
+        """
+        return self.get_sla_due_at()
+
+    def update_sla_due_on_priority_change(self, old_priority=None):
+        """Recompute the persisted SLA deadline for a changed priority.
+
+        The persisted value remains the unpaused base deadline; paused time
+        is applied dynamically by ``get_sla_due_at``. This method preserves
+        the accumulated pause time so the effective deadline remains correct
+        after the priority change.
+
+        - A priority change must use the applicable SLA configuration.
+        - Existing pause history must not be lost.
+        - The effective deadline must remain correct.
+        - Unchanged priorities must not trigger unnecessary recalculation.
+        """
+        sla = self.priority_sla
+        if not sla or not self.pk:
+            return
+
+        # Only recalculate if the priority actually changed.
+        # old_priority is passed in by save() to avoid re-fetching from the
+        # DB after the new priority has already been persisted, which would
+        # make the comparison always equal (new == new) and silently skip
+        # SLA recalculation.
+        if old_priority is not None and old_priority == self.priority:
+            return
+
+        # A priority change starts a fresh SLA clock for the new priority.
+        # Paused time accumulated so far remains applicable dynamically via
+        # get_sla_due_at(); the persisted value is the unpaused base deadline.
+        self.sla_due_at = timezone.now() + timedelta(
+            hours=sla.target_resolution_hours)
+        self.save(update_fields=["sla_due_at", "updated_at"])
+
+    def save(self, *args, **kwargs):
+        old_status = None
+        old_priority = None
+        if self.pk:
+            try:
+                old = Ticket.objects.only("status", "priority").get(pk=self.pk)
+                old_status = old.status
+                old_priority = old.priority
+            except Ticket.DoesNotExist:
+                old_status = None
+                old_priority = None
+        super().save(*args, **kwargs)
+
+        WAITING = {"waiting_requester", "waiting_third_party"}
+        leaving = bool(old_status in WAITING and self.status not in WAITING)
+        if leaving:
+            TicketSlaPause.objects.filter(
+                ticket=self, ended_at__isnull=True, is_deleted=False
+            ).update(ended_at=timezone.now())
+
+        if old_priority is not None and old_priority != self.priority:
+            self.update_sla_due_on_priority_change(old_priority)
 
     @property
     def priority_sla(self):
@@ -388,6 +507,10 @@ class TicketAttachment(SoftDeleteModel):
     )
     file = models.FileField(upload_to=attachment_upload_to)
     original_filename = models.CharField(max_length=255, blank=True, default="")
+    content_hash = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="SHA-256 hex digest of the attachment content for deduplication"
+    )
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -888,7 +1011,7 @@ class TicketSlaPause(SoftDeleteModel):
         Ticket, on_delete=models.CASCADE, related_name="sla_pauses"
     )
     reason = models.TextField(blank=True, default="")
-    started_at = models.DateTimeField()
+    started_at = models.DateTimeField(default=timezone.now)
     ended_at = models.DateTimeField(null=True, blank=True)
     started_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -911,6 +1034,13 @@ class TicketSlaPause(SoftDeleteModel):
             models.Index(fields=["ticket", "started_at"], name="sla_pause_ticket_idx"),
             models.Index(fields=["pause_type"], name="sla_pause_type_idx"),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ticket"],
+                condition=models.Q(ended_at__isnull=True, is_deleted=False),
+                name="uniq_active_sla_pause_per_ticket",
+            )
+        ]
 
     def __str__(self):
         return f"#{self.ticket_id} pause {self.pause_type} @ {self.started_at:%Y-%m-%d %H:%M}"
@@ -923,6 +1053,8 @@ class TicketSlaPause(SoftDeleteModel):
         if end is None:
             return None
         return end - self.started_at
+
+
 
 
 class TicketResolutionCode(SoftDeleteModel):

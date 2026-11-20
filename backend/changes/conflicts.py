@@ -28,6 +28,8 @@ from changes.models import (
     ChangeServiceImpact,
     ChangeDependency,
     MaintenanceWindow,
+    BlackoutPeriod,
+    ChangeSchedulingException,
 )
 
 
@@ -74,6 +76,40 @@ def detect_conflicts(change, horizon_days=90):
 
     cs = change.planned_start
     ce = change.planned_end
+
+    # --- Blackout period conflict ---
+    # A change scheduled during a blackout period is a conflict
+    from datetime import timedelta
+    horizon_end = timezone.now() + timedelta(days=90)
+    blackout_periods = BlackoutPeriod.objects.filter(
+        status="active", end_at__gte=timezone.now()
+    )
+    for bp in blackout_periods:
+        # Check scope - if blackout has department/service scope, check matching
+        scope_match = True
+        if bp.scope_department and change.department_id != bp.scope_department_id:
+            scope_match = False
+        if bp.scope_service and change.service_id != bp.scope_service_id:
+            scope_match = False
+        if not scope_match:
+            continue
+        # Check overlap with change window
+        if change.planned_start and change.planned_end:
+            if _overlaps(change.planned_start, change.planned_end, bp.start_at, bp.end_at):
+                # Check if there's already an approved exception
+                has_exception = ChangeSchedulingException.objects.filter(
+                    change=change,
+                    blackout_period=bp,
+                    status="approved",
+                ).exists()
+                if not has_exception:
+                    conflicts.append({
+                        "change": change,
+                        "conflicting_change": None,
+                        "conflict_type": "blackout_period",
+                        "severity": "high",
+                        "detail": f"Change scheduled during blackout period: {bp.name}",
+                    })
 
     # --- Same Asset overlap ---
     asset_impacts = ChangeAssetImpact.objects.filter(change=change)

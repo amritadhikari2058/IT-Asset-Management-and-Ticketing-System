@@ -134,10 +134,10 @@ describe('CMDB Baselines', () => {
     await screen.findByText('Production Baseline');
   });
 
-  it('it_support cannot create baselines', () => {
+  it('it_support cannot create baselines', async () => {
     makeSupportAuth();
     render(<BaselinesPage />);
-    expect(screen.getByText(/System Admin permission/)).toBeTruthy();
+    expect(await screen.findByText(/System Admin permission/)).toBeTruthy();
   });
 
   it('employee denied all baseline access', () => {

@@ -14,6 +14,7 @@ from licensing.views import (
     SoftwareInstallationViewSet,
     SoftwareProductViewSet,
     compliance_summary,
+    entitlement_reconciliation,
     licensing_dashboard,
     renewal_calendar,
     utilization_report,
@@ -34,6 +35,7 @@ urlpatterns = [
     path("dashboard/", licensing_dashboard, name="licensing-dashboard"),
     path("renewal-calendar/", renewal_calendar, name="licensing-renewal-calendar"),
     path("utilization-report/", utilization_report, name="licensing-utilization-report"),
+    path("entitlement-reconciliation/", entitlement_reconciliation, name="licensing-entitlement-reconciliation"),
     path("compliance-summary/", compliance_summary, name="licensing-compliance-summary"),
     path("", include(router.urls)),
 ]

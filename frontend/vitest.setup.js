@@ -1,8 +1,8 @@
 /**
- * Vitest setup file for jsdom environment.
- * This file is run before each test to set up browser globals.
+ * Vitest setup file for the jsdom environment.
+ *
+ * The `jsdom` test environment already provides `window`, `document`,
+ * `navigator`, and `location`. Creating a second JSDOM instance here would
+ * make Testing Library query a different document than the one React renders
+ * into, so this file intentionally leaves the environment globals untouched.
  */
-global.document = require('jsdom').jsdom('<!DOCTYPE html><html><head></head><body></body></html>');
-global.window = document.defaultView;
-global.navigator = global.window.navigator;
-global.location = global.window.location;

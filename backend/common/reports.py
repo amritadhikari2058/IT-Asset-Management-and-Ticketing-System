@@ -4,6 +4,7 @@ Everything here is read-only and ORM-driven. Average resolution times are
 computed in Python so the same code works on SQLite (which cannot Avg a
 date/time field stored as text) and PostgreSQL.
 """
+from tickets.models import Ticket
 from datetime import datetime, time
 
 from django.db.models import Count, Q
@@ -42,6 +43,9 @@ def _sla_metrics(tickets, now=None):
             continue
         resolved_at = getattr(t, "resolved_at", None)
         status = getattr(t, "status", "")
+        # Paused tickets are not overdue while their SLA clock is stopped.
+        if status in ("waiting_requester", "waiting_third_party"):
+            continue
         if status not in CLOSED_TICKET_STATUSES and now > due:
             overdue += 1
             breached += 1
@@ -114,7 +118,12 @@ def dashboard_data(date_from=None, date_to=None):
     asset_status = _status_counts(assets, "status", Asset.STATUS_CHOICES)
 
     open_tickets = tickets.filter(status__in=OPEN_TICKET_STATUSES)
-    overdue_qs = open_tickets.filter(sla_due_at__lt=now)
+    # Exclude tickets in SLA paused statuses from overdue calculation,
+    # as the SLA clock is paused during these statuses
+    paused_statuses = Ticket.SLA_PAUSED_STATUSES
+    overdue_qs = open_tickets.exclude(
+        status__in=paused_statuses
+    ).filter(sla_due_at__lt=now)
     ticket_list = list(tickets.only(
         "status", "priority", "sla_due_at", "resolved_at", "created_at"))
     sla = _sla_metrics(ticket_list, now)

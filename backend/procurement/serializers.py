@@ -1,3 +1,4 @@
+from decimal import Decimal
 from rest_framework import serializers
 from .models import (
     ProcurementSetting, PurchaseRequest, PurchaseRequestItem, PurchaseQuotation,
@@ -30,6 +31,14 @@ class PurchaseRequestItemSerializer(serializers.ModelSerializer):
         quantity = attrs.get("quantity", getattr(self.instance, "quantity", 1))
         if quantity is None or int(quantity) <= 0:
             raise serializers.ValidationError({"quantity": "Quantity must be greater than zero."})
+        unit_price = attrs.get("estimated_unit_price", getattr(self.instance, "estimated_unit_price", None))
+        estimated_total = attrs.get("estimated_total", getattr(self.instance, "estimated_total", None))
+        if estimated_total is not None and unit_price is not None:
+            expected = Decimal(str(quantity or 0)) * Decimal(str(unit_price))
+            if Decimal(str(estimated_total)) != expected:
+                raise serializers.ValidationError({
+                    "estimated_total": f"Estimated total must equal quantity x unit price ({expected}).",
+                })
         for field in ("estimated_unit_price", "estimated_total"):
             value = attrs.get(field, getattr(self.instance, field, None))
             if value is not None and value < 0:
@@ -93,7 +102,8 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ["pr_number", "requester", "approver", "approval_decision",
                            "approval_reason", "approved_at", "cancelled_at",
-                           "cancellation_reason", "version", "created_at", "updated_at"]
+                           "cancellation_reason", "estimated_total", "version",
+                           "created_at", "updated_at"]
 
 
 class PurchaseOrderItemSerializer(serializers.ModelSerializer):
@@ -147,6 +157,10 @@ class GoodsReceiptItemSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "quantity_rejected":
                     "Rejected plus damaged quantity cannot exceed the quantity received.",
+            })
+        if received == 0 and rejected == 0 and damaged == 0:
+            raise serializers.ValidationError({
+                "quantity_received": "Receipt quantity must be greater than zero.",
             })
         booked = (line.received_qty or 0) + (line.rejected_qty or 0) + (line.damaged_qty or 0)
         remaining = max(0, (line.quantity or 0) - booked)

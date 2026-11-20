@@ -65,7 +65,7 @@ function SoftwareProductsPage() {
         {caps.canManageProducts && <a className="btn btn-primary" href="#/software/products/new">New Product</a>}
       </div>
       {error && <div className="alert alert-danger">{error}</div>}
-      <DataTable columns={columns} rows={items} keyOf="id" loading={loading} emptyTitle="No products found" />
+      <DataTable columns={columns} rows={items} keyOf={(r) => r.id} loading={loading} emptyTitle="No products found" />
       {count !== null && <Pager count={count} hasNext={!!next} hasPrev={!!previous} busy={loading} onPrev={() => previous && loadUrl(previous)} onNext={() => next && loadUrl(next)} />}
     </div>
   );

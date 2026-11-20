@@ -251,9 +251,13 @@ FINDING_TYPE_CHOICES = [
     ("prohibited_software", "Prohibited Software Detected"),
     ("unsupported_version", "Unsupported Version"),
     ("missing_documentation", "Missing Required Documentation"),
+    ("missing_entitlement_quantity", "Missing Entitlement Quantity"),
     ("renewal_overdue", "Renewal Overdue"),
     ("allocation_to_inactive_user", "Allocation to Inactive Employee"),
     ("allocation_to_retired_asset", "Allocation to Inactive/Retired Asset"),
+    ("terminated_agreement_allocation", "Allocation on Terminated Agreement"),
+    ("expired_agreement_allocation", "Allocation on Expired Agreement"),
+    ("inconsistent_allocation_state", "Inconsistent Allocation State"),
 ]
 
 SEVERITY_CHOICES = [
@@ -1161,6 +1165,11 @@ class LicenseComplianceFinding(models.Model):
         related_name="resolved_license_findings",
     )
     resolution_note = models.TextField(blank=True, default="")
+    remediation_note = models.TextField(
+        blank=True,
+        default="",
+        help_text="Timestamped remediation actions; separate from resolution metadata so automatic resolution never overwrites it.",
+    )
     fingerprint = models.CharField(
         max_length=64,
         db_index=True,

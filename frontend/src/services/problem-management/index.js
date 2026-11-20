@@ -265,6 +265,18 @@ export const linkedProducts = async (problemId, params = {}) => {
   const response = await api.get(`/problems/${problemId}/linked-products/`, { params });
   return response.data;
 };
+export const linkedKBs = async (problemId, params = {}) => {
+  const response = await api.get(`/problems/${problemId}/linked-kbs/`, { params });
+  return response.data;
+};
+export const createKbLink = async (data) => {
+  const response = await api.post('/kb-links/', data);
+  return response.data;
+};
+export const deleteKbLink = async (linkId) => {
+  const response = await api.delete(`/kb-links/${linkId}/`);
+  return response.data;
+};
 export const problemReadiness = async (problemId) => {
   const response = await api.get(`/problems/${problemId}/readiness/`);
   return response.data;

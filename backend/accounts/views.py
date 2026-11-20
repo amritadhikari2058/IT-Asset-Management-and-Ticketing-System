@@ -352,13 +352,17 @@ class UserViewSet(viewsets.ModelViewSet):
             "ordering"))
 
     def perform_create(self, serializer):
-        # Only admins/managers reach here (permission above); IT Support may
-        # create employees but never admins (downgrade silently + audit).
+        # Only admins/managers reach here (permission above). Role
+        # escalation is barred: only a system administrator may create
+        # another system administrator (or IT manager). A lower-privileged
+        # creator who requests an equal-or-higher role is silently
+        # downgraded to employee, matching the existing IT Support
+        # convention; the effective role is recorded in the audit log.
         role = serializer.validated_data.get("role", "employee")
         user = self.request.user
-        if (getattr(user, "role", "") == "it_support" and
-                role in ("system_admin", "it_manager")):
-            serializer.validated_data["role"] = "employee"
+        if not is_system_admin(user):
+            if role in ("system_admin", "it_manager"):
+                serializer.validated_data["role"] = "employee"
         obj = serializer.save()
         log_action(actor=user, action="create", instance=obj,
                    details={"role": obj.role})

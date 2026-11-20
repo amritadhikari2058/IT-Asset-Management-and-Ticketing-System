@@ -52,6 +52,11 @@ from changes.models import (
     ChangeReviewItem,
     MaintenanceWindow,
     ChangeConflict,
+    BlackoutPeriod,
+    ChangeSchedulingException,
+)
+from changes.services import _check_scheduling_policy, schedule_change
+from changes.models import (
     ChangeAttachment,
     ChangeStakeholder,
     ChangeCommunication,
@@ -84,6 +89,7 @@ from changes.serializers import (
     ChangeTicketLinkSerializer,
     ChangeKnowledgeLinkSerializer,
     ChangeReadinessSerializer,
+    ChangeSchedulingExceptionSerializer,
     ChangeSchedulingSerializer,
     ChangeImplementationStartSerializer,
     ChangeCompleteSerializer,
@@ -1480,3 +1486,102 @@ class ChangeReportsViewSet(viewsets.ViewSet):
         from django.db.models import Count
         data = qs.values("asset__asset_tag").annotate(count=Count("id")).order_by("-count")[:50]
         return Response(list(data))
+# ---------------------------------------------------------------------------
+# Scheduling Exceptions
+# ---------------------------------------------------------------------------
+
+
+class ChangeSchedulingExceptionPermission(permissions.BasePermission):
+    """
+    Action-specific permissions for ChangeSchedulingException.
+
+    Rules:
+    - LIST/RETRIEVE: Any authenticated user with change access
+    - CREATE: Any authenticated user (requester can create own exception)
+    - UPDATE/PARTIAL_UPDATE: Only ChangeManager or System Admin, AND
+      requester cannot approve their own exception
+    - DESTROY: Only ChangeManager or System Admin
+    """
+
+    def has_permission(self, request, view):
+        # Allow authenticated users for list/create
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return request.user.is_authenticated
+        return request.user.is_authenticated
+
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+        change = obj.change
+
+        # Read-only actions for authenticated users
+        if view.action in ("list", "retrieve"):
+            return user.is_authenticated
+
+        # Create: any authenticated user can create
+        if view.action == "create":
+            return user.is_authenticated
+
+        # Update/partial_update: only managers, and requester cannot approve own exception
+        if view.action in ("update", "partial_update"):
+            # Must be manager or admin
+            if not (user.role in ("it_manager", "system_admin") or _can_manage(user)):
+                return False
+            # Requester cannot approve or reject their own exception
+            if obj.requesting_user == user:
+                return False
+            # Cannot modify decision fields if already decided
+            if obj.decided_by and obj.status != "pending":
+                return False
+            return True
+
+        # Destroy: only managers
+        if view.action == "destroy":
+            return user.role in ("it_manager", "system_admin") or _can_manage(user)
+
+        return False
+
+
+class ChangeSchedulingExceptionViewSet(viewsets.ModelViewSet):
+    """Manage scheduling exceptions for changes."""
+
+    queryset = ChangeSchedulingException.objects.all()
+    serializer_class = ChangeSchedulingExceptionSerializer
+    permission_classes = [ChangeSchedulingExceptionPermission]
+
+    def get_queryset(self):
+        qs = ChangeSchedulingException.objects.select_related(
+            "change", "blackout_period", "maintenance_window",
+            "requesting_user", "decided_by"
+        )
+        user = self.request.user
+        if _is_staff(user) or getattr(user, "is_superuser", False):
+            return qs
+        # Employees see their own requests and exceptions tied to their changes.
+        return qs.filter(Q(requesting_user=user) | Q(change__requester=user))
+
+    def perform_create(self, serializer):
+        # Set the requesting user if not set
+        if not serializer.validated_data.get("requesting_user"):
+            serializer.save(requesting_user=self.request.user)
+        else:
+            serializer.save()
+
+    def perform_update(self, serializer):
+        # Enforce separation of duties: requesters cannot approve/reject
+        # their own scheduling exception requests.
+        instance = serializer.instance
+        if serializer.validated_data.get("status") in ("approved", "rejected"):
+            if instance.requesting_user_id == self.request.user.pk:
+                raise PermissionDenied(
+                    "Requesters cannot approve or reject their own scheduling exception."
+                )
+            if not (self.request.user.role in ("it_manager", "system_admin") or _can_manage(self.request.user)):
+                raise PermissionDenied("IT Manager or System Admin authorization required.")
+        # Track who is making the decision and when.
+        if serializer.validated_data.get("status") in ("approved", "rejected") and not instance.decided_by:
+            serializer.save(
+                decided_by=self.request.user,
+                decision_timestamp=timezone.now(),
+            )
+        else:
+            serializer.save()

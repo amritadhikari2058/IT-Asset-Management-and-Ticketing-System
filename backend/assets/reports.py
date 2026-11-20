@@ -1,18 +1,21 @@
 """Asset reporting and analytics aggregations.
 
 Read-only ORM-driven reporting for the Asset Management module:
-- Financial overview (purchase cost totals, by category, by vendor)
+- Financial overview (purchase cost totals, by category, by vendor, by department, by location)
 - Maintenance analytics (expenditure, by category/vendor, frequently maintained)
-- Warranty monitoring (expired, expiring, without warranty)
+- Warranty monitoring (expired, expiring, without warranty, by department/category/vendor)
 - Asset utilization (counts by status, assignment distribution)
+- Asset inventory analytics (by department, location, vendor, lifecycle, completeness)
 
 All endpoints are IT-staff-only read operations that respect existing
 query-parameter filtering conventions.
 """
-from datetime import date
+from datetime import date, timedelta
 
 from django.db.models import Count, Q, Sum
+from django.db.models.functions import ExtractYear, ExtractMonth
 from django.utils import timezone
+from decimal import Decimal
 
 from assets.models import (
     Asset,
@@ -474,3 +477,385 @@ def asset_report_data(params=None):
         "has_next": offset + page_size < total,
         "has_prev": page > 1,
     }
+
+
+def assets_by_department():
+    """Assets grouped by department.
+
+    Returns:
+        {total, by_department} where by_department is a list of
+        {department, asset_count} sorted by asset_count desc.
+        Uncategorized (null department) included.
+    """
+    qs = Asset.objects.select_related("department").all()
+    result = (
+        qs.values("department__name")
+        .annotate(asset_count=Count("id"))
+        .order_by("-asset_count")
+    )
+    rows = [
+        {
+            "department": row["department__name"] or "No department",
+            "asset_count": row["asset_count"],
+        }
+        for row in result
+    ]
+    return {"total": len(rows), "by_department": rows}
+
+
+def assets_by_location():
+    """Assets grouped by location.
+
+    Returns:
+        {total, by_location} where by_location is a list of
+        {location, asset_count} sorted by asset_count desc.
+        Assets with blank location grouped as "Unassigned".
+    """
+    qs = Asset.objects.select_related().all()
+    result = (
+        qs.values("location")
+        .annotate(asset_count=Count("id"))
+        .order_by("-asset_count")
+    )
+    rows = [
+        {
+            "location": row["location"] or "Unassigned",
+            "asset_count": row["asset_count"],
+        }
+        for row in result
+    ]
+    return {"total": len(rows), "by_location": rows}
+
+
+def assets_with_incomplete_info():
+    """Assets missing critical inventory information.
+
+    Returns counts of assets missing department, vendor, serial number,
+    or with no purchase cost recorded. Useful for data quality audits.
+
+    Returns:
+        - total: count of assets with at least one missing field
+        - missing_department: assets with no department
+        - missing_vendor: assets with no vendor
+        - missing_serial: assets with no serial number
+        - missing_purchase_cost: assets with no purchase cost
+    """
+    qs = Asset.objects.all()
+
+    missing_department = qs.filter(department__isnull=True).count()
+    missing_vendor = qs.filter(vendor__isnull=True).count()
+    missing_serial = qs.filter(serial_number="").count()
+    missing_purchase_cost = qs.filter(purchase_cost__isnull=True).count()
+
+    # Assets with at least one of the above missing
+    total = (
+        qs.filter(Q(department__isnull=True) | Q(vendor__isnull=True)
+                  | Q(serial_number="") | Q(purchase_cost__isnull=True))
+        .count()
+    )
+
+    return {
+        "total": total,
+        "missing_department": missing_department,
+        "missing_vendor": missing_vendor,
+        "missing_serial": missing_serial,
+        "missing_purchase_cost": missing_purchase_cost,
+    }
+
+
+def warranty_by_department(params=None):
+    """Warranty status grouped by department.
+
+    Optional query params:
+    - from_date/to_date: restrict warranty_expiry range
+
+    Returns:
+        - by_department: [{department, total, expired, expiring_30, expiring_90, expiring_180, without}]
+        - total_with_warranty: overall count with warranty
+        - total_without_warranty: overall count without warranty
+    """
+    params = params or {}
+    today = timezone.now().date()
+    qs = Asset.objects.select_related("category", "vendor", "department").all()
+
+    date_from = None
+    date_to = None
+    if params.get("from_date"):
+        try:
+            date_from = date.fromisoformat(str(params["from_date"])[:10])
+        except (ValueError, TypeError):
+            date_from = None
+    if params.get("to_date"):
+        try:
+            date_to = date.fromisoformat(str(params["to_date"])[:10])
+        except (ValueError, TypeError):
+            date_to = None
+    if date_from:
+        qs = qs.filter(warranty_expiry__gte=date_from)
+    if date_to:
+        qs = qs.filter(warranty_expiry__lte=date_to)
+
+    total_with_warranty = qs.filter(warranty_expiry__isnull=False).count()
+    total_without_warranty = qs.filter(warranty_expiry__isnull=True).count()
+
+    by_department = (
+        qs.filter(department__isnull=False)
+        .values("department__name")
+        .annotate(
+            total=Count("id"),
+            expired=Count("id", filter=Q(warranty_expiry__lt=today)),
+            expiring_30=Count(
+                "id",
+                filter=Q(warranty_expiry__gte=today,
+                             warranty_expiry__lte=today + timedelta(days=30)),
+            ),
+            expiring_90=Count(
+                "id",
+                filter=Q(warranty_expiry__gte=today,
+                           warranty_expiry__lte=today + timedelta(days=90)),
+            ),
+            expiring_180=Count(
+                "id",
+                filter=Q(warranty_expiry__gte=today,
+                           warranty_expiry__lte=today + timedelta(days=180)),
+            ),
+            without=Count("id", filter=Q(warranty_expiry__isnull=True)),
+        )
+        .order_by("-total")
+    )
+
+    return {
+        "by_department": [
+            {
+                "department": row["department__name"],
+                "total": row["total"],
+                "expired": row["expired"],
+                "expiring_30": row["expiring_30"],
+                "expiring_90": row["expiring_90"],
+                "expiring_180": row["expiring_180"],
+                "without": row["without"],
+            }
+            for row in by_department
+        ],
+        "total_with_warranty": total_with_warranty,
+        "total_without_warranty": total_without_warranty,
+    }
+
+
+def warranty_by_category(params=None):
+    """Warranty status grouped by asset category.
+
+    Optional query params:
+    - from_date/to_date: restrict warranty_expiry range
+
+    Returns:
+        - by_category: [{category, total, expired, expiring_30, expiring_90, expiring_180, without}]
+        - total_with_warranty: overall count with warranty
+        - total_without_warranty: overall count without warranty
+    """
+    params = params or {}
+    today = timezone.now().date()
+    qs = Asset.objects.select_related("category", "vendor").all()
+
+    date_from = None
+    date_to = None
+    if params.get("from_date"):
+        try:
+            date_from = date.fromisoformat(str(params["from_date"])[:10])
+        except (ValueError, TypeError):
+            date_from = None
+    if params.get("to_date"):
+        try:
+            date_to = date.fromisoformat(str(params["to_date"])[:10])
+        except (ValueError, TypeError):
+            date_to = None
+    if date_from:
+        qs = qs.filter(warranty_expiry__gte=date_from)
+    if date_to:
+        qs = qs.filter(warranty_expiry__lte=date_to)
+
+    total_with_warranty = qs.filter(warranty_expiry__isnull=False).count()
+    total_without_warranty = qs.filter(warranty_expiry__isnull=True).count()
+
+    by_category = (
+        qs.filter(category__isnull=False)
+        .values("category__name")
+        .annotate(
+            total=Count("id"),
+            expired=Count("id", filter=Q(warranty_expiry__lt=today)),
+            expiring_30=Count(
+                "id",
+                filter=Q(warranty_expiry__gte=today,
+                           warranty_expiry__lte=today + timedelta(days=30)),
+            ),
+            expiring_90=Count(
+                "id",
+                filter=Q(warranty_expiry__gte=today,
+                           warranty_expiry__lte=today + timedelta(days=90)),
+            ),
+            expiring_180=Count(
+                "id",
+                filter=Q(warranty_expiry__gte=today,
+                           warranty_expiry__lte=today + timedelta(days=180)),
+            ),
+            without=Count("id", filter=Q(warranty_expiry__isnull=True)),
+        )
+        .order_by("-total")
+    )
+
+    return {
+        "by_category": [
+            {
+                "category": row["category__name"],
+                "total": row["total"],
+                "expired": row["expired"],
+                "expiring_30": row["expiring_30"],
+                "expiring_90": row["expiring_90"],
+                "expiring_180": row["expiring_180"],
+                "without": row["without"],
+            }
+            for row in by_category
+        ],
+        "total_with_warranty": total_with_warranty,
+        "total_without_warranty": total_without_warranty,
+    }
+
+
+def warranty_by_vendor(params=None):
+    """Warranty status grouped by vendor.
+
+    Optional query params:
+    - from_date/to_date: restrict warranty_expiry range
+
+    Returns:
+        - by_vendor: [{vendor, total, expired, expiring_30, expiring_90, expiring_180, without}]
+        - total_with_warranty: overall count with warranty
+        - total_without_warranty: overall count without warranty
+    """
+    params = params or {}
+    today = timezone.now().date()
+    qs = Asset.objects.select_related("category", "vendor").all()
+
+    date_from = None
+    date_to = None
+    if params.get("from_date"):
+        try:
+            date_from = date.fromisoformat(str(params["from_date"])[:10])
+        except (ValueError, TypeError):
+            date_from = None
+    if params.get("to_date"):
+        try:
+            date_to = date.fromisoformat(str(params["to_date"])[:10])
+        except (ValueError, TypeError):
+            date_to = None
+    if date_from:
+        qs = qs.filter(warranty_expiry__gte=date_from)
+    if date_to:
+        qs = qs.filter(warranty_expiry__lte=date_to)
+
+    total_with_warranty = qs.filter(warranty_expiry__isnull=False).count()
+    total_without_warranty = qs.filter(warranty_expiry__isnull=True).count()
+
+    by_vendor = (
+        qs.filter(vendor__isnull=False)
+        .values("vendor__name")
+        .annotate(
+            total=Count("id"),
+            expired=Count("id", filter=Q(warranty_expiry__lt=today)),
+            expiring_30=Count(
+                "id",
+                filter=Q(warranty_expiry__gte=today,
+                           warranty_expiry__lte=today + timedelta(days=30)),
+            ),
+            expiring_90=Count(
+                "id",
+                filter=Q(warranty_expiry__gte=today,
+                           warranty_expiry__lte=today + timedelta(days=90)),
+            ),
+            expiring_180=Count(
+                "id",
+                filter=Q(warranty_expiry__gte=today,
+                           warranty_expiry__lte=today + timedelta(days=180)),
+            ),
+            without=Count("id", filter=Q(warranty_expiry__isnull=True)),
+        )
+        .order_by("-total")
+    )
+
+    return {
+        "by_vendor": [
+            {
+                "vendor": row["vendor__name"],
+                "total": row["total"],
+                "expired": row["expired"],
+                "expiring_30": row["expiring_30"],
+                "expiring_90": row["expiring_90"],
+                "expiring_180": row["expiring_180"],
+                "without": row["without"],
+            }
+            for row in by_vendor
+        ],
+        "total_with_warranty": total_with_warranty,
+        "total_without_warranty": total_without_warranty,
+    }
+
+
+def purchase_cost_by_department():
+    """Purchase cost grouped by department.
+
+    Returns:
+        {by_department, total} where by_department is a list of
+        {department, asset_count, purchase_cost} sorted by purchase_cost desc.
+        Uncategorized (null department) included.
+    """
+    qs = Asset.objects.select_related("department").all()
+    result = (
+        qs.values("department__name")
+        .annotate(asset_count=Count("id"), purchase_cost=Sum("purchase_cost"))
+        .order_by("-purchase_cost")
+    )
+    rows = [
+        {
+            "department": row["department__name"] or "No department",
+            "asset_count": row["asset_count"],
+            "purchase_cost": row["purchase_cost"] or 0,
+        }
+        for row in result
+    ]
+    total_purchase_cost = sum((r["purchase_cost"] for r in rows), Decimal("0"))
+    return {"by_department": rows, "total": total_purchase_cost}
+
+
+def purchase_cost_trends():
+    """Purchase cost trends over time by month.
+
+    Returns monthly purchase costs for assets with purchase_date set.
+    Uses purchase_date year-month grouping.
+
+    Returns:
+        {total_assets, by_month} where by_month is a list of
+        {month, year, purchase_cost, asset_count} sorted by month desc.
+    """
+    qs = Asset.objects.filter(purchase_date__isnull=False).all()
+    result = (
+        qs.annotate(
+            year=ExtractYear("purchase_date"),
+            month=ExtractMonth("purchase_date"),
+        )
+        .values("year", "month")
+        .annotate(
+            purchase_cost=Sum("purchase_cost"),
+            asset_count=Count("id"),
+        )
+        .order_by("-year", "-month")[:24]
+    )
+    rows = []
+    for row in result:
+        rows.append({
+            "month": row["month"],
+            "year": row["year"],
+            "purchase_cost": row["purchase_cost"] or 0,
+            "asset_count": row["asset_count"],
+        })
+    total_assets = sum((r["asset_count"] for r in rows), 0)
+    return {"total_assets": total_assets, "by_month": rows}

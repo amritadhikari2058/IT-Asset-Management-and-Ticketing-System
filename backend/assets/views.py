@@ -324,8 +324,9 @@ class AssetViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in ("create", "update", "partial_update", "destroy",
-                           "assign", "retire", "mark_lost", "bulk_create",
-                           "bulk_update", "bulk_delete", "bulk_assign"):
+                           "assign", "return_asset", "retire", "mark_lost",
+                           "bulk_create", "bulk_update", "bulk_delete",
+                           "bulk_assign"):
             return [IsITStaff()]
         return super().get_permissions()
 
@@ -465,7 +466,6 @@ class AssetViewSet(viewsets.ModelViewSet):
         from accounts.models import User
         target_id = ser.validated_data.get("assigned_to")
         target = User.objects.filter(pk=target_id).first() if target_id else None
-        old = {"assigned_to": obj.assigned_to_id, "status": obj.status}
         assignment = None
         # An asset undergoing maintenance cannot be assigned.
         if target and obj.has_open_maintenance:
@@ -477,6 +477,12 @@ class AssetViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT)
         try:
             with transaction.atomic():
+                # Serialize concurrent assignment changes for this asset (row
+                # lock on PostgreSQL, no-op on SQLite; same convention as
+                # bulk_assign). Without it, two assignments can both pass the
+                # "one open assignment" check before either commits.
+                obj = Asset.objects.select_for_update().get(pk=obj.pk)
+                old = {"assigned_to": obj.assigned_to_id, "status": obj.status}
                 if target:
                     # Record the open assignment first so the asset clean()
                     # (status == assigned requires a holder + open assignment)
@@ -524,8 +530,12 @@ class AssetViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def return_asset(self, request, pk=None):
         obj = self.get_object()
-        previous_holder = obj.assigned_to
         with transaction.atomic():
+            # Same asset row lock as assign()/bulk_assign so a concurrent
+            # assignment cannot slip in between closing the old assignment
+            # and clearing the holder.
+            obj = Asset.objects.select_for_update().get(pk=obj.pk)
+            previous_holder = obj.assigned_to
             last = obj.assignments.filter(returned_at__isnull=True).last()
             if last:
                 from django.utils import timezone
@@ -549,6 +559,11 @@ class AssetViewSet(viewsets.ModelViewSet):
         obj = self.get_object()
         old = {"assigned_to": obj.assigned_to_id, "status": obj.status}
         with transaction.atomic():
+            # Serialize concurrent mutation of this asset (row lock on
+            # PostgreSQL) so a concurrent assign()/return_asset() cannot
+            # interleave between closing the open assignment and flipping
+            # status to retired.
+            obj = Asset.objects.select_for_update().get(pk=obj.pk)
             # A retired asset cannot keep a holder: close the open
             # assignment and clear the holder so the asset's clean()
             # (retired != assigned with a holder) passes.
@@ -584,6 +599,11 @@ class AssetViewSet(viewsets.ModelViewSet):
         if obj.status == "lost":
             return Response(AssetSerializer(obj).data)
         with transaction.atomic():
+            # Serialize concurrent mutation of this asset (row lock on
+            # PostgreSQL) so a concurrent assign()/return_asset() cannot
+            # interleave between closing the open assignment and flipping
+            # status to lost.
+            obj = Asset.objects.select_for_update().get(pk=obj.pk)
             if obj.assigned_to_id is not None:
                 from django.utils import timezone
                 obj.assignments.filter(
@@ -1266,7 +1286,8 @@ class MaintenanceViewSet(viewsets.ModelViewSet):
     serializer_class = MaintenanceSerializer
 
     def get_permissions(self):
-        if self.action in ("create", "update", "partial_update", "destroy"):
+        if self.action in ("create", "update", "partial_update", "destroy",
+                           "mark_overdue"):
             return [IsITStaff()]
         return super().get_permissions()
 
@@ -1387,6 +1408,40 @@ def _notify_disposal(disposal, actor, old=None):
         entity_type="assets.Disposal", object_id=str(disposal.pk))
 
 
+def _record_disposal_decision(disposal, actor, old_status):
+    """Apply an approval decision and write the decision trail.
+
+    Shared by the ``approve``/``reject`` actions and the generic update path
+    so both produce the same approver metadata, asset history, audit entry and
+    notification. Returns True when the status actually changed.
+    """
+    if disposal.approval_status == old_status:
+        return False
+    from django.utils import timezone
+    status_now = disposal.approval_status
+    if status_now == "approved":
+        disposal.approver = actor
+        disposal.approved_at = timezone.now()
+        history_action, audit_action = "approved", "approve"
+    elif status_now == "rejected":
+        disposal.approver = actor
+        disposal.approved_at = None
+        history_action, audit_action = "rejected", "reject"
+    else:
+        # Reverting to pending withdraws the decision: no approver remains.
+        disposal.approver = None
+        disposal.approved_at = None
+        history_action, audit_action = "pending", "reset_to_pending"
+    disposal.save(update_fields=["approval_status", "approver",
+                                 "approved_at", "updated_at"])
+    _history_disposal(disposal, actor, history_action,
+                      new={"approval_status": status_now})
+    log_action(actor=actor, action=audit_action, instance=disposal,
+               details={"asset": disposal.asset.asset_tag})
+    _notify_disposal(disposal, actor)
+    return True
+
+
 def _complete_disposal(disposal, actor):
         """Mark an approved disposal complete and dispose the asset.
 
@@ -1399,6 +1454,11 @@ def _complete_disposal(disposal, actor):
             return disposal
         asset = disposal.asset
         with transaction.atomic():
+            # Serialize concurrent mutation of this asset (row lock on
+            # PostgreSQL) so a concurrent assign()/return_asset() cannot
+            # interleave between closing the open assignment and flipping
+            # status to disposed.
+            asset = Asset.objects.select_for_update().get(pk=asset.pk)
             # Resolve any open assignment before disposing.
             for open_a in asset.assignments.filter(
                     returned_at__isnull=True):
@@ -2084,9 +2144,28 @@ class AssetReportViewSet(viewsets.ReadOnlyModelViewSet):
             data = reports.utilization_data()
         elif report == "inventory":
             data = reports.asset_report_data(params)
+        elif report == "assets_by_department":
+            data = reports.assets_by_department()
+        elif report == "assets_by_location":
+            data = reports.assets_by_location()
+        elif report == "assets_with_incomplete_info":
+            data = reports.assets_with_incomplete_info()
+        elif report == "warranty_by_department":
+            data = reports.warranty_by_department(params)
+        elif report == "warranty_by_category":
+            data = reports.warranty_by_category(params)
+        elif report == "warranty_by_vendor":
+            data = reports.warranty_by_vendor(params)
+        elif report == "purchase_cost_by_department":
+            data = reports.purchase_cost_by_department()
+        elif report == "purchase_cost_trends":
+            data = reports.purchase_cost_trends()
         else:
             return Response(
-                {"detail": "Unsupported report. Supported: financial, maintenance, warranty, utilization, inventory."},
+                {"detail": "Unsupported report. Supported: financial, maintenance, warranty, utilization, inventory, "
+                 "assets_by_department, assets_by_location, assets_with_incomplete_info, "
+                 "warranty_by_department, warranty_by_category, warranty_by_vendor, "
+                 "purchase_cost_by_department, purchase_cost_trends."},
                 status=400)
 
         return Response(data)
@@ -2118,15 +2197,73 @@ class VendorViewSet(viewsets.ModelViewSet):
         if role == "employee":
             # Employees cannot enumerate vendors via the Vendor API
             return Vendor.objects.none()
-        qs = Vendor.objects.annotate(
+        # IT Manager and System Admin see everything (including soft-deleted)
+        # IT Support sees non-deleted only
+        if role == "it_support":
+            base_qs = Vendor.objects  # excludes deleted
+        else:
+            base_qs = Vendor.all_objects  # includes deleted for managers/admins
+        qs = base_qs.annotate(
             asset_count=Count("assets"),
             stock_item_count=Count("stock_items")
         )
-        # IT Support can see all non-deleted vendors (read-only scope)
+        # IT Support: force is_deleted=False so it cannot be overridden by
+        # query params
         if role == "it_support":
             qs = qs.filter(is_deleted=False)
-            return qs
-        # IT Manager and System Admin see everything
+
+        # ---- Search ----
+        q = (self.request.query_params.get("search") or "").strip()
+        if q:
+            qs = qs.filter(
+                Q(name__icontains=q)
+                | Q(code__icontains=q)
+                | Q(contact_person__icontains=q)
+                | Q(email__icontains=q)
+                | Q(phone__icontains=q)
+            )
+
+        # ---- Filters ----
+        params = self.request.query_params
+        for field in ("is_active", "is_deleted", "name", "code", "email"):
+            val = params.get(field)
+            if val is not None and val != "":
+                # IT Support: never expose deleted vendors regardless of params
+                if role == "it_support" and field == "is_deleted":
+                    continue
+                if field in ("name", "code", "email"):
+                    qs = qs.filter(**{field + "__iexact": val})
+                else:
+                    # is_active / is_deleted: accept "true"/"false" strings
+                    if isinstance(val, str) and val.lower() in ("true", "false"):
+                        val = val.lower() == "true"
+                    qs = qs.filter(**{field: val})
+
+        # ---- Ordering ----
+        allowed_ordering = {
+            "name": "name",
+            "code": "code",
+            "created_at": "created_at",
+            "updated_at": "updated_at",
+            "asset_count": "asset_count",
+            "stock_item_count": "stock_item_count",
+        }
+        raw_ordering = (params.get("ordering") or "").strip()
+        if raw_ordering:
+            direction = ""
+            field = raw_ordering
+            if field.startswith("-"):
+                direction = "-"
+                field = field[1:]
+            elif field.startswith("+"):
+                field = field[1:]
+            if field in allowed_ordering:
+                qs = qs.order_by(direction + allowed_ordering[field], "id")
+            else:
+                qs = qs.order_by("name", "id")
+        else:
+            qs = qs.order_by("name", "id")
+
         return qs
 
     def get_permissions(self):
@@ -2156,28 +2293,73 @@ class VendorViewSet(viewsets.ModelViewSet):
         return super().get_permissions()
 
     def perform_create(self, serializer):
-        obj = serializer.save()
-        from common.audit import log_action
-        log_action(actor=self.request.user, action="create", instance=obj,
-                   reason="vendor created")
+        # Guard against concurrent duplicate creation: the DB unique
+        # constraint on name/code is the backstop, but we acquire the
+        # vendor row lock inside a transaction so the losing request gets a
+        # controlled 400 instead of an IntegrityError 500.
+        try:
+            with transaction.atomic():
+                obj = serializer.save()
+                from common.audit import log_action
+                log_action(actor=self.request.user, action="create", instance=obj,
+                           reason="vendor created")
+        except IntegrityError:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError(
+                {"detail": "A vendor with that name or code already exists."})
 
     def perform_update(self, serializer):
-        obj = serializer.save()
-        from common.audit import log_action
-        log_action(actor=self.request.user, action="update", instance=obj,
-                   reason="vendor updated")
+        # Lock the vendor row inside the transaction so concurrent updates
+        # cannot silently overwrite each other (lost update). Use a plain
+        # queryset (no annotations) because select_for_update() is not
+        # compatible with GROUP BY on PostgreSQL.
+        #
+        # IMPORTANT: serializer.instance points to the object fetched by
+        # DRF's get_object() (unlocked). We must point it at the locked
+        # object so serializer.save() writes to the row we hold the lock on.
+        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+        lookup_value = self.kwargs[lookup_url_kwarg]
+        with transaction.atomic():
+            obj = Vendor.objects.select_for_update().get(
+                pk=lookup_value)
+            self.check_object_permissions(self.request, obj)
+            serializer.instance = obj
+            serializer.save()
+            # Re-fetch with annotations so the response includes
+            # asset_count / stock_item_count
+            obj = Vendor.objects.annotate(
+                asset_count=Count("assets"),
+                stock_item_count=Count("stock_items")
+            ).get(pk=obj.pk)
+            serializer.instance = obj
+            from common.audit import log_action
+            log_action(actor=self.request.user, action="update", instance=obj,
+                       reason="vendor updated")
 
     @action(detail=True, methods=["post"])
     def activate(self, request, pk=None):
         """Activate a deactivated vendor."""
-        obj = self.get_object()
+        try:
+            obj = Vendor.all_objects.get(pk=pk)
+        except Vendor.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+        if obj.is_deleted:
+            return Response(
+                {"detail": "Cannot activate a deleted vendor. Restore it first."},
+                status=400)
         if obj.is_active:
             return Response({"detail": "Vendor is already active."}, status=400)
-        obj.is_active = True
-        obj.save(update_fields=["is_active", "updated_at"])
-        from common.audit import log_action
-        log_action(actor=request.user, action="activate", instance=obj,
-                   reason="vendor activated")
+        with transaction.atomic():
+            obj = Vendor.objects.select_for_update().get(pk=obj.pk)
+            if obj.is_deleted:
+                return Response(
+                    {"detail": "Cannot activate a deleted vendor. Restore it first."},
+                    status=400)
+            obj.is_active = True
+            obj.save(update_fields=["is_active", "updated_at"])
+            from common.audit import log_action
+            log_action(actor=request.user, action="activate", instance=obj,
+                       reason="vendor activated")
         return Response(VendorSerializer(obj).data)
 
     @action(detail=True, methods=["post"])
@@ -2185,15 +2367,30 @@ class VendorViewSet(viewsets.ModelViewSet):
         """Deactivate a vendor. Deactivation is allowed even if referenced;
         referenced records retain the inactive vendor. Deletion is blocked when referenced.
         """
-        obj = self.get_object()
-        # Check for referencing assets/stock items for warning
-        asset_count = obj.assets.count()
-        stock_item_count = obj.stock_items.count()
-        obj.is_active = False
-        obj.save(update_fields=["is_active", "updated_at"])
-        from common.audit import log_action
-        log_action(actor=request.user, action="deactivate", instance=obj,
-                   reason="vendor deactivated")
+        try:
+            obj = Vendor.all_objects.get(pk=pk)
+        except Vendor.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+        if obj.is_deleted:
+            return Response(
+                {"detail": "Cannot deactivate a deleted vendor."}, status=400)
+        if not obj.is_active:
+            return Response({"detail": "Vendor is already inactive."}, status=400)
+        with transaction.atomic():
+            obj = Vendor.objects.select_for_update().get(pk=obj.pk)
+            if obj.is_deleted:
+                return Response(
+                    {"detail": "Cannot deactivate a deleted vendor."}, status=400)
+            if not obj.is_active:
+                return Response({"detail": "Vendor is already inactive."}, status=400)
+            # Check for referencing assets/stock items for warning
+            asset_count = obj.assets.count()
+            stock_item_count = obj.stock_items.count()
+            obj.is_active = False
+            obj.save(update_fields=["is_active", "updated_at"])
+            from common.audit import log_action
+            log_action(actor=request.user, action="deactivate", instance=obj,
+                       reason="vendor deactivated")
         data = VendorSerializer(obj).data
         if asset_count > 0 or stock_item_count > 0:
             data["warning"] = (
@@ -2203,26 +2400,61 @@ class VendorViewSet(viewsets.ModelViewSet):
         return Response(data)
 
     def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        # Check for referencing records before soft-delete
-        asset_count = instance.assets.count()
-        stock_item_count = instance.stock_items.count()
-        if asset_count > 0 or stock_item_count > 0:
-            from rest_framework.response import Response
-            from rest_framework import status
-            return Response({
-                "detail": f"Cannot soft-delete vendor: "
-                           f"{asset_count} asset(s) and "
-                           f"{stock_item_count} stock item(s) "
-                           f"reference it.",
-                "hint": "Deactivate the vendor instead, or reassign records first."
-            }, status=status.HTTP_409_CONFLICT)
-        instance.soft_delete(by_user=request.user,
-                             reason="vendor removed")
-        from common.audit import log_action
-        log_action(actor=request.user, action="soft_delete", instance=instance,
-                   reason="vendor soft-deleted")
+        from rest_framework.response import Response
+        from rest_framework import status
+        try:
+            instance = Vendor.all_objects.get(pk=kwargs["pk"])
+        except Vendor.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+        if instance.is_deleted:
+            return Response(
+                {"detail": "Vendor is already deleted."}, status=400)
+        # Check for referencing records before soft-delete (under lock)
+        with transaction.atomic():
+            instance = Vendor.objects.select_for_update().get(pk=instance.pk)
+            if instance.is_deleted:
+                return Response(
+                    {"detail": "Vendor is already deleted."}, status=400)
+            asset_count = instance.assets.count()
+            stock_item_count = instance.stock_items.count()
+            if asset_count > 0 or stock_item_count > 0:
+                return Response({
+                    "detail": f"Cannot soft-delete vendor: "
+                               f"{asset_count} asset(s) and "
+                               f"{stock_item_count} stock item(s) "
+                               f"reference it.",
+                    "hint": "Deactivate the vendor instead, or reassign records first."
+                }, status=status.HTTP_409_CONFLICT)
+            instance.soft_delete(by_user=request.user,
+                                 reason="vendor removed")
+            from common.audit import log_action
+            log_action(actor=request.user, action="soft_delete", instance=instance,
+                       reason="vendor soft-deleted")
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        """Restore a soft-deleted vendor, respecting uniqueness constraints."""
+        try:
+            instance = Vendor.all_objects.get(pk=pk)
+        except Vendor.DoesNotExist:
+            return Response({"detail": "Not found."}, status=404)
+        if not instance.is_deleted:
+            return Response({"detail": "Vendor is not deleted."}, status=400)
+        with transaction.atomic():
+            instance = Vendor.all_objects.select_for_update().get(pk=instance.pk)
+            if not instance.is_deleted:
+                return Response({"detail": "Vendor is not deleted."}, status=400)
+            try:
+                instance.restore()
+            except IntegrityError:
+                from rest_framework.exceptions import ValidationError
+                raise ValidationError(
+                    {"detail": "Cannot restore: a vendor with that name or code already exists."})
+            from common.audit import log_action
+            log_action(actor=request.user, action="restore", instance=instance,
+                       reason="vendor restored")
+        return Response(VendorSerializer(instance).data)
 
 
 class DisposalViewSet(viewsets.ModelViewSet):
@@ -2267,75 +2499,127 @@ class DisposalViewSet(viewsets.ModelViewSet):
         return qs.order_by("-created_at", "-id")
 
     def perform_create(self, serializer):
+        # A disposal starts pending. IT Support cannot mint an already-approved
+        # record (the approve() action denies them the same decision), and no
+        # one can complete a disposal at creation time: completion is the
+        # complete() action, which also disposes the asset.
+        requested_status = (serializer.validated_data.get("approval_status")
+                            or "pending")
+        if (requested_status != "pending"
+                and getattr(self.request.user, "role", "") == "it_support"):
+            raise PermissionDenied(
+                "Only an IT Manager or System Admin can approve or reject "
+                "a disposal.")
+        if serializer.validated_data.get("disposal_date") is not None:
+            raise ValidationError(
+                {"disposal_date": "Use the complete action to record a "
+                                  "disposal date; it also disposes the asset."})
         obj = serializer.save(created_by=self.request.user)
         _history_disposal(obj, self.request.user, "created",
                           new={"approval_status": obj.approval_status})
         log_action(actor=self.request.user, action="create", instance=obj)
+        if obj.approval_status in ("approved", "rejected"):
+            # A manager may create an already-decided record: keep metadata
+            # and the decision trail identical to create + approve()/reject().
+            approved = obj.approval_status == "approved"
+            obj.approver = self.request.user
+            obj.approved_at = timezone.now() if approved else None
+            obj.save(update_fields=["approver", "approved_at"])
+            _history_disposal(obj, self.request.user,
+                              "approved" if approved else "rejected",
+                              new={"approval_status": obj.approval_status})
+            log_action(actor=self.request.user,
+                       action="approve" if approved else "reject",
+                       instance=obj,
+                       details={"asset": obj.asset.asset_tag})
         _notify_disposal(obj, self.request.user)
 
     def perform_update(self, serializer):
         instance = self.get_object()
+        # Approval is a manager/admin decision: the dedicated approve() action
+        # rejects IT Support, so the generic update path must not let the same
+        # user set it either.
+        requested_status = serializer.validated_data.get("approval_status")
+        status_changed = (requested_status is not None
+                          and requested_status != instance.approval_status)
+        if (status_changed
+                and getattr(self.request.user, "role", "") == "it_support"):
+            raise PermissionDenied(
+                "Only an IT Manager or System Admin can approve or reject "
+                "a disposal.")
+        # approve()/reject() refuse to decide a completed disposal; the
+        # generic path must not rewrite the decision afterwards either.
+        if status_changed and instance.is_completed:
+            raise ValidationError(
+                {"approval_status": "A completed disposal's approval status "
+                                    "cannot be changed."})
+        # The asset is the subject of the approval: re-pointing the record
+        # after a decision would let complete() dispose an asset that was
+        # never approved.
+        requested_asset = serializer.validated_data.get("asset")
+        if (requested_asset is not None
+                and requested_asset.pk != instance.asset_id
+                and instance.approval_status != "pending"):
+            raise ValidationError(
+                {"asset": "The asset cannot be changed after the disposal "
+                          "has been approved or rejected."})
+        # Completion is owned by the complete() action, which also disposes
+        # the asset. Setting the date here would mark the disposal completed
+        # while leaving the asset untouched (and bypassing approval).
+        requested_date = serializer.validated_data.get("disposal_date")
+        if (requested_date is not None
+                and requested_date != instance.disposal_date):
+            raise ValidationError(
+                {"disposal_date": "Use the complete action to record a "
+                                  "disposal date; it also disposes the asset."})
         old = {"approval_status": instance.approval_status,
                "disposal_date": str(instance.disposal_date)}
         obj = serializer.save()
+        non_status_changes = {k: v for k, v in
+                              serializer.validated_data.items()
+                              if k != "approval_status"}
         if obj.approval_status != old["approval_status"]:
-            from django.utils import timezone
-            if obj.approval_status == "approved":
-                obj.approver = self.request.user
-                obj.approved_at = timezone.now()
-                obj.save(update_fields=["approver", "approved_at"])
-            _notify_disposal(obj, self.request.user, old=old)
-        _history_disposal(obj, self.request.user, "updated", old=old,
-                          new={k: str(v) for k, v in
-                               serializer.validated_data.items()})
-        log_action(actor=self.request.user, action="update", instance=obj,
-                   details={"old": old, "new": {
-                       "approval_status": obj.approval_status,
-                       "disposal_date": str(obj.disposal_date)}})
+            # Same metadata/history/audit/notification as approve()/reject().
+            _record_disposal_decision(obj, self.request.user,
+                                      old["approval_status"])
+        if non_status_changes or obj.approval_status == old["approval_status"]:
+            _history_disposal(obj, self.request.user, "updated", old=old,
+                              new={k: str(v)
+                                   for k, v in non_status_changes.items()})
+            log_action(actor=self.request.user, action="update", instance=obj,
+                       details={"old": old, "new": {
+                           "approval_status": obj.approval_status,
+                           "disposal_date": str(obj.disposal_date)}})
 
     @action(detail=True, methods=["post"], permission_classes=[IsITStaff])
     def approve(self, request, pk=None):
         # Only IT Manager or System Admin can approve
         role = getattr(request.user, "role", "")
         if role == "it_support":
-            from rest_framework.response import Response
+            # NB: no local Response import here - it would shadow the
+            # module-level name and leave it unbound for authorized users.
             return Response({"detail": "Forbidden"}, status=403)
         obj = self.get_object()
         if obj.is_completed:
             return Response(
                 {"detail": "Disposal already completed."}, status=400)
+        old_status = obj.approval_status
         obj.approval_status = "approved"
-        obj.approver = request.user
-        from django.utils import timezone
-        obj.approved_at = timezone.now()
-        obj.save(
-            update_fields=["approval_status", "approver", "approved_at",
-                           "updated_at"])
-        _history_disposal(obj, request.user, "approved",
-                          new={"approval_status": "approved"})
-        log_action(actor=request.user, action="approve",
-                   instance=obj, details={"asset": obj.asset.asset_tag})
-        _notify_disposal(obj, request.user)
+        _record_disposal_decision(obj, request.user, old_status)
         return Response(DisposalSerializer(obj).data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsITStaff])
     def reject(self, request, pk=None):
         role = getattr(request.user, "role", "")
         if role == "it_support":
-            from rest_framework.response import Response
             return Response({"detail": "Forbidden"}, status=403)
         obj = self.get_object()
         if obj.is_completed:
             return Response(
                 {"detail": "Cannot reject a completed disposal."}, status=400)
+        old_status = obj.approval_status
         obj.approval_status = "rejected"
-        obj.approver = request.user
-        obj.save(update_fields=["approval_status", "approver", "updated_at"])
-        _history_disposal(obj, request.user, "rejected",
-                          new={"approval_status": "rejected"})
-        log_action(actor=request.user, action="reject",
-                   instance=obj, details={"asset": obj.asset.asset_tag})
-        _notify_disposal(obj, request.user)
+        _record_disposal_decision(obj, request.user, old_status)
         return Response(DisposalSerializer(obj).data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsITStaff])

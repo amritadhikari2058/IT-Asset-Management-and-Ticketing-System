@@ -926,8 +926,39 @@ def deactivate_account(user, actor):
         user.is_active = False
         user.save(update_fields=["is_active"])
         revoke_user_tokens(user, actor)
+        # Reclaim the offboarding employee's active software license
+        # allocations so a deactivated employee does not keep seats assigned.
+        # `revoke_allocations_for_offboarding` is defensive per-allocation and
+        # never raises for a single bad allocation, so a licensing hiccup
+        # cannot block account deactivation. The result is captured and surfaced
+        # in logs + audit so failed reclamation is observable and recoverable.
+        reclamation = {
+            "revoked_count": 0,
+            "total_active": 0,
+            "results": [],
+        }
+        try:
+            from licensing.services import (
+                revoke_allocations_for_offboarding as _revoke_for_offboarding)
+            reclamation = _revoke_for_offboarding(
+                user=user, actor=actor,
+                reason="Account deactivated during offboarding")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "License reclamation raised while deactivating user %s (%s): %s",
+                user.pk, getattr(user, "employee_id", ""), exc,
+                exc_info=True)
+        if reclamation.get("total_active"):
+            logger.info(
+                "License reclamation for deactivated user %s (%s): %s of %s "
+                "allocation(s) revoked.",
+                user.pk, getattr(user, "employee_id", ""),
+                reclamation.get("revoked_count"),
+                reclamation.get("total_active"),
+            )
         log_action(actor=actor, action="deactivate", instance=user,
-                   reason="Lifecycle offboarding")
+                   reason="Lifecycle offboarding",
+                   details={"license_reclamation": reclamation})
     return user
 
 

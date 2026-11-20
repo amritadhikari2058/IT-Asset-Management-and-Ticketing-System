@@ -691,6 +691,16 @@ class Assignment(models.Model):
                     | models.Q(assigned_to__isnull=False)
                 ),
             ),
+            # Database-level backstop for the "one open assignment per asset"
+            # rule. Python clean() enforces it too, but only the constraint
+            # makes it airtight under concurrent writes (two transactions can
+            # both pass clean() before either commits). Applies only to
+            # unreturned assignments; closed assignments may accumulate.
+            models.UniqueConstraint(
+                fields=["asset"],
+                condition=models.Q(returned_at__isnull=True),
+                name="one_open_assignment_per_asset",
+            ),
         ]
 
     def clean(self):

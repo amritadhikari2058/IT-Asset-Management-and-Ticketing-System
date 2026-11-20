@@ -93,7 +93,11 @@ DATASETS = {
             "id", "asset_tag", "employee_id", "employee_email", "assigned_at",
             "returned_at", "note", "assigned_by_email",
         ],
-        "permission": "authenticated",
+        #: Assignment rows carry employee_email and assigned_by_email (PII of
+        #: both employees and staff). Exporting them must require IT staff,
+        #: matching the ``employees`` dataset which protects the same data;
+        #: authenticated employees must not bulk-harvest contact details.
+        "permission": "it_staff",
     },
     "tickets": {
         "title": "Tickets",
@@ -247,6 +251,19 @@ def asset_rows(user=None, filters=None):
 
     filters = filters or {}
     qs = Asset.objects.all()
+    # Row-level scope for employees mirrors the asset list API
+    # (_asset_visible_qs): employees may only see assets assigned to them or
+    # in their home department. IT staff see everything. This prevents the
+    # export from bypassing list-level IDOR/scope restrictions so an
+    # employee cannot enumerate every asset (incl. purchase cost) via export.
+    if user is not None and getattr(user, "is_authenticated", False):
+        role = getattr(user, "role", "")
+        if (role not in ("system_admin", "it_manager", "it_support")
+                and not getattr(user, "is_superuser", False)):
+            filt = Q(assigned_to=user)
+            if getattr(user, "home_department_id", None):
+                filt |= Q(department_id=user.home_department_id)
+            qs = qs.filter(filt)
     q = (filters.get("q") or "").strip()
     if q:
         qs = qs.filter(

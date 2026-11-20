@@ -17,15 +17,16 @@ Privacy / security rules enforced here:
 import logging
 import os
 import re
-import uuid
 
 from django.conf import settings
 from django.core.files.base import ContentFile
+from django.db import transaction
 from django.utils import timezone
 
 from accounts.models import User
 from common.models import EmailProcessing
 from common.notifications import TICKET_REPLY_CATEGORY
+from tickets.attachment_storage import delete_stored_file, store_upload
 from tickets.models import Ticket, TicketCategory, TicketNote
 
 logger = logging.getLogger(__name__)
@@ -227,18 +228,69 @@ def _resolve_reply_ticket(in_reply_to, subject):
 
 
 def _save_attachment(ticket, att):
-    """Persist a validated inbound attachment onto a ticket."""
+    """Persist a validated inbound attachment onto a ticket.
+
+    Uses the same storage helpers as the API upload path
+    (``tickets.attachment_storage``): the file is written through the model's
+    configured storage first so the exact stored object name is known, then
+    the database row is created inside its own transaction. If the row cannot
+    be written, exactly the object this call stored is removed again and the
+    original exception is re-raised.
+
+    Inbound processing has no outer transaction (``_process_message`` runs in
+    autocommit and marks the ``EmailProcessing`` row only after this point),
+    so a failure here must never leave a file no row references, and must
+    never delete a file belonging to an existing attachment or an earlier
+    message. The raised exception keeps the existing retry semantics: the
+    caller records the message as failed and the poller leaves it unseen.
+
+    Deduplication: if an attachment with the same ``original_filename`` and
+    ``content_hash`` already exists for this ``ticket``, the existing row is
+    returned rather than creating a duplicate. This ensures:
+    - Two attachments with identical filenames but different contents are both
+      saved (different content_hash).
+    - A retry of an already-saved attachment does not create another row or file
+      (same content_hash matches the existing row).
+    - Previously saved attachments are not overwritten.
+    - Missing attachments are still processed on retry.
+    """
+    import hashlib
+    from django.db import transaction as db_transaction
     from tickets.models import TicketAttachment
     filename = (att.get("filename") or "").strip()
     data = att.get("data") or b""
-    ext = os.path.splitext(filename)[1].lower().lstrip(".") \
-        if filename else ""
-    name = f"ticket_attachments/{uuid.uuid4().hex}" + \
-        (f".{ext[:10]}" if ext else "")
-    attachment = TicketAttachment(
-        ticket=ticket, file=ContentFile(data, name=name),
-        original_filename=filename[:255])
-    attachment.save()
+
+    # Compute a stable content hash for deduplication.
+    # Two attachments with the same filename but different content will have
+    # different hashes; the same attachment on retry will have the same hash.
+    content_hash = hashlib.sha256(data).hexdigest()
+
+    # Check for existing attachment with same filename and content hash for this
+    # ticket (dedup on retry after partial failure). Two distinct emails may
+    # have attachments with the same filename but different content; we only
+    # dedup within one ticket.
+    existing = TicketAttachment.objects.filter(
+        ticket=ticket, original_filename=filename[:255], content_hash=content_hash
+    ).first()
+    if existing is not None:
+        return existing
+
+    stored_name = store_upload(
+        TicketAttachment, ContentFile(data, name=filename or "attachment"))
+    try:
+        with db_transaction.atomic():
+            # ``file`` is the name storage just returned, so Django treats it
+            # as already written and does not store the bytes a second time.
+            attachment = TicketAttachment.objects.create(
+                ticket=ticket, file=stored_name,
+                original_filename=filename[:255],
+                content_hash=content_hash)
+    except Exception:
+        # No row references ``stored_name``: the transaction (or its
+        # savepoint) rolled back. Remove only that object, best effort, then
+        # let the original exception surface unchanged.
+        delete_stored_file(TicketAttachment, stored_name)
+        raise
     return attachment
 
 
@@ -258,12 +310,21 @@ def _process_message(msg_dict, mailbox):
     existing = EmailProcessing.objects.filter(message_id=msg_id).first()
     if existing is not None and existing.status == "processed" \
             and existing.ticket_id:
+        # EmailProcessing already fully processed with a ticket -> reuse it.
         return existing.ticket, False, None
+    ticket = None
     if existing is not None and existing.status != "processed":
         # Failed (or dangling) rows become pending again so retries work.
-        EmailProcessing.objects.filter(pk=existing.pk).update(
-            status="pending", error_details="", ticket=None,
-            processed_at=None)
+        # Preserve the ticket_id so that attachment dedup on retry can find
+        # previously-saved attachments; the outer code will create a new ticket
+        # only if no existing ticket is associated with this processing record.
+        # If a ticket_id is already set, keep it; otherwise set it to None
+        # so a new ticket will be created.
+        update_kwargs = {"status": "pending", "error_details": "",
+                         "processed_at": None}
+        if existing.ticket_id is not None:
+            update_kwargs["ticket_id"] = existing.ticket_id
+        EmailProcessing.objects.filter(pk=existing.pk).update(**update_kwargs)
 
     sender_user = _find_user_by_email(sender_email)
     eligible = bool(sender_user) or bool(
@@ -285,7 +346,14 @@ def _process_message(msg_dict, mailbox):
         return None, False, "Sender not recognized by the support mailbox."
 
     in_reply_to = msg_dict.get("in_reply_to") or ""
-    ticket = None
+    if existing is not None and existing.ticket_id:
+        # Reuse the existing ticket if EmailProcessing already references one.
+        try:
+            ticket = Ticket.objects.get(pk=existing.ticket_id)
+        except Ticket.DoesNotExist:
+            ticket = None
+    else:
+        ticket = None
     if in_reply_to or TICKET_REF_RE.search(subject or ""):
         ticket = _resolve_reply_ticket(in_reply_to, subject)
 

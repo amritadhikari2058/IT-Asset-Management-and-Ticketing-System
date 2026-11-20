@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import Count, F, Q
 from django.utils import timezone
 
 from common.audit import log_action
@@ -38,6 +38,150 @@ from licensing.permissions import is_system_admin, is_it_manager
 # NUMBERING & REFERENCES
 # ==============================================================================
 
+
+
+CONSUMING_ALLOCATION_STATUSES = [
+    "assigned",
+    "active",
+    "reserved",
+]
+
+ACTIVE_ALLOCATED_STATUSES = [
+    "assigned",
+    "active",
+]
+
+
+def reconcile_agreement_entitlements(agreement: LicenseAgreement) -> Dict[str, Any]:
+    """Reconcile one agreement's entitlement against its allocation records.
+
+    Consuming statuses are ``assigned``, ``active``, and ``reserved``.
+    ``suspended``, ``revoked``, and ``expired`` allocations do not consume
+    entitlement and are reported separately for audit purposes.
+
+    Unlimited / non-seat-based agreements return ``None`` for the purchased,
+    available, and utilization values so callers cannot present a misleading
+    percentage.
+    """
+    counts = agreement.allocations.aggregate(
+        active_allocated=Count("pk", filter=Q(status__in=ACTIVE_ALLOCATED_STATUSES)),
+        reserved=Count("pk", filter=Q(status="reserved")),
+        suspended=Count("pk", filter=Q(status="suspended")),
+        released=Count("pk", filter=Q(status__in=("revoked", "released"))),
+        expired=Count("pk", filter=Q(status="expired")),
+    )
+
+    active_allocated = counts["active_allocated"] or 0
+    reserved = counts["reserved"] or 0
+    consuming = active_allocated + reserved
+    suspended = counts["suspended"] or 0
+    released = counts["released"] or 0
+    expired = counts["expired"] or 0
+
+    limit = get_agreement_entitlement_limit(agreement)
+    is_unlimited = agreement.is_unlimited or limit is None
+    calculable = bool(not is_unlimited and limit and limit > 0)
+
+    if is_unlimited:
+        available = None
+        overallocated = 0
+        utilization = None
+        utilization_note = (
+            "Unlimited or non-seat-based entitlement; utilization is not calculated."
+        )
+    else:
+        available = max(0, limit - consuming)
+        overallocated = max(0, consuming - limit)
+        utilization = round((consuming / limit) * 100, 2) if calculable else None
+        utilization_note = (
+            ""
+            if calculable
+            else "Entitlement quantity is missing or zero; utilization cannot be calculated."
+        )
+
+    return {
+        "agreement_id": agreement.pk,
+        "agreement_number": agreement.agreement_number,
+        "product_name": agreement.software_product.name,
+        "vendor": agreement.vendor.name if agreement.vendor else None,
+        "license_model": agreement.license_model,
+        "status": agreement.status,
+        "expiry_date": str(agreement.expiry_date) if agreement.expiry_date else None,
+        "is_unlimited": is_unlimited,
+        "purchased_entitlement_quantity": None if is_unlimited else limit,
+        "active_allocated_quantity": active_allocated,
+        "reserved_quantity": reserved,
+        "consuming_quantity": consuming,
+        "available_quantity": available,
+        "overallocated_quantity": overallocated,
+        "suspended_allocation_quantity": suspended,
+        "released_allocation_quantity": released,
+        "expired_allocation_quantity": expired,
+        "utilization_percent": utilization,
+        "utilization_calculable": calculable,
+        "utilization_note": utilization_note,
+        "open_findings": agreement.compliance_findings.filter(
+            status__in=("open", "acknowledged")
+        ).count(),
+    }
+
+
+
+def get_agreement_entitlement_limit(agreement: LicenseAgreement) -> Optional[int]:
+    """Retrieve the entitlement limit for an agreement.
+
+    Returns the quantity_purchased for non-concurrent models,
+    or concurrent_limit for concurrent models. Returns None if the agreement
+    is unlimited.
+    """
+    if agreement.is_unlimited:
+        return None
+    if agreement.license_model == "concurrent":
+        return agreement.concurrent_limit
+    return agreement.quantity_purchased
+
+
+def reconcile_entitlements_summary(agrs) -> Dict[str, Any]:
+    """Aggregate entitlement metrics across a queryset of LicenseAgreement.
+
+    Uses the same per-agreement calculation as
+    :func:`reconcile_agreement_entitlements` so the summary cannot drift from
+    the detail rows. Unlimited / non-seat-based agreements are excluded from
+    the calculable totals, matching the utilization report.
+    """
+    total_entitlement = 0
+    total_usage = 0
+    total_available = 0
+    overallocated_agreements = 0
+    overallocated_quantity = 0
+    agreement_count = 0
+
+    for agr in agrs:
+        rec = reconcile_agreement_entitlements(agr)
+        agreement_count += 1
+        if not rec["utilization_calculable"]:
+            continue
+        total_entitlement += rec["purchased_entitlement_quantity"]
+        total_usage += rec["consuming_quantity"]
+        total_available += rec["available_quantity"]
+        if rec["overallocated_quantity"]:
+            overallocated_agreements += 1
+            overallocated_quantity += rec["overallocated_quantity"]
+
+    return {
+        "agreement_count": agreement_count,
+        "total_entitlement_quantity": total_entitlement,
+        "current_usage": total_usage,
+        "available_entitlement": total_available,
+        "overallocated_agreements": overallocated_agreements,
+        "overallocated_quantity": overallocated_quantity,
+        "utilization_percent": (
+            round((total_usage / total_entitlement) * 100, 2)
+            if total_entitlement
+            else None
+        ),
+        "utilization_calculable": total_entitlement > 0,
+    }
 def generate_agreement_number() -> str:
     """Generate a concurrency-safe, unique agreement number (LIC-YYYY-NNNNN).
 
@@ -423,6 +567,12 @@ def allocate_license(
             f"Cannot allocate from agreement in '{locked_agreement.status}' status (must be active or expiring)."
         )
 
+    if locked_agreement.expiry_date and locked_agreement.expiry_date < timezone.now().date():
+        raise ValidationError(
+            f"Cannot allocate from expired agreement {locked_agreement.agreement_number} "
+            f"(expired {locked_agreement.expiry_date})."
+        )
+
     product = locked_agreement.software_product
     if not product.can_allocate:
         raise ValidationError(
@@ -440,7 +590,7 @@ def allocate_license(
                 LicenseAllocation.objects.filter(
                     agreement__software_product=product,
                     assigned_user=assigned_user,
-                    status__in=["assigned", "active", "reserved"],
+                    status__in=CONSUMING_ALLOCATION_STATUSES,
                 ).exists()
             )
             if existing_user_alloc:
@@ -458,7 +608,7 @@ def allocate_license(
                 LicenseAllocation.objects.filter(
                     agreement__software_product=product,
                     assigned_asset=assigned_asset,
-                    status__in=["assigned", "active", "reserved"],
+                    status__in=CONSUMING_ALLOCATION_STATUSES,
                 ).exists()
             )
             if existing_asset_alloc:
@@ -485,17 +635,12 @@ def allocate_license(
 
     # Capacity check under row lock
     if not locked_agreement.is_unlimited:
+        capacity_limit = get_agreement_entitlement_limit(locked_agreement)
         active_and_reserved = locked_agreement.allocations.filter(
-            status__in=["assigned", "active", "reserved"]
+            status__in=CONSUMING_ALLOCATION_STATUSES
         ).count()
 
-        capacity_limit = (
-            locked_agreement.concurrent_limit
-            if locked_agreement.license_model == "concurrent"
-            else locked_agreement.quantity_purchased
-        )
-
-        if active_and_reserved >= capacity_limit:
+        if capacity_limit is not None and active_and_reserved >= capacity_limit:
             raise ValidationError(
                 f"Agreement {locked_agreement.agreement_number} has reached maximum capacity "
                 f"({active_and_reserved}/{capacity_limit} allocated/reserved). Over-allocation blocked."
@@ -585,9 +730,15 @@ def revoke_allocation(
     if not reason or not reason.strip():
         raise ValidationError("A revocation reason is required.")
 
+    # Lock order is agreement -> allocation everywhere allocation state changes.
+    # This matches allocate_license and terminate_agreement and avoids a
+    # deadlock cycle with agreement termination.
+    agreement = LicenseAgreement.objects.select_for_update().get(
+        pk=allocation.agreement_id
+    )
+
     locked_alloc = (
         LicenseAllocation.objects.select_for_update()
-        .select_related("agreement", "assigned_user")
         .get(pk=allocation.pk)
     )
 
@@ -606,8 +757,7 @@ def revoke_allocation(
         "status", "revoked_at", "revoked_by", "revocation_reason", "version", "updated_at"
     ])
 
-    # Recalculate agreement counters under row lock
-    agreement = LicenseAgreement.objects.select_for_update().get(pk=locked_alloc.agreement_id)
+    # Recalculate agreement counters under the already-held agreement lock
     agreement.recalculate_counters(save=True)
     evaluate_license_compliance(agreement=agreement, actor=actor)
 
@@ -1143,6 +1293,53 @@ def compute_finding_fingerprint(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+AUTO_RESOLVED_NOTE = "Automatically resolved: condition no longer present."
+
+
+def _append_auto_resolution_note(existing: str) -> str:
+    """Preserve human-authored resolution text and add the engine's result."""
+    existing = (existing or "").strip()
+    if not existing:
+        return AUTO_RESOLVED_NOTE
+    if AUTO_RESOLVED_NOTE in existing:
+        return existing
+    return f"{existing}\n{AUTO_RESOLVED_NOTE}"
+
+
+def _upsert_finding(fingerprint: str, defaults: Dict[str, Any]) -> LicenseComplianceFinding:
+    """Create or refresh a finding without discarding human decisions.
+
+    Acknowledged findings stay acknowledged until the condition is resolved,
+    and false positives are never reopened automatically. Resolved findings
+    are reopened when the condition is detected again.
+    """
+    finding = (
+        LicenseComplianceFinding.objects.filter(fingerprint=fingerprint)
+        .order_by("pk")
+        .first()
+    )
+    if finding is None:
+        return LicenseComplianceFinding.objects.create(
+            fingerprint=fingerprint, **defaults
+        )
+
+    if finding.status in ("acknowledged", "false_positive"):
+        return finding
+
+    for field, value in defaults.items():
+        setattr(finding, field, value)
+    finding.status = "open"
+    finding.resolved_at = None
+    finding.resolved_by = None
+    # Drop only the engine's generated line; keep any human-authored text.
+    finding.resolution_note = "\n".join(
+        line for line in (finding.resolution_note or "").splitlines()
+        if line.strip() != AUTO_RESOLVED_NOTE
+    ).strip()
+    finding.save()
+    return finding
+
+
 def evaluate_license_compliance(
     software_product: Optional[SoftwareProduct] = None,
     agreement: Optional[LicenseAgreement] = None,
@@ -1171,22 +1368,21 @@ def evaluate_license_compliance(
 
     for agr in agr_qs:
         if not agr.is_unlimited:
-            limit = agr.concurrent_limit if agr.license_model == "concurrent" else agr.quantity_purchased
-            active_seats = agr.allocations.filter(status__in=["assigned", "active"]).count()
-            if active_seats > limit:
+            limit = get_agreement_entitlement_limit(agr)
+            consuming_seats = agr.allocations.filter(
+                status__in=CONSUMING_ALLOCATION_STATUSES
+            ).count()
+            if limit is not None and consuming_seats > limit:
                 fp = compute_finding_fingerprint("over_allocated", agreement_id=agr.pk, product_id=agr.software_product_id)
-                fnd, _ = LicenseComplianceFinding.objects.update_or_create(
-                    fingerprint=fp,
-                    defaults={
-                        "finding_type": "over_allocated",
-                        "severity": "critical",
-                        "agreement": agr,
-                        "software_product": agr.software_product,
-                        "status": "open",
-                        "title": f"Over-allocation on agreement {agr.agreement_number}",
-                        "description": f"Active allocations ({active_seats}) exceed purchased seat limit ({limit}).",
-                    },
-                )
+                fnd = _upsert_finding(fp, {
+                    "finding_type": "over_allocated",
+                    "severity": "critical",
+                    "agreement": agr,
+                    "software_product": agr.software_product,
+                    "status": "open",
+                    "title": f"Over-allocation on agreement {agr.agreement_number}",
+                    "description": f"Consuming allocations ({consuming_seats}) exceed entitlement limit ({limit}).",
+                })
                 findings.append(fnd)
 
     # --------------------------------------------------------------------------
@@ -1195,33 +1391,27 @@ def evaluate_license_compliance(
     for agr in agr_qs.filter(expiry_date__isnull=False):
         if agr.expiry_date < today and agr.status not in ("terminated", "retired"):
             fp = compute_finding_fingerprint("expired_agreement", agreement_id=agr.pk, product_id=agr.software_product_id)
-            fnd, _ = LicenseComplianceFinding.objects.update_or_create(
-                fingerprint=fp,
-                defaults={
-                    "finding_type": "expired_agreement",
-                    "severity": "high",
-                    "agreement": agr,
-                    "software_product": agr.software_product,
-                    "status": "open",
-                    "title": f"License agreement {agr.agreement_number} has expired",
-                    "description": f"Agreement expired on {agr.expiry_date}. Associated seats may be non-compliant.",
-                },
-            )
+            fnd = _upsert_finding(fp, {
+                "finding_type": "expired_agreement",
+                "severity": "high",
+                "agreement": agr,
+                "software_product": agr.software_product,
+                "status": "open",
+                "title": f"License agreement {agr.agreement_number} has expired",
+                "description": f"Agreement expired on {agr.expiry_date}. Associated seats may be non-compliant.",
+            })
             findings.append(fnd)
         elif agr.renewal_date and today >= agr.renewal_date and agr.expiry_date >= today:
             fp = compute_finding_fingerprint("expiring_agreement", agreement_id=agr.pk, product_id=agr.software_product_id)
-            fnd, _ = LicenseComplianceFinding.objects.update_or_create(
-                fingerprint=fp,
-                defaults={
-                    "finding_type": "expiring_agreement",
-                    "severity": "medium",
-                    "agreement": agr,
-                    "software_product": agr.software_product,
-                    "status": "open",
-                    "title": f"License agreement {agr.agreement_number} is approaching renewal/expiry",
-                    "description": f"Agreement reaches renewal date {agr.renewal_date} (expires {agr.expiry_date}).",
-                },
-            )
+            fnd = _upsert_finding(fp, {
+                "finding_type": "expiring_agreement",
+                "severity": "medium",
+                "agreement": agr,
+                "software_product": agr.software_product,
+                "status": "open",
+                "title": f"License agreement {agr.agreement_number} is approaching renewal/expiry",
+                "description": f"Agreement reaches renewal date {agr.renewal_date} (expires {agr.expiry_date}).",
+            })
             findings.append(fnd)
 
     # --------------------------------------------------------------------------
@@ -1237,24 +1427,39 @@ def evaluate_license_compliance(
             missing.append("purchased quantity")
         if missing:
             fp = compute_finding_fingerprint("missing_documentation", agreement_id=agr.pk, product_id=agr.software_product_id)
-            fnd, _ = LicenseComplianceFinding.objects.update_or_create(
-                fingerprint=fp,
-                defaults={
-                    "finding_type": "missing_documentation",
-                    "severity": "medium",
+            fnd = _upsert_finding(fp, {
+                "finding_type": "missing_documentation",
+                "severity": "medium",
+                "agreement": agr,
+                "software_product": agr.software_product,
+                "status": "open",
+                "title": f"Missing license information for {agr.agreement_number}",
+                "description": f"Agreement is missing required information: {', '.join(missing)}.",
+            })
+            findings.append(fnd)
+
+        if not agr.is_unlimited:
+            entitlement_limit = get_agreement_entitlement_limit(agr)
+            if not entitlement_limit or entitlement_limit <= 0:
+                fp = compute_finding_fingerprint("missing_entitlement_quantity", agreement_id=agr.pk, product_id=agr.software_product_id)
+                fnd = _upsert_finding(fp, {
+                    "finding_type": "missing_entitlement_quantity",
+                    "severity": "high",
                     "agreement": agr,
                     "software_product": agr.software_product,
                     "status": "open",
-                    "title": f"Missing license information for {agr.agreement_number}",
-                    "description": f"Agreement is missing required information: {', '.join(missing)}.",
-                },
-            )
-            findings.append(fnd)
+                    "title": f"Missing entitlement quantity for {agr.agreement_number}",
+                    "description": (
+                        "Agreement has no positive seat entitlement; capacity checks "
+                        "cannot be evaluated and utilization is not calculable."
+                    ),
+                })
+                findings.append(fnd)
 
     # --------------------------------------------------------------------------
     # 3. Allocations to Inactive Employees or Retired Assets
     # --------------------------------------------------------------------------
-    alloc_qs = LicenseAllocation.objects.filter(status__in=["assigned", "active"]).select_related("assigned_user", "assigned_asset", "agreement__software_product")
+    alloc_qs = LicenseAllocation.objects.filter(status__in=CONSUMING_ALLOCATION_STATUSES).select_related("assigned_user", "assigned_asset", "agreement__software_product")
     if agreement:
         alloc_qs = alloc_qs.filter(agreement=agreement)
     if user:
@@ -1263,25 +1468,73 @@ def evaluate_license_compliance(
         alloc_qs = alloc_qs.filter(assigned_asset=asset)
 
     for alloc in alloc_qs:
+        alloc_agreement = alloc.agreement
+
+        # Allocation still consuming capacity on a terminated agreement
+        if alloc_agreement.status == "terminated":
+            fp = compute_finding_fingerprint(
+                "terminated_agreement_allocation",
+                allocation_id=alloc.pk,
+                agreement_id=alloc_agreement.pk,
+            )
+            fnd = _upsert_finding(fp, {
+                "finding_type": "terminated_agreement_allocation",
+                "severity": "high",
+                "allocation": alloc,
+                "agreement": alloc_agreement,
+                "software_product": alloc_agreement.software_product,
+                "status": "open",
+                "title": f"Allocation on terminated agreement {alloc_agreement.agreement_number}",
+                "description": (
+                    f"Allocation '{alloc.allocation_reference}' is still {alloc.status} "
+                    f"on terminated agreement {alloc_agreement.agreement_number}."
+                ),
+            })
+            findings.append(fnd)
+
+        # Allocation still consuming capacity on an expired agreement
+        elif (
+            alloc_agreement.expiry_date
+            and alloc_agreement.expiry_date < today
+            and alloc_agreement.status not in ("terminated", "retired")
+        ):
+            fp = compute_finding_fingerprint(
+                "expired_agreement_allocation",
+                allocation_id=alloc.pk,
+                agreement_id=alloc_agreement.pk,
+            )
+            fnd = _upsert_finding(fp, {
+                "finding_type": "expired_agreement_allocation",
+                "severity": "high",
+                "allocation": alloc,
+                "agreement": alloc_agreement,
+                "software_product": alloc_agreement.software_product,
+                "status": "open",
+                "title": f"Allocation on expired agreement {alloc_agreement.agreement_number}",
+                "description": (
+                    f"Allocation '{alloc.allocation_reference}' is still {alloc.status} "
+                    f"on agreement {alloc_agreement.agreement_number}, which expired "
+                    f"on {alloc_agreement.expiry_date}."
+                ),
+            })
+            findings.append(fnd)
+
         # Inactive employee check
         if alloc.allocation_type == "user" and alloc.assigned_user:
             u = alloc.assigned_user
             if not u.is_active or getattr(u, "is_deleted", False):
                 fp = compute_finding_fingerprint("allocation_to_inactive_user", allocation_id=alloc.pk, user_id=u.pk)
-                fnd, _ = LicenseComplianceFinding.objects.update_or_create(
-                    fingerprint=fp,
-                    defaults={
-                        "finding_type": "allocation_to_inactive_user",
-                        "severity": "high",
-                        "allocation": alloc,
-                        "agreement": alloc.agreement,
-                        "software_product": alloc.agreement.software_product,
-                        "user": u,
-                        "status": "open",
-                        "title": f"License allocated to inactive employee {u.email}",
-                        "description": f"Employee {u.email} holds active allocation '{alloc.allocation_reference}' but is deactivated.",
-                    },
-                )
+                fnd = _upsert_finding(fp, {
+                    "finding_type": "allocation_to_inactive_user",
+                    "severity": "high",
+                    "allocation": alloc,
+                    "agreement": alloc.agreement,
+                    "software_product": alloc.agreement.software_product,
+                    "user": u,
+                    "status": "open",
+                    "title": f"License allocated to inactive employee {u.email}",
+                    "description": f"Employee {u.email} holds active allocation '{alloc.allocation_reference}' but is deactivated.",
+                })
                 findings.append(fnd)
 
         # Retired asset check
@@ -1289,20 +1542,17 @@ def evaluate_license_compliance(
             a = alloc.assigned_asset
             if a.status in ("retired", "lost", "disposed") or getattr(a, "is_deleted", False):
                 fp = compute_finding_fingerprint("allocation_to_retired_asset", allocation_id=alloc.pk, asset_id=a.pk)
-                fnd, _ = LicenseComplianceFinding.objects.update_or_create(
-                    fingerprint=fp,
-                    defaults={
-                        "finding_type": "allocation_to_retired_asset",
-                        "severity": "medium",
-                        "allocation": alloc,
-                        "agreement": alloc.agreement,
-                        "software_product": alloc.agreement.software_product,
-                        "asset": a,
-                        "status": "open",
-                        "title": f"License allocated to inactive/retired asset {a.asset_tag}",
-                        "description": f"Asset {a.asset_tag} holds active allocation '{alloc.allocation_reference}' but is {a.status}.",
-                    },
-                )
+                fnd = _upsert_finding(fp, {
+                    "finding_type": "allocation_to_retired_asset",
+                    "severity": "medium",
+                    "allocation": alloc,
+                    "agreement": alloc.agreement,
+                    "software_product": alloc.agreement.software_product,
+                    "asset": a,
+                    "status": "open",
+                    "title": f"License allocated to inactive/retired asset {a.asset_tag}",
+                    "description": f"Asset {a.asset_tag} holds active allocation '{alloc.allocation_reference}' but is {a.status}.",
+                })
                 findings.append(fnd)
 
         # Potentially unused allocation (verification gap > 90 days)
@@ -1310,21 +1560,18 @@ def evaluate_license_compliance(
             check_date = alloc.last_verified_at or alloc.assigned_at
             if check_date and check_date < unused_cutoff:
                 fp = compute_finding_fingerprint("unused_license", allocation_id=alloc.pk)
-                fnd, _ = LicenseComplianceFinding.objects.update_or_create(
-                    fingerprint=fp,
-                    defaults={
-                        "finding_type": "unused_license",
-                        "severity": "low",
-                        "allocation": alloc,
-                        "agreement": alloc.agreement,
-                        "software_product": alloc.agreement.software_product,
-                        "user": alloc.assigned_user,
-                        "asset": alloc.assigned_asset,
-                        "status": "open",
-                        "title": f"Allocation {alloc.allocation_reference} verification gap (> {unused_threshold_days} days)",
-                        "description": f"Allocation has not been verified in {unused_threshold_days} days.",
-                    },
-                )
+                fnd = _upsert_finding(fp, {
+                    "finding_type": "unused_license",
+                    "severity": "low",
+                    "allocation": alloc,
+                    "agreement": alloc.agreement,
+                    "software_product": alloc.agreement.software_product,
+                    "user": alloc.assigned_user,
+                    "asset": alloc.assigned_asset,
+                    "status": "open",
+                    "title": f"Allocation {alloc.allocation_reference} verification gap (> {unused_threshold_days} days)",
+                    "description": f"Allocation has not been verified in {unused_threshold_days} days.",
+                })
                 findings.append(fnd)
 
     # --------------------------------------------------------------------------
@@ -1340,36 +1587,70 @@ def evaluate_license_compliance(
         prod = inst.software_product
         if prod.approved_status == "prohibited":
             fp = compute_finding_fingerprint("prohibited_software", installation_id=inst.pk, product_id=prod.pk, asset_id=inst.asset_id)
-            fnd, _ = LicenseComplianceFinding.objects.update_or_create(
-                fingerprint=fp,
-                defaults={
-                    "finding_type": "prohibited_software",
-                    "severity": "critical",
-                    "installation": inst,
-                    "software_product": prod,
-                    "asset": inst.asset,
-                    "status": "open",
-                    "title": f"Prohibited software detected: {prod.name} on {inst.asset.asset_tag}",
-                    "description": f"Product '{prod.name}' is flagged as prohibited but installed on asset {inst.asset.asset_tag}.",
-                },
-            )
+            fnd = _upsert_finding(fp, {
+                "finding_type": "prohibited_software",
+                "severity": "critical",
+                "installation": inst,
+                "software_product": prod,
+                "asset": inst.asset,
+                "status": "open",
+                "title": f"Prohibited software detected: {prod.name} on {inst.asset.asset_tag}",
+                "description": f"Product '{prod.name}' is flagged as prohibited but installed on asset {inst.asset.asset_tag}.",
+            })
             findings.append(fnd)
         elif prod.license_required and not inst.allocation_id:
             fp = compute_finding_fingerprint("unlicensed_installation", installation_id=inst.pk, product_id=prod.pk, asset_id=inst.asset_id)
-            fnd, _ = LicenseComplianceFinding.objects.update_or_create(
-                fingerprint=fp,
-                defaults={
-                    "finding_type": "unlicensed_installation",
-                    "severity": "high",
-                    "installation": inst,
-                    "software_product": prod,
-                    "asset": inst.asset,
-                    "status": "open",
-                    "title": f"Unlicensed installation: {prod.name} on {inst.asset.asset_tag}",
-                    "description": f"Software '{prod.name}' requires a license but has no active license allocation assigned.",
-                },
-            )
+            fnd = _upsert_finding(fp, {
+                "finding_type": "unlicensed_installation",
+                "severity": "high",
+                "installation": inst,
+                "software_product": prod,
+                "asset": inst.asset,
+                "status": "open",
+                "title": f"Unlicensed installation: {prod.name} on {inst.asset.asset_tag}",
+                "description": f"Software '{prod.name}' requires a license but has no active license allocation assigned.",
+            })
             findings.append(fnd)
+
+    # --------------------------------------------------------------------------
+    # 5. Resolve findings whose underlying condition no longer exists
+    # --------------------------------------------------------------------------
+    auto_resolvable_types = (
+        "over_allocated",
+        "expired_agreement",
+        "expiring_agreement",
+        "missing_documentation",
+        "missing_entitlement_quantity",
+        "allocation_to_inactive_user",
+        "allocation_to_retired_asset",
+        "unused_license",
+        "unlicensed_installation",
+        "prohibited_software",
+        "terminated_agreement_allocation",
+        "expired_agreement_allocation",
+    )
+    stale_qs = LicenseComplianceFinding.objects.filter(
+        status__in=("open", "acknowledged"),
+        finding_type__in=auto_resolvable_types,
+    )
+    if agreement:
+        stale_qs = stale_qs.filter(agreement=agreement)
+    if software_product:
+        stale_qs = stale_qs.filter(software_product=software_product)
+    if asset:
+        stale_qs = stale_qs.filter(asset=asset)
+    if user:
+        stale_qs = stale_qs.filter(user=user)
+
+    for stale in stale_qs:
+        if not finding_condition_persists(stale):
+            stale.status = "resolved"
+            stale.resolved_at = timezone.now()
+            stale.resolved_by = actor if getattr(actor, "pk", None) else None
+            stale.resolution_note = _append_auto_resolution_note(stale.resolution_note)
+            stale.save(update_fields=[
+                "status", "resolved_at", "resolved_by", "resolution_note", "updated_at",
+            ])
 
     return findings
 
@@ -1388,17 +1669,19 @@ def finding_condition_persists(finding: LicenseComplianceFinding) -> bool:
         agr = finding.agreement
         if not agr or agr.is_unlimited:
             return False
-        limit = agr.concurrent_limit if agr.license_model == "concurrent" else agr.quantity_purchased
-        active_seats = agr.allocations.filter(status__in=["assigned", "active"]).count()
-        return active_seats > limit
+        limit = get_agreement_entitlement_limit(agr)
+        consuming = agr.allocations.filter(
+            status__in=CONSUMING_ALLOCATION_STATUSES
+        ).count()
+        return bool(limit is not None and consuming > limit)
     if finding.finding_type == "allocation_to_inactive_user" and finding.allocation_id:
         alloc = finding.allocation
         user = alloc.assigned_user if alloc else None
-        return bool(alloc and alloc.status in ("assigned", "active") and user and (not user.is_active or getattr(user, "is_deleted", False)))
+        return bool(alloc and alloc.status in CONSUMING_ALLOCATION_STATUSES and user and (not user.is_active or getattr(user, "is_deleted", False)))
     if finding.finding_type == "allocation_to_retired_asset" and finding.allocation_id:
         alloc = finding.allocation
         asset = alloc.assigned_asset if alloc else None
-        return bool(alloc and alloc.status in ("assigned", "active") and asset and (asset.status in ("retired", "lost", "disposed") or getattr(asset, "is_deleted", False)))
+        return bool(alloc and alloc.status in CONSUMING_ALLOCATION_STATUSES and asset and (asset.status in ("retired", "lost", "disposed") or getattr(asset, "is_deleted", False)))
     if finding.finding_type == "missing_documentation" and finding.agreement_id:
         agr = finding.agreement
         if not agr:
@@ -1410,7 +1693,7 @@ def finding_condition_persists(finding: LicenseComplianceFinding) -> bool:
         return False
     if finding.finding_type == "unused_license" and finding.allocation_id:
         alloc = finding.allocation
-        if not alloc or alloc.status not in ("assigned", "active"):
+        if not alloc or alloc.status not in CONSUMING_ALLOCATION_STATUSES:
             return False
         unused_threshold_days = getattr(settings, "LICENSE_UNUSED_DAYS", 90)
         cutoff = timezone.now() - timezone.timedelta(days=unused_threshold_days)
@@ -1422,6 +1705,31 @@ def finding_condition_persists(finding: LicenseComplianceFinding) -> bool:
     if finding.finding_type == "prohibited_software" and finding.installation_id:
         inst = finding.installation
         return bool(inst and inst.status == "installed" and inst.software_product.approved_status == "prohibited")
+    if finding.finding_type == "missing_entitlement_quantity" and finding.agreement_id:
+        agr = finding.agreement
+        if not agr or agr.is_unlimited:
+            return False
+        limit = get_agreement_entitlement_limit(agr)
+        return not limit or limit <= 0
+    if finding.finding_type == "terminated_agreement_allocation" and finding.allocation_id:
+        alloc = finding.allocation
+        return bool(
+            alloc
+            and alloc.status in CONSUMING_ALLOCATION_STATUSES
+            and alloc.agreement.status == "terminated"
+        )
+    if finding.finding_type == "expired_agreement_allocation" and finding.allocation_id:
+        alloc = finding.allocation
+        agr = alloc.agreement if alloc else None
+        today = timezone.now().date()
+        return bool(
+            alloc
+            and alloc.status in CONSUMING_ALLOCATION_STATUSES
+            and agr
+            and agr.expiry_date
+            and agr.expiry_date < today
+            and agr.status not in ("terminated", "retired")
+        )
     return False
 
 
@@ -1441,10 +1749,12 @@ def remediate_compliance_finding(
     locked = LicenseComplianceFinding.objects.select_for_update().get(pk=finding.pk)
     now = timezone.now()
     note = f"[{now:%Y-%m-%d %H:%M} {getattr(actor, 'email', actor)}] {remediation_note.strip()}"
-    locked.resolution_note = f"{locked.resolution_note}\n{note}".strip() if locked.resolution_note else note
+    # Remediation history lives in its own field: resolution_note is reserved for
+    # resolution metadata and is appended to by automatic re-evaluation.
+    locked.remediation_note = f"{locked.remediation_note}\n{note}".strip() if locked.remediation_note else note
     if locked.status == "open":
         locked.status = "acknowledged"
-    locked.save(update_fields=["status", "resolution_note", "updated_at"])
+    locked.save(update_fields=["status", "remediation_note", "updated_at"])
 
     record_license_history(
         event_type="compliance_changed",
@@ -1612,6 +1922,163 @@ def revoke_allocations_for_offboarding(
 # ==============================================================================
 # APPROVAL CENTER PROVIDER HOOK
 # ==============================================================================
+
+
+
+@transaction.atomic
+def activate_allocation(
+    allocation: LicenseAllocation,
+    actor,
+    reason: str = "",
+) -> LicenseAllocation:
+    """Activate an assigned, reserved, or suspended license allocation.
+
+    Reactivation from ``suspended`` increases entitlement consumption, so the
+    agreement row is locked and capacity is checked before the status change.
+    Activation from ``assigned``/``reserved`` does not increase consumption
+    because those statuses already consume entitlement.
+    """
+    reason = (reason or "").strip() or "Activation reinstated"
+
+    # Lock order is agreement -> allocation everywhere allocation state changes.
+    agreement = LicenseAgreement.objects.select_for_update().get(
+        pk=allocation.agreement_id
+    )
+
+    locked_alloc = (
+        LicenseAllocation.objects.select_for_update()
+        .get(pk=allocation.pk)
+    )
+
+    if locked_alloc.status == "active":
+        raise ValidationError("Allocation is already active.")
+
+    if locked_alloc.status == "revoked":
+        raise ValidationError("Cannot activate a revoked allocation.")
+
+    if locked_alloc.status not in ("assigned", "reserved", "suspended"):
+        raise ValidationError(
+            f"Cannot activate allocation in '{locked_alloc.status}' status."
+        )
+
+    if agreement.status not in ("active", "expiring"):
+        raise ValidationError(
+            f"Cannot activate allocation on agreement in '{agreement.status}' status "
+            f"(must be active or expiring)."
+        )
+
+    if agreement.expiry_date and agreement.expiry_date < timezone.now().date():
+        raise ValidationError(
+            f"Cannot activate allocation on expired agreement {agreement.agreement_number} "
+            f"(expired {agreement.expiry_date})."
+        )
+
+    previous_status = locked_alloc.status
+    increases_consumption = previous_status not in CONSUMING_ALLOCATION_STATUSES
+
+    if increases_consumption and not agreement.is_unlimited:
+        capacity_limit = get_agreement_entitlement_limit(agreement)
+        consuming_count = agreement.allocations.filter(
+            status__in=CONSUMING_ALLOCATION_STATUSES
+        ).count()
+        if capacity_limit is not None and consuming_count + 1 > capacity_limit:
+            raise ValidationError(
+                f"Agreement {agreement.agreement_number} has reached maximum capacity "
+                f"({consuming_count + 1}/{capacity_limit} allocations would be consuming). "
+                f"Cannot reactivate: entitlement would be exceeded."
+            )
+
+    now = timezone.now()
+    locked_alloc.status = "active"
+    locked_alloc.activated_at = now
+    locked_alloc.activation_confirmed_by = actor if getattr(actor, "pk", None) else None
+    locked_alloc.last_verified_at = now
+    locked_alloc.last_verified_by = actor if getattr(actor, "pk", None) else None
+    locked_alloc.version += 1
+    locked_alloc.save(update_fields=[
+        "status", "activated_at", "activation_confirmed_by",
+        "last_verified_at", "last_verified_by", "version", "updated_at",
+    ])
+
+    agreement.recalculate_counters(save=True)
+    evaluate_license_compliance(agreement=agreement, actor=actor)
+
+    record_license_history(
+        event_type="allocation_activated",
+        actor=actor,
+        agreement=agreement,
+        allocation=locked_alloc,
+        previous_status=previous_status,
+        new_status="active",
+        detail={"reason": reason},
+    )
+
+    log_action(
+        actor=actor,
+        action="assignment",
+        instance=locked_alloc,
+        reason=reason,
+        details={"status": "active", "previous_status": previous_status},
+    )
+
+    return locked_alloc
+
+
+@transaction.atomic
+def suspend_allocation(allocation: LicenseAllocation, actor, reason: str = "") -> LicenseAllocation:
+    """Suspend a consuming allocation and restore its capacity."""
+    reason = (reason or "").strip() or "Allocation suspended"
+
+    # Lock order is agreement -> allocation everywhere allocation state changes.
+    agreement = LicenseAgreement.objects.select_for_update().get(
+        pk=allocation.agreement_id
+    )
+
+    locked_alloc = (
+        LicenseAllocation.objects.select_for_update()
+        .get(pk=allocation.pk)
+    )
+
+    if locked_alloc.status == "suspended":
+        raise ValidationError("Allocation is already suspended.")
+
+    if locked_alloc.status == "revoked":
+        raise ValidationError("Cannot suspend a revoked allocation.")
+
+    if locked_alloc.status not in CONSUMING_ALLOCATION_STATUSES:
+        raise ValidationError(
+            f"Cannot suspend allocation in '{locked_alloc.status}' status."
+        )
+
+    previous_status = locked_alloc.status
+
+    locked_alloc.status = "suspended"
+    locked_alloc.version += 1
+    locked_alloc.save(update_fields=["status", "version", "updated_at"])
+
+    agreement.recalculate_counters(save=True)
+    evaluate_license_compliance(agreement=agreement, actor=actor)
+
+    record_license_history(
+        event_type="allocation_suspended",
+        actor=actor,
+        agreement=agreement,
+        allocation=locked_alloc,
+        previous_status=previous_status,
+        new_status="suspended",
+        detail={"reason": reason},
+    )
+
+    log_action(
+        actor=actor,
+        action="assignment",
+        instance=locked_alloc,
+        reason=reason,
+        details={"status": "suspended", "previous_status": previous_status},
+    )
+
+    return locked_alloc
+
 
 class LicenseRenewalApprovalProvider:
     """Approval Center integration provider for pending license renewals."""

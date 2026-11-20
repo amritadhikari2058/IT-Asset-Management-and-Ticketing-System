@@ -88,12 +88,17 @@ from licensing.serializers import (
 )
 from licensing.services import (
     activate_agreement,
+    activate_allocation,
     allocate_license,
     apply_approved_renewal,
     bulk_allocate_licenses,
     bulk_revoke_allocations,
+    CONSUMING_ALLOCATION_STATUSES,
     evaluate_license_compliance,
+    get_agreement_entitlement_limit,
     get_offboarding_allocation_preview,
+    reconcile_agreement_entitlements,
+    reconcile_entitlements_summary,
     recalculate_agreement_capacity,
     record_installation,
     remediate_compliance_finding,
@@ -108,6 +113,7 @@ from licensing.services import (
     revoke_allocations_for_offboarding,
     submit_renewal_request,
     suspend_agreement,
+    suspend_allocation,
     terminate_agreement,
     verify_allocation,
 )
@@ -299,6 +305,11 @@ class LicenseAgreementViewSet(viewsets.ModelViewSet):
 
         return qs.select_related("software_product", "vendor", "department", "owner", "contract_manager")
 
+    def perform_update(self, serializer):
+        agreement = serializer.save()
+        agreement.recalculate_counters(save=True)
+        evaluate_license_compliance(agreement=agreement, actor=self.request.user)
+
     def perform_destroy(self, instance):
         # Prevent deletion if active allocations exist
         active_count = instance.allocations.filter(status__in=["assigned", "active", "reserved"]).count()
@@ -479,16 +490,36 @@ class LicenseAgreementViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def utilization(self, request, pk=None):
         agreement = self.get_object()
-        return Response({
+        rec = reconcile_agreement_entitlements(agreement)
+        payload = {
             "agreement_number": agreement.agreement_number,
             "product": agreement.software_product.name,
+            "vendor": agreement.vendor.name if agreement.vendor else None,
+            "license_model": agreement.license_model,
+            "status": agreement.status,
+            "expiry_date": str(agreement.expiry_date) if agreement.expiry_date else None,
             "is_unlimited": agreement.is_unlimited,
             "quantity_purchased": agreement.quantity_purchased,
             "quantity_allocated": agreement.quantity_allocated,
             "quantity_reserved": agreement.quantity_reserved,
             "quantity_available": agreement.quantity_available,
             "utilization_percent": agreement.utilization_percent,
+            "open_findings": agreement.compliance_findings.filter(status__in=("open", "acknowledged")).count(),
+        }
+        payload.update({
+            "purchased_entitlement_quantity": rec["purchased_entitlement_quantity"],
+            "active_allocated_quantity": rec["active_allocated_quantity"],
+            "consuming_quantity": rec["consuming_quantity"],
+            "available_entitlement_quantity": rec["available_quantity"],
+            "overallocated_quantity": rec["overallocated_quantity"],
+            "suspended_allocation_quantity": rec["suspended_allocation_quantity"],
+            "released_allocation_quantity": rec["released_allocation_quantity"],
+            "expired_allocation_quantity": rec["expired_allocation_quantity"],
+            "reconciled_utilization_percent": rec["utilization_percent"],
+            "utilization_calculable": rec["utilization_calculable"],
+            "utilization_note": rec["utilization_note"],
         })
+        return Response(payload)
 
 
 # ==============================================================================
@@ -642,6 +673,27 @@ class LicenseAllocationViewSet(viewsets.ModelViewSet):
             return EmployeeLicenseAllocationSerializer
         return LicenseAllocationSerializer
 
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "Create allocations through the agreement allocation endpoints so entitlement is enforced."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def update(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "Allocation state changes must use the activate, suspend, release, revoke, or verify actions."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "Allocations cannot be deleted; release or revoke them instead."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
     def get_queryset(self):
         user = self.request.user
         qs = LicenseAllocation.objects.all()
@@ -679,26 +731,22 @@ class LicenseAllocationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def activate(self, request, pk=None):
         alloc = self.get_object()
-        with transaction.atomic():
-            locked = LicenseAllocation.objects.select_for_update().get(pk=alloc.pk)
-            locked.status = "active"
-            locked.activated_at = timezone.now()
-            locked.activation_confirmed_by = request.user
-            locked.last_verified_at = timezone.now()
-            locked.last_verified_by = request.user
-            locked.save(update_fields=["status", "activated_at", "activation_confirmed_by", "last_verified_at", "last_verified_by", "updated_at"])
-            locked.agreement.recalculate_counters(save=True)
-        return Response(LicenseAllocationSerializer(locked, context={"request": request}).data)
+        reason = (request.data.get("reason") or "").strip()
+        try:
+            res = activate_allocation(alloc, request.user, reason=reason)
+            return Response(LicenseAllocationSerializer(res, context={"request": request}).data)
+        except (ValidationError, DjangoValidationError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=["post"])
     def suspend(self, request, pk=None):
         alloc = self.get_object()
-        with transaction.atomic():
-            locked = LicenseAllocation.objects.select_for_update().get(pk=alloc.pk)
-            locked.status = "suspended"
-            locked.save(update_fields=["status", "updated_at"])
-            locked.agreement.recalculate_counters(save=True)
-        return Response(LicenseAllocationSerializer(locked, context={"request": request}).data)
+        reason = (request.data.get("reason") or "").strip()
+        try:
+            res = suspend_allocation(alloc, request.user, reason=reason)
+            return Response(LicenseAllocationSerializer(res, context={"request": request}).data)
+        except (ValidationError, DjangoValidationError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):
@@ -1068,55 +1116,115 @@ def licensing_dashboard(request):
     d60 = now + timezone.timedelta(days=60)
     d90 = now + timezone.timedelta(days=90)
 
-    # Scoped Querysets
+    # Filters (agreement status, vendor, license metric, expiry period)
+    status_filter = (request.query_params.get("status") or "").strip()
+    vendor_filter = (request.query_params.get("vendor") or "").strip()
+    license_type_filter = (request.query_params.get("license_type") or request.query_params.get("license_model") or "").strip()
+    expiry_filter = (request.query_params.get("expiry") or request.query_params.get("expiry_period") or "").strip()
+
     agr_qs = LicenseAgreement.objects.filter(is_deleted=False)
+    if status_filter:
+        agr_qs = agr_qs.filter(status=status_filter)
+    if vendor_filter:
+        if vendor_filter.isdigit():
+            agr_qs = agr_qs.filter(vendor_id=int(vendor_filter))
+        else:
+            agr_qs = agr_qs.filter(vendor__name__icontains=vendor_filter)
+    if license_type_filter:
+        agr_qs = agr_qs.filter(license_model=license_type_filter)
+    if expiry_filter == "expired":
+        agr_qs = agr_qs.filter(expiry_date__lt=now).exclude(status__in=("terminated", "retired"))
+    elif expiry_filter == "none":
+        agr_qs = agr_qs.filter(expiry_date__isnull=True)
+    elif expiry_filter.isdigit():
+        days = int(expiry_filter)
+        agr_qs = agr_qs.filter(expiry_date__gte=now, expiry_date__lte=now + timezone.timedelta(days=days))
+
+    agr_qs = agr_qs.annotate(
+        active_allocated_count=Count("allocations", filter=Q(allocations__status__in=("assigned", "active")), distinct=True),
+        reserved_count=Count("allocations", filter=Q(allocations__status="reserved"), distinct=True),
+        consuming_count=Count("allocations", filter=Q(allocations__status__in=CONSUMING_ALLOCATION_STATUSES), distinct=True),
+        suspended_count=Count("allocations", filter=Q(allocations__status="suspended"), distinct=True),
+        released_count=Count("allocations", filter=Q(allocations__status__in=("revoked", "released")), distinct=True),
+        expired_allocation_count=Count("allocations", filter=Q(allocations__status="expired"), distinct=True),
+        open_findings_count=Count(
+            "compliance_findings",
+            filter=Q(compliance_findings__status__in=("open", "acknowledged")),
+            distinct=True,
+        ),
+    )
+    agreements = list(
+        agr_qs.select_related("software_product", "vendor").order_by("agreement_number")
+    )
+
     prod_qs = SoftwareProduct.objects.filter(is_deleted=False)
-    alloc_qs = LicenseAllocation.objects.all()
-    inst_qs = SoftwareInstallation.objects.all()
-    finding_qs = LicenseComplianceFinding.objects.filter(status="open")
+    finding_qs = LicenseComplianceFinding.objects.filter(status__in=("open", "acknowledged"))
+    filtered = bool(status_filter or vendor_filter or license_type_filter or expiry_filter)
+    if filtered:
+        finding_qs = finding_qs.filter(agreement_id__in=[a.pk for a in agreements])
 
-    # Counts
     active_products = prod_qs.filter(is_active=True).count()
-    active_agreements = agr_qs.filter(status="active").count()
-    expired_agreements = agr_qs.filter(expiry_date__lt=now).exclude(status__in=["terminated", "retired"]).count()
+    total_agreements = len(agreements)
+    active_agreements = sum(1 for a in agreements if a.status == "active")
+    expired_agreements = sum(
+        1 for a in agreements if a.status == "expired" or (a.expiry_date and a.expiry_date < now and a.status not in ("terminated", "retired"))
+    )
+    expiring_30 = sum(1 for a in agreements if a.expiry_date and now <= a.expiry_date <= d30)
+    expiring_60 = sum(1 for a in agreements if a.expiry_date and d30 < a.expiry_date <= d60)
+    expiring_90 = sum(1 for a in agreements if a.expiry_date and d60 < a.expiry_date <= d90)
 
-    expiring_30 = agr_qs.filter(expiry_date__gte=now, expiry_date__lte=d30).count()
-    expiring_60 = agr_qs.filter(expiry_date__gt=d30, expiry_date__lte=d60).count()
-    expiring_90 = agr_qs.filter(expiry_date__gt=d60, expiry_date__lte=d90).count()
+    total_entitlement = 0
+    active_usage = 0
+    available_entitlement = 0
+    overallocated_agreements = 0
+    overallocated_quantity = 0
+    attention_ids = set()
+    for agr in agreements:
+        limit = get_agreement_entitlement_limit(agr)
+        active_usage += agr.consuming_count
+        if not agr.is_unlimited and limit is not None and limit > 0:
+            total_entitlement += limit
+            available_entitlement += max(0, limit - agr.consuming_count)
+            if agr.consuming_count > limit:
+                overallocated_agreements += 1
+                overallocated_quantity += agr.consuming_count - limit
+                attention_ids.add(agr.pk)
+        elif not agr.is_unlimited:
+            attention_ids.add(agr.pk)
+        if agr.status in ("expired", "terminated") or (agr.expiry_date and agr.expiry_date <= d90):
+            attention_ids.add(agr.pk)
+        if agr.open_findings_count:
+            attention_ids.add(agr.pk)
 
-    total_purchased = agr_qs.filter(status="active").aggregate(s=Sum("quantity_purchased"))["s"] or 0
-    total_allocated = alloc_qs.filter(status__in=["assigned", "active"]).count()
-    available_seats = max(0, total_purchased - total_allocated)
-    utilization_pct = round((total_allocated / total_purchased * 100), 2) if total_purchased > 0 else 0.0
+    utilization_pct = round((active_usage / total_entitlement) * 100, 2) if total_entitlement > 0 else None
 
-    pending_renewals_count = LicenseRenewal.objects.filter(status="pending_review").count()
+    renewals_qs = LicenseRenewal.objects.filter(status="pending_review")
+    if filtered:
+        renewals_qs = renewals_qs.filter(agreement_id__in=[a.pk for a in agreements])
+    pending_renewals_count = renewals_qs.count()
 
-    # Expiring agreements list (within 90 days)
     expiring_agreements_list = [
         {
             "id": a.pk,
             "agreement_number": a.agreement_number,
             "product_name": a.software_product.name,
             "expiry_date": str(a.expiry_date) if a.expiry_date else None,
+            "days_remaining": (a.expiry_date - now).days if a.expiry_date else None,
         }
-        for a in agr_qs.filter(expiry_date__gte=now, expiry_date__lte=d90).select_related("software_product")[:20]
-    ]
+        for a in agreements
+        if a.expiry_date and now <= a.expiry_date <= d90
+    ][:20]
     pending_renewals_list = [
-        {
-            "id": r.pk,
-            "agreement_number": r.agreement.agreement_number,
-            "status": r.status,
-        }
-        for r in LicenseRenewal.objects.filter(status="pending_review").select_related("agreement")[:20]
+        {"id": r.pk, "agreement_number": r.agreement.agreement_number, "status": r.status}
+        for r in renewals_qs.select_related("agreement")[:20]
     ]
 
     # Financial breakdown grouped by currency (NO fake cross-currency conversion)
     cost_by_currency = {}
-    if not is_employee(user):
-        currencies = agr_qs.filter(status="active").values_list("currency", flat=True).distinct()
-        for c in currencies:
-            total = agr_qs.filter(status="active", currency=c).aggregate(s=Sum("total_cost"))["s"] or Decimal("0.00")
-            cost_by_currency[c] = str(total)
+    currencies = {a.currency for a in agreements if a.status == "active"}
+    for c in currencies:
+        total = sum((a.total_cost for a in agreements if a.status == "active" and a.currency == c), Decimal("0.00"))
+        cost_by_currency[c] = str(total)
 
     # Compliance highlights
     unused_findings = finding_qs.filter(finding_type="unused_license").count()
@@ -1124,14 +1232,13 @@ def licensing_dashboard(request):
     prohibited_sw = finding_qs.filter(finding_type="prohibited_software").count()
     inactive_user_allocs = finding_qs.filter(finding_type="allocation_to_inactive_user").count()
 
-    # Recent findings
     recent_findings = LicenseComplianceFindingSerializer(
-        finding_qs.order_by("-detected_at")[:5],
+        finding_qs.select_related("agreement", "software_product").order_by("-detected_at")[:5],
         many=True,
     ).data
 
     return Response({
-        "active_products": active_products,
+        "total_agreements": total_agreements,
         "active_agreements": active_agreements,
         "expired_agreements": expired_agreements,
         "expired": expired_agreements,
@@ -1141,13 +1248,23 @@ def licensing_dashboard(request):
         "expiring_30": expiring_30,
         "expiring_60": expiring_60,
         "expiring_90": expiring_90,
-        "total_purchased_seats": total_purchased,
-        "total_allocated_seats": total_allocated,
-        "purchased_seats": total_purchased,
-        "allocated_seats": total_allocated,
-        "available_seats": available_seats,
-        "utilization_percent": utilization_pct,
+        "approaching_expiry_agreements": expiring_30 + expiring_60 + expiring_90,
+        "total_entitlement_quantity": total_entitlement,
+        "active_usage": active_usage,
+        "available_entitlements": available_entitlement,
+        "overallocated_agreements": overallocated_agreements,
+        "overallocated_quantity": overallocated_quantity,
+        "agreements_requiring_attention": len(attention_ids),
         "pending_renewals": pending_renewals_count,
+        "open_compliance_findings": finding_qs.count(),
+        "utilization_calculable": total_entitlement > 0,
+        "total_purchased_seats": total_entitlement,
+        "total_allocated_seats": active_usage,
+        "purchased_seats": total_entitlement,
+        "allocated_seats": active_usage,
+        "available_seats": available_entitlement,
+        "utilization_percent": utilization_pct,
+        "active_products": active_products,
         "annual_cost_by_currency": cost_by_currency,
         "annual_recurring_cost_by_currency": cost_by_currency,
         "findings": {
@@ -1162,6 +1279,12 @@ def licensing_dashboard(request):
         "recent_findings": recent_findings,
         "expiring_agreements": expiring_agreements_list,
         "pending_renewals_list": pending_renewals_list,
+        "filters": {
+            "status": status_filter or None,
+            "vendor": vendor_filter or None,
+            "license_type": license_type_filter or None,
+            "expiry": expiry_filter or None,
+        },
     })
 
 
@@ -1234,31 +1357,159 @@ def utilization_report(request):
     if is_employee(user):
         return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
 
-    agrs = LicenseAgreement.objects.filter(is_deleted=False).select_related("software_product")
+    now = timezone.now().date()
+    status_filter = (request.query_params.get("status") or "").strip()
+    vendor_filter = (request.query_params.get("vendor") or "").strip()
+    license_type_filter = (request.query_params.get("license_type") or request.query_params.get("license_model") or "").strip()
+    expiry_filter = (request.query_params.get("expiry") or request.query_params.get("expiry_period") or "").strip()
+    overallocated_only = (request.query_params.get("overallocated") or "").lower() in ("1", "true", "yes")
+
+    agrs = LicenseAgreement.objects.filter(is_deleted=False)
+    if status_filter:
+        agrs = agrs.filter(status=status_filter)
+    if vendor_filter:
+        if vendor_filter.isdigit():
+            agrs = agrs.filter(vendor_id=int(vendor_filter))
+        else:
+            agrs = agrs.filter(vendor__name__icontains=vendor_filter)
+    if license_type_filter:
+        agrs = agrs.filter(license_model=license_type_filter)
+    if expiry_filter == "expired":
+        agrs = agrs.filter(expiry_date__lt=now).exclude(status__in=("terminated", "retired"))
+    elif expiry_filter == "none":
+        agrs = agrs.filter(expiry_date__isnull=True)
+    elif expiry_filter.isdigit():
+        days = int(expiry_filter)
+        agrs = agrs.filter(expiry_date__gte=now, expiry_date__lte=now + timezone.timedelta(days=days))
+
+    agrs = agrs.select_related("software_product", "vendor").annotate(
+        active_allocated_count=Count("allocations", filter=Q(allocations__status__in=("assigned", "active")), distinct=True),
+        reserved_count=Count("allocations", filter=Q(allocations__status="reserved"), distinct=True),
+        consuming_count=Count("allocations", filter=Q(allocations__status__in=CONSUMING_ALLOCATION_STATUSES), distinct=True),
+        suspended_count=Count("allocations", filter=Q(allocations__status="suspended"), distinct=True),
+        released_count=Count("allocations", filter=Q(allocations__status__in=("revoked", "released")), distinct=True),
+        expired_allocation_count=Count("allocations", filter=Q(allocations__status="expired"), distinct=True),
+        open_findings_count=Count(
+            "compliance_findings",
+            filter=Q(compliance_findings__status__in=("open", "acknowledged")),
+            distinct=True,
+        ),
+    ).order_by("agreement_number")
+
     rows = []
+    total_entitlement = 0
+    total_usage = 0
+    total_available = 0
+    overallocated_agreements = 0
 
     for agr in agrs:
+        limit = get_agreement_entitlement_limit(agr)
+        is_unlimited = agr.is_unlimited or limit is None
+        usage = agr.consuming_count
+        available = None if is_unlimited else max(0, limit - usage)
+        overallocated = 0 if is_unlimited else max(0, usage - limit)
+        calculable = bool(not is_unlimited and limit and limit > 0)
+        utilization = round((usage / limit) * 100, 2) if calculable else None
+        if calculable:
+            note = ""
+        elif is_unlimited:
+            note = "Unlimited or non-seat-based entitlement; utilization is not calculated."
+        else:
+            note = "Entitlement quantity is missing or zero; utilization cannot be calculated."
+
+        if overallocated_only and not overallocated:
+            continue
+
+        if calculable:
+            total_entitlement += limit
+            total_usage += usage
+            total_available += available
+            if overallocated:
+                overallocated_agreements += 1
+
         cost_per_seat = None
-        if not agr.is_unlimited and agr.quantity_allocated > 0 and agr.total_cost > 0:
-            cost_per_seat = str(round(agr.total_cost / agr.quantity_allocated, 2))
+        if calculable and usage > 0 and agr.total_cost > 0:
+            cost_per_seat = str(round(agr.total_cost / usage, 2))
 
         rows.append({
+            "id": agr.pk,
+            "agreement_name": agr.agreement_number,
             "agreement_number": agr.agreement_number,
             "product_name": agr.software_product.name,
+            "vendor": agr.vendor.name if agr.vendor else None,
+            "vendor_id": agr.vendor_id,
+            "license_metric": agr.license_model,
             "license_model": agr.license_model,
-            "is_unlimited": agr.is_unlimited,
-            "quantity_purchased": agr.quantity_purchased if not agr.is_unlimited else None,
-            "quantity_allocated": agr.quantity_allocated,
-            "quantity_reserved": agr.quantity_reserved,
-            "quantity_available": agr.quantity_available,
-            "utilization_percent": agr.utilization_percent,
+            "agreement_type": agr.agreement_type,
+            "is_unlimited": is_unlimited,
+            "purchased_entitlement": None if is_unlimited else limit,
+            "quantity_purchased": None if is_unlimited else limit,
+            "current_usage": usage,
+            "quantity_allocated": agr.active_allocated_count,
+            "quantity_reserved": agr.reserved_count,
+            "available_entitlement": available,
+            "quantity_available": available,
+            "overallocated_quantity": overallocated,
+            "is_overallocated": overallocated > 0,
+            "suspended_quantity": agr.suspended_count,
+            "released_quantity": agr.released_count,
+            "expired_allocation_quantity": agr.expired_allocation_count,
+            "utilization_percent": utilization,
+            "utilization_calculable": calculable,
+            "utilization_note": note,
             "cost_per_allocated_seat": cost_per_seat,
             "currency": agr.currency,
             "status": agr.status,
             "expiry_date": str(agr.expiry_date) if agr.expiry_date else None,
+            "renewal_date": str(agr.renewal_date) if agr.renewal_date else None,
+            "open_findings": agr.open_findings_count,
         })
 
-    return Response({"count": len(rows), "results": rows})
+    return Response({
+        "count": len(rows),
+        "summary": {
+            "total_entitlement_quantity": total_entitlement,
+            "current_usage": total_usage,
+            "available_entitlement": total_available,
+            "overallocated_agreements": overallocated_agreements,
+            "utilization_percent": round((total_usage / total_entitlement) * 100, 2) if total_entitlement else None,
+        },
+        "filters": {
+            "status": status_filter or None,
+            "vendor": vendor_filter or None,
+            "license_type": license_type_filter or None,
+            "expiry": expiry_filter or None,
+            "overallocated": overallocated_only,
+        },
+        "results": rows,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def entitlement_reconciliation(request):
+    """Agreement-level entitlement reconciliation summary."""
+    user = request.user
+    if is_employee(user):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+
+    agrs = LicenseAgreement.objects.filter(is_deleted=False)
+    status_filter = (request.query_params.get("status") or "").strip()
+    vendor_filter = (request.query_params.get("vendor") or "").strip()
+    license_type_filter = (request.query_params.get("license_type") or request.query_params.get("license_model") or "").strip()
+    if status_filter:
+        agrs = agrs.filter(status=status_filter)
+    if vendor_filter:
+        if vendor_filter.isdigit():
+            agrs = agrs.filter(vendor_id=int(vendor_filter))
+        else:
+            agrs = agrs.filter(vendor__name__icontains=vendor_filter)
+    if license_type_filter:
+        agrs = agrs.filter(license_model=license_type_filter)
+
+    summary = reconcile_entitlements_summary(agrs)
+    rows = [reconcile_agreement_entitlements(agr) for agr in agrs.select_related("software_product")]
+    return Response({"summary": summary, "count": len(rows), "results": rows})
 
 
 @api_view(["GET"])

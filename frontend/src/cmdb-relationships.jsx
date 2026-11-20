@@ -400,6 +400,9 @@ export function CiRelationshipsPage({ id: idProp, match }) {
     }
   };
 
+  if (role === 'employee') {
+    return <div className="error-summary" role="alert">Employees have no CMDB relationship access.</div>;
+  }
   if (loading && !ci) return <div className="panel panel-pad"><LoadingRows n={6} /></div>;
 
   const table = (rows, direction) => (

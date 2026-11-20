@@ -72,6 +72,17 @@ function ErrorState({ message, onRetry }) {
  */
 export function KnowledgeBase() {
   const { isStaff, isManagerOrAdmin } = useAuth();
+  // Page-size preference persisted in localStorage; fall back to DRF default 20.
+  const [pageSize, setPageSize] = useState(() => {
+    if (typeof window === 'undefined') return 20;
+    try {
+      const saved = window.localStorage.getItem('itdesk.pageSize');
+      return saved ? Number(saved) : 20;
+    } catch {
+      return 20;
+    }
+  });
+  const [page, setPage] = useState(1);
   const [items, setItems] = useState([]);
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
@@ -151,6 +162,8 @@ export function KnowledgeBase() {
     for (const k of ['q', 'status']) {
       if (merged[k] !== '' && merged[k] != null) p.set(k, merged[k]);
     }
+    p.set('page', page);
+    p.set('page_size', pageSize);
     const ord = orderingParam(sortOverride);
     if (ord) p.set('ordering', ord);
     const qs = p.toString();
@@ -180,6 +193,8 @@ export function KnowledgeBase() {
     for (const k of ['q', 'status']) {
       if (merged[k] !== '' && merged[k] != null) p.set(k, merged[k]);
     }
+    p.set('page', page);
+    p.set('page_size', pageSize);
     const ord = orderingParam();
     if (ord) p.set('ordering', ord);
     const qs = p.toString();
@@ -279,7 +294,14 @@ export function KnowledgeBase() {
   };
 
   useEffect(() => { loadRefData(); loadPendingCount(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { loadUrl('/assets/knowledge-base/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    loadUrl(`/assets/knowledge-base/?page=${page}&page_size=${pageSize}`);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset to page 1 when page size changes
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize]);
 
   const filtersActive = () => !!(f.q || f.status);
 
@@ -411,6 +433,7 @@ export function KnowledgeBase() {
             ) : (
               <p className="muted">Table hidden.</p>
             )}
+            <PageSizeSelector value={pageSize} onChange={setPageSize} />
             <Pager count={count} hasNext={!!next} hasPrev={!!previous} busy={loading} onPrev={() => previous && loadUrl(previous)} onNext={() => next && loadUrl(next)} />
           </>)}
       </div>

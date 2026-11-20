@@ -39,7 +39,7 @@ function LicenseInstallationsPage() {
     <div className="license-installations-page">
       <PageHeader title="Software Installations" />
       {error && <div className="alert alert-danger">{error}</div>}
-      <DataTable columns={columns} rows={items} keyOf="id" loading={loading} emptyTitle="No installations found" />
+      <DataTable columns={columns} rows={items} keyOf={(r) => r.id} loading={loading} emptyTitle="No installations found" />
       {count !== null && <Pager count={count} hasNext={!!next} hasPrev={!!previous} busy={loading} onPrev={() => previous && loadUrl(previous)} onNext={() => next && loadUrl(next)} />}
     </div>
   );

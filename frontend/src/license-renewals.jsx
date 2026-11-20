@@ -71,7 +71,7 @@ function LicenseRenewalsPage() {
         <Field label="Status" required={false}><select className="input" value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}><option value="">All</option>{Object.entries(RENEWAL_STATUS_LABELS).map(([k,v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
       </div>
       {error && <div className="alert alert-danger">{error}</div>}
-      <DataTable columns={columns} rows={items} keyOf="id" loading={loading} emptyTitle="No renewals found" />
+      <DataTable columns={columns} rows={items} keyOf={(r) => r.id} loading={loading} emptyTitle="No renewals found" />
       {count !== null && <Pager count={count} hasNext={!!next} hasPrev={!!previous} busy={loading} onPrev={() => previous && loadUrl(previous)} onNext={() => next && loadUrl(next)} />}
     </div>
   );

@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Badge, LoadingRows, PageHeader, Panel, PanelPad } from '../../components';
 import {
-  fiveWhys, getRCA, linkedAssets, linkedCIs, linkedProducts,
+  fiveWhys, getRCA, linkedAssets, linkedCIs, linkedKBs, linkedProducts,
   linkedServices, linkedTickets, listEvidence, listExceptions, listTasks,
   listValidations, listWorkarounds, problemDetail, problemHistory, problemReadiness,
-  rootCauseFactors,
+  rootCauseFactors, createKbLink, deleteKbLink,
 } from '../../services/problem-management';
 
 function Section({ title, state, children }) {
@@ -42,6 +42,12 @@ export function ProblemDetail({ problemId: problemIdProp }) {
   const [error, setError] = useState('');
   const [sections, setSections] = useState({});
   const [rca, setRca] = useState(null);
+  const [kbForm, setKbForm] = useState({
+    article: '', relation_type: 'reference', relevance: 'medium', note: '',
+  });
+  const [kbAdding, setKbAdding] = useState(false);
+  const [kbRemoving, setKbRemoving] = useState(new Set());
+  const [kbMessage, setKbMessage] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -74,6 +80,7 @@ export function ProblemDetail({ problemId: problemIdProp }) {
       ['assets', () => linkedAssets(problemId)],
       ['services', () => linkedServices(problemId)],
       ['products', () => linkedProducts(problemId)],
+      ['kbs', () => linkedKBs(problemId)],
     ];
     loaders.forEach(([key, fn]) => {
       Promise.resolve()
@@ -93,6 +100,40 @@ export function ProblemDetail({ problemId: problemIdProp }) {
       .catch(() => { if (active) setRca(null); });
     return () => { active = false; };
   }, [problem?.root_cause_analysis]);
+
+  const handleAddKbLink = async (e) => {
+    e.preventDefault();
+    if (!problemId) return;
+    setKbAdding(true);
+    setKbMessage('');
+    try {
+      await createKbLink({ problem: Number(problemId), ...kbForm });
+      setKbForm({ article: '', relation_type: 'reference', relevance: 'medium', note: '' });
+      setKbMessage('Article linked.');
+      const data = await linkedKBs(problemId);
+      setSections((s) => ({ ...s, kbs: { ok: true, data } }));
+    } catch (err) {
+      setKbMessage(err?.message || 'Failed to link article.');
+    } finally {
+      setKbAdding(false);
+    }
+  };
+
+  const handleRemoveKbLink = async (linkId) => {
+    if (!problemId) return;
+    setKbRemoving((s) => new Set([...s, linkId]));
+    setKbMessage('');
+    try {
+      await deleteKbLink(linkId);
+      const data = await linkedKBs(problemId);
+      setSections((s) => ({ ...s, kbs: { ok: true, data } }));
+      setKbMessage('Link removed.');
+    } catch (err) {
+      setKbMessage(err?.message || 'Failed to remove link.');
+    } finally {
+      setKbRemoving((s) => { const n = new Set(s); n.delete(linkId); return n; });
+    }
+  };
 
   if (loading) return <LoadingRows n={6} />;
   if (error) return <div className="error-summary" role="alert">{error}</div>;
@@ -202,7 +243,79 @@ export function ProblemDetail({ problemId: problemIdProp }) {
         <p>Assets: {listOf(sections.assets?.data).length}</p>
         <p>Services: {listOf(sections.services?.data).length}</p>
         <p>Software products: {listOf(sections.products?.data).length}</p>
+        <p>KB articles: {listOf(sections.kbs?.data).length}</p>
         <p className="muted">Linked Changes are not supported by the backend.</p>
+      </Section>
+
+      <Section title="Linked Knowledge-Base Articles">
+        <form onSubmit={handleAddKbLink} className="kb-add-form">
+          <label htmlFor="kb-article">Article (ID or slug)</label>
+          <input
+            id="kb-article"
+            value={kbForm.article}
+            onChange={(e) => setKbForm((f) => ({ ...f, article: e.target.value }))}
+            placeholder="e.g. vpn-reset"
+            disabled={kbAdding}
+          />
+          <label htmlFor="kb-relation">Relation</label>
+          <select
+            id="kb-relation"
+            value={kbForm.relation_type}
+            onChange={(e) => setKbForm((f) => ({ ...f, relation_type: e.target.value }))}
+            disabled={kbAdding}
+          >
+            <option value="reference">Reference</option>
+            <option value="workaround_source">Workaround Source</option>
+            <option value="root_cause_reference">Root-Cause Reference</option>
+            <option value="known_error_reference">Known-Error Reference</option>
+            <option value="procedure">Procedure</option>
+            <option value="other">Other</option>
+          </select>
+          <label htmlFor="kb-relevance">Relevance</label>
+          <select
+            id="kb-relevance"
+            value={kbForm.relevance}
+            onChange={(e) => setKbForm((f) => ({ ...f, relevance: e.target.value }))}
+            disabled={kbAdding}
+          >
+            <option value="confirmed">Confirmed</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="candidate">Candidate</option>
+          </select>
+          <label htmlFor="kb-note">Note</label>
+          <input
+            id="kb-note"
+            value={kbForm.note}
+            onChange={(e) => setKbForm((f) => ({ ...f, note: e.target.value }))}
+            disabled={kbAdding}
+          />
+          <button type="submit" disabled={kbAdding || !kbForm.article}>
+            {kbAdding ? 'Linking…' : 'Link article'}
+          </button>
+        </form>
+        {kbMessage && <p className={kbMessage.startsWith('Failed') ? 'error' : 'success'}>{kbMessage}</p>}
+        {sections.kbs?.ok === false
+          ? <p className="muted">Unable to load linked articles.</p>
+          : listOf(sections.kbs?.data).length === 0
+            ? <p className="muted">No KB articles linked.</p>
+            : listOf(sections.kbs?.data).map((a) => (
+                <div key={a.id} className="kb-link-row">
+                  <span>{a.article_title || a.article}</span>
+                  <Badge kind="status-warning" value={a.article_status} />
+                  <span>{a.relation_type}</span>
+                  <span>{a.relevance}</span>
+                  {a.note && <span>{a.note}</span>}
+                  <button
+                    onClick={() => handleRemoveKbLink(a.id)}
+                    disabled={kbRemoving.has(a.id)}
+                    className="btn btn-sm btn-danger"
+                  >
+                    {kbRemoving.has(a.id) ? 'Removing…' : 'Remove'}
+                  </button>
+                </div>
+              ))}
       </Section>
 
       <Section title="Permissions">

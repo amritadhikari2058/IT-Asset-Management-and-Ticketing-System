@@ -23,6 +23,8 @@ from changes.models import (
     PostImplementationReview,
     ChangeTicketLink,
     ChangeKnowledgeLink,
+    BlackoutPeriod,
+    ChangeSchedulingException,
 )
 from tickets.serializers import TicketLinkSerializer
 from accounts.serializers import UserSerializer  # may not exist; fallback below
@@ -604,3 +606,57 @@ class ChangeReadinessSerializer(serializers.Serializer):
     ready = serializers.BooleanField()
     blockers = serializers.ListField(child=serializers.CharField(), required=False)
 
+
+# ---------------------------------------------------------------------------
+# Blackout Period serializers
+# ---------------------------------------------------------------------------
+
+
+class BlackoutPeriodSerializer(serializers.ModelSerializer):
+    """Serializer for BlackoutPeriod model."""
+
+    class Meta:
+        model = BlackoutPeriod
+        fields = [
+            "id", "code", "name", "period_type", "start_at", "end_at",
+            "description", "status", "scope_department", "scope_service",
+            "created_by", "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "created_by", "created_at", "updated_at"]
+
+    def validate(self, data):
+        """Validate that end time is after start time."""
+        if data.get("start_at") and data.get("end_at") and data["start_at"] >= data["end_at"]:
+            raise serializers.ValidationError({"end_at": "End time must be after start time."})
+        return data
+
+
+# ---------------------------------------------------------------------------
+# Scheduling Exception serializers
+# ---------------------------------------------------------------------------
+
+
+class ChangeSchedulingExceptionSerializer(serializers.ModelSerializer):
+    """Serializer for ChangeSchedulingException model."""
+
+    requesting_user_email = serializers.CharField(
+        source="requesting_user.email", read_only=True
+    )
+    decided_by_email = serializers.CharField(
+        source="decided_by.email", read_only=True, allow_null=True
+    )
+
+    class Meta:
+        model = ChangeSchedulingException
+        fields = [
+            "id", "change", "blackout_period", "maintenance_window",
+            "justification", "requesting_user", "requesting_user_email",
+            "decided_by", "decided_by_email", "decision_timestamp",
+            "status", "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "created_by", "created_at", "updated_at", "requesting_user", "decided_by", "decision_timestamp"]
+
+    def validate(self, data):
+        """Validate exception constraints."""
+        # decided_by is populated by the view on approve/reject.
+        return data

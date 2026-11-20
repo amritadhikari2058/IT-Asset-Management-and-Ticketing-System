@@ -70,21 +70,21 @@ export function ChangeDashboard() {
     return <div className="mt-3"><p className="text-danger">Error: {error.global ?? 'Unknown error'}</p></div>;
   }
 
-  const KPICard = ({ label, value, href }) => (
+  const KPICard = ({ label, value, href, variant }) => (
     <Col sm={6} md={4} lg={3} className="mb-3">
-      <Card className="h-100">
-        <Card.Body>
-          <Card.Subtitle className="text-muted" style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+      <Card className={`h-100${variant ? ' border-' + variant : ''}`}>
+        <div className="card-body">
+          <h6 className="card-subtitle mb-2 text-muted" style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
             {label}
-          </Card.Subtitle>
-          <Card.Title style={{ fontSize: '2rem', fontWeight: 'bold' }}>
+          </h6>
+          <div className="card-title" style={{ fontSize: '2rem', fontWeight: 'bold' }}>
             {value}
-          </Card.Title>
-        </Card.Body>
+          </div>
+        </div>
         {href && (
-          <Card.Footer>
+          <div className="card-footer">
             <a href={href} className="btn btn-sm btn-primary">View Details</a>
-          </Card.Footer>
+          </div>
         )}
       </Card>
     </Col>

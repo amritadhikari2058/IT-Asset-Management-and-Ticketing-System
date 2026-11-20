@@ -1,12 +1,15 @@
 ﻿"""Asset API tests: bulk safety (assignment guard), bulk assignment."""
+import threading
 from django.db import IntegrityError, connection, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.models import Department, User
 from accounts.tests import auth, make_users
 from assets.models import (
     Asset, AssetAttachment, AssetCategory, AssetHistory, Assignment,
+    Disposal, Maintenance,
 )
 from common.models import AuditLog, Notification
 
@@ -1461,3 +1464,433 @@ class AssetCategoryEditTests(TestCase):
         self.assertEqual(res.status_code, 403)
         self.acat.refresh_from_db()
         self.assertEqual(self.acat.name, "Laptop")
+
+
+class AssetWorkflowAuthorizationTests(TestCase):
+    """Custom actions must not let non-IT users mutate asset workflows.
+
+    PERMISSIONS.md grants employees read-only access to asset records and no
+    access to return / maintenance / disposal actions; only IT staff may
+    change assignment, maintenance, or disposal state. The frontend hiding
+    these controls is UX only — the backend is the control boundary.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        self.colleague = User.objects.create_user(
+            username="c@x", email="c@x", employee_id="C1",
+            password="pw12345678", role="employee",
+            home_department=self.dep)
+        self.support = User.objects.create_user(
+            username="s@x", email="s@x", employee_id="S1",
+            password="pw12345678", role="it_support",
+            home_department=self.dep)
+
+    def test_employee_cannot_return_department_asset(self):
+        asset = Asset.objects.create(
+            asset_tag="RET-1", name="laptop", category=self.acat,
+            status="assigned", assigned_to=self.colleague,
+            department=self.dep)
+        auth(self.c, self.emp)
+        res = self.c.post(f"/api/assets/{asset.pk}/return_asset/", {},
+                          format="json")
+        self.assertEqual(res.status_code, 403)
+        asset.refresh_from_db()
+        self.assertEqual(asset.status, "assigned")
+        self.assertEqual(asset.assigned_to_id, self.colleague.pk)
+
+    def test_employee_cannot_mark_maintenance_overdue(self):
+        asset = Asset.objects.create(
+            asset_tag="MNT-1", name="laptop", category=self.acat,
+            status="assigned", assigned_to=self.emp, department=self.dep)
+        maint = Maintenance.objects.create(
+            asset=asset, title="Fan check", maintenance_type="preventive",
+            status="scheduled", scheduled_date=timezone.now())
+        auth(self.c, self.emp)
+        res = self.c.post(
+            f"/api/assets/maintenance/{maint.pk}/mark_overdue/", {},
+            format="json")
+        self.assertEqual(res.status_code, 403)
+        maint.refresh_from_db()
+        self.assertEqual(maint.status, "scheduled")
+
+    def test_it_support_cannot_approve_disposal_via_update(self):
+        asset = Asset.objects.create(
+            asset_tag="DSP-1", name="printer", category=self.acat)
+        disposal = Disposal.objects.create(
+            asset=asset, disposal_reason="end of life",
+            disposal_method="recycled", approval_status="pending",
+            created_by=self.mgr)
+        auth(self.c, self.support)
+        res = self.c.patch(f"/api/assets/disposals/{disposal.pk}/",
+                           {"approval_status": "approved"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        disposal.refresh_from_db()
+        self.assertEqual(disposal.approval_status, "pending")
+        self.assertIsNone(disposal.approver_id)
+        self.assertIsNone(disposal.approved_at)
+
+    def test_disposal_cannot_be_completed_by_patching_date(self):
+        asset = Asset.objects.create(
+            asset_tag="DSP-2", name="printer", category=self.acat)
+        disposal = Disposal.objects.create(
+            asset=asset, disposal_reason="end of life",
+            disposal_method="recycled", approval_status="pending",
+            created_by=self.mgr)
+        auth(self.c, self.mgr)
+        res = self.c.patch(
+            f"/api/assets/disposals/{disposal.pk}/",
+            {"disposal_date": timezone.now().isoformat()}, format="json")
+        self.assertEqual(res.status_code, 400)
+        disposal.refresh_from_db()
+        asset.refresh_from_db()
+        self.assertIsNone(disposal.disposal_date)
+        self.assertFalse(disposal.is_completed)
+        self.assertNotEqual(asset.status, "disposed")
+
+    def test_it_support_cannot_create_approved_disposal(self):
+        asset = Asset.objects.create(
+            asset_tag="DSP-4", name="printer", category=self.acat)
+        auth(self.c, self.support)
+        res = self.c.post("/api/assets/disposals/", {
+            "asset": asset.pk, "disposal_reason": "end of life",
+            "disposal_method": "recycled",
+            "approval_status": "approved"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.assertFalse(Disposal.objects.filter(asset=asset).exists())
+
+    def test_disposal_cannot_be_created_completed(self):
+        asset = Asset.objects.create(
+            asset_tag="DSP-5", name="printer", category=self.acat)
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/assets/disposals/", {
+            "asset": asset.pk, "disposal_reason": "end of life",
+            "disposal_method": "recycled",
+            "disposal_date": timezone.now().isoformat()}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(Disposal.objects.filter(asset=asset).exists())
+        asset.refresh_from_db()
+        self.assertNotEqual(asset.status, "disposed")
+
+    def test_manager_can_still_approve_disposal_via_update(self):
+        asset = Asset.objects.create(
+            asset_tag="DSP-3", name="printer", category=self.acat)
+        disposal = Disposal.objects.create(
+            asset=asset, disposal_reason="end of life",
+            disposal_method="recycled", approval_status="pending",
+            created_by=self.mgr)
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/assets/disposals/{disposal.pk}/",
+                           {"approval_status": "approved"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        disposal.refresh_from_db()
+        self.assertEqual(disposal.approval_status, "approved")
+        self.assertEqual(disposal.approver_id, self.mgr.pk)
+
+
+class DisposalWorkflowConsistencyTests(TestCase):
+    """Generic PATCH must produce the same decision trail as the actions.
+
+    PATCH approval is an existing API contract (integration_tests.py uses it),
+    so it stays supported; it must nevertheless match approve()/reject() for
+    approver metadata, asset history, audit, notifications, and validation.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+
+    def _make(self, tag, **extra):
+        asset = Asset.objects.create(
+            asset_tag=tag, name="old laptop", category=self.acat)
+        return Disposal.objects.create(
+            asset=asset, disposal_reason="end of life",
+            disposal_method="recycled", responsible_person=self.emp,
+            created_by=self.mgr, **extra)
+
+    def test_patch_approval_matches_approve_action(self):
+        patched = self._make("CMP-1")
+        actioned = self._make("CMP-2")
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/assets/disposals/{patched.pk}/",
+                           {"approval_status": "approved"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        res = self.c.post(f"/api/assets/disposals/{actioned.pk}/approve/")
+        self.assertEqual(res.status_code, 200, res.data)
+        for d in (patched, actioned):
+            d.refresh_from_db()
+            self.assertEqual(d.approval_status, "approved")
+            self.assertEqual(d.approver_id, self.mgr.pk)
+            self.assertIsNotNone(d.approved_at)
+            self.assertTrue(d.asset.history.filter(action="approved").exists())
+            self.assertTrue(AuditLog.objects.filter(
+                entity_type="assets.disposal", object_id=str(d.pk),
+                action="approve").exists())
+            self.assertTrue(Notification.objects.filter(
+                recipient=self.emp, object_id=str(d.pk)).exists())
+        # A decision recorded through PATCH is not a generic "update".
+        self.assertFalse(AuditLog.objects.filter(
+            entity_type="assets.disposal", object_id=str(patched.pk),
+            action="update").exists())
+
+    def test_patch_rejection_matches_reject_action(self):
+        patched = self._make("CMP-3")
+        actioned = self._make("CMP-4")
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/assets/disposals/{patched.pk}/",
+                           {"approval_status": "rejected"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        res = self.c.post(f"/api/assets/disposals/{actioned.pk}/reject/")
+        self.assertEqual(res.status_code, 200, res.data)
+        for d in (patched, actioned):
+            d.refresh_from_db()
+            self.assertEqual(d.approval_status, "rejected")
+            self.assertEqual(d.approver_id, self.mgr.pk)
+            self.assertIsNone(d.approved_at)
+            self.assertTrue(d.asset.history.filter(action="rejected").exists())
+            self.assertTrue(AuditLog.objects.filter(
+                entity_type="assets.disposal", object_id=str(d.pk),
+                action="reject").exists())
+
+    def test_patch_cannot_rewrite_completed_decision(self):
+        d = self._make("CMP-5", approval_status="approved",
+                       approver=self.mgr, disposal_date=timezone.now())
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/assets/disposals/{d.pk}/",
+                           {"approval_status": "rejected"}, format="json")
+        self.assertEqual(res.status_code, 400, res.data)
+        d.refresh_from_db()
+        self.assertEqual(d.approval_status, "approved")
+        self.assertTrue(d.is_completed)
+
+    def test_patch_back_to_pending_clears_approval_metadata(self):
+        d = self._make("CMP-6", approval_status="approved",
+                       approver=self.mgr, approved_at=timezone.now())
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/assets/disposals/{d.pk}/",
+                           {"approval_status": "pending"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        d.refresh_from_db()
+        self.assertEqual(d.approval_status, "pending")
+        self.assertIsNone(d.approver_id)
+        self.assertIsNone(d.approved_at)
+        self.assertTrue(d.asset.history.filter(action="pending").exists())
+
+    def test_cannot_repoint_approved_disposal_to_another_asset(self):
+        d = self._make("CMP-7", approval_status="approved",
+                       approver=self.mgr)
+        other = Asset.objects.create(
+            asset_tag="CMP-8", name="other", category=self.acat)
+        original_asset_id = d.asset_id
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/assets/disposals/{d.pk}/",
+                           {"asset": other.pk}, format="json")
+        self.assertEqual(res.status_code, 400, res.data)
+        d.refresh_from_db()
+        self.assertEqual(d.asset_id, original_asset_id)
+        self.assertNotEqual(d.asset_id, other.pk)
+        # Editing the asset while the disposal is still pending is allowed.
+        pending = self._make("CMP-9")
+        res = self.c.patch(f"/api/assets/disposals/{pending.pk}/",
+                           {"asset": other.pk}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def test_manager_created_approved_disposal_records_decision_trail(self):
+        asset = Asset.objects.create(
+            asset_tag="CMP-10", name="old laptop", category=self.acat)
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/assets/disposals/", {
+            "asset": asset.pk, "disposal_reason": "end of life",
+            "disposal_method": "recycled",
+            "approval_status": "approved"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        d = Disposal.objects.get(pk=res.data["id"])
+        self.assertEqual(d.approver_id, self.mgr.pk)
+        self.assertIsNotNone(d.approved_at)
+        self.assertTrue(d.asset.history.filter(action="approved").exists())
+        self.assertTrue(AuditLog.objects.filter(
+            entity_type="assets.disposal", object_id=str(d.pk),
+            action="approve").exists())
+
+
+class AssetAssignmentConcurrencyTests(TransactionTestCase):
+    """Genuine concurrent assignment/return/retire/disposal tests.
+
+    Each worker runs on its own database connection (Django connections are
+    thread-local) and workers start simultaneously via a threading.Barrier.
+    SQLite serializes all writers with a database-wide lock, so these tests
+    only prove row-lock correctness on PostgreSQL; on SQLite they exercise
+    the same code paths but cannot expose true concurrent write races.
+    """
+
+    reset_sequences = True
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.acat = AssetCategory.objects.create(name="Laptop")
+        self.e2 = User.objects.create_user(
+            username="e2@x", email="e2@example.com", employee_id="E2",
+            password="pw12345678", home_department=self.dep)
+
+    def _open_count(self, asset):
+        return Assignment.objects.filter(
+            asset=asset, returned_at__isnull=True).count()
+
+    def _run_concurrent(self, fn_a, fn_b, barrier_timeout=10):
+        """Run two API functions concurrently, synchronized at start.
+
+        Each function receives a fresh authenticated APIClient. Returns
+        the two HTTP status codes (sorted).
+        """
+        results = {}
+        barrier = threading.Barrier(2, timeout=barrier_timeout)
+
+        def worker(fn, client, key):
+            try:
+                barrier.wait()
+                res = fn(client)
+                results[key] = res.status_code
+            except Exception as exc:  # noqa: BLE001
+                results[key] = f"EXC:{type(exc).__name__}:{exc}"
+
+        client_a = APIClient()
+        auth(client_a, self.mgr)
+        client_b = APIClient()
+        auth(client_b, self.mgr)
+
+        t1 = threading.Thread(target=worker, args=(fn_a, client_a, "a"))
+        t2 = threading.Thread(target=worker, args=(fn_b, client_b, "b"))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        return sorted(v for v in results.values() if isinstance(v, int)), results
+
+    def test_concurrent_assign_same_asset(self):
+        """Two simultaneous assigns to same asset: exactly one succeeds."""
+        asset = Asset.objects.create(
+            asset_tag="CONC-1", name="conc1", category=self.acat)
+
+        codes, results = self._run_concurrent(
+            lambda c: c.post(f"/api/assets/{asset.pk}/assign/",
+                             {"assigned_to": self.emp.pk, "note": "c"},
+                             format="json"),
+            lambda c: c.post(f"/api/assets/{asset.pk}/assign/",
+                             {"assigned_to": self.e2.pk, "note": "c"},
+                             format="json"))
+
+        self.assertEqual(
+            codes, [200, 400],
+            f"Expected one 200 and one 400, got {codes}: {results}")
+        asset.refresh_from_db()
+        self.assertEqual(self._open_count(asset), 1)
+        self.assertIsNotNone(asset.assigned_to_id)
+        self.assertEqual(asset.status, "assigned")
+
+    def test_concurrent_assign_and_return(self):
+        """Simultaneous return and re-assign: serialized, at most one open."""
+        asset = Asset.objects.create(
+            asset_tag="CONC-2", name="conc2", category=self.acat,
+            status="assigned", assigned_to=self.emp)
+
+        codes, results = self._run_concurrent(
+            lambda c: c.post(f"/api/assets/{asset.pk}/return_asset/",
+                             {}, format="json"),
+            lambda c: c.post(f"/api/assets/{asset.pk}/assign/",
+                             {"assigned_to": self.e2.pk, "note": "c"},
+                             format="json"))
+
+        self.assertEqual(len(codes), 2,
+                         f"Both workers should complete, got {codes}: {results}")
+        asset.refresh_from_db()
+        # At most one open assignment; if assigned, holder agrees.
+        self.assertLessEqual(self._open_count(asset), 1)
+        if asset.assigned_to_id:
+            self.assertEqual(asset.status, "assigned")
+            open_a = Assignment.objects.filter(
+                asset=asset, returned_at__isnull=True).first()
+            self.assertIsNotNone(open_a)
+            self.assertEqual(open_a.assigned_to_id, asset.assigned_to_id)
+        else:
+            self.assertEqual(asset.status, "available")
+
+    def test_concurrent_assign_and_bulk_assign(self):
+        """Simultaneous single assign and bulk assign on same asset."""
+        asset = Asset.objects.create(
+            asset_tag="CONC-3", name="conc3", category=self.acat)
+
+        codes, results = self._run_concurrent(
+            lambda c: c.post(f"/api/assets/{asset.pk}/assign/",
+                             {"assigned_to": self.emp.pk, "note": "c"},
+                             format="json"),
+            lambda c: c.post("/api/assets/bulk_assign/",
+                             {"assignments": [
+                                 {"asset_tag": asset.asset_tag,
+                                  "employee_id": self.e2.employee_id}],
+                              "preview": False, "confirm": True},
+                             format="json"))
+
+        self.assertEqual(len(codes), 2,
+                         f"Both workers should complete, got {codes}: {results}")
+        asset.refresh_from_db()
+        self.assertLessEqual(self._open_count(asset), 1)
+
+    def test_concurrent_assign_and_retire(self):
+        """Simultaneous assign and retire: at most one open assignment."""
+        asset = Asset.objects.create(
+            asset_tag="CONC-4", name="conc4", category=self.acat)
+
+        codes, results = self._run_concurrent(
+            lambda c: c.post(f"/api/assets/{asset.pk}/assign/",
+                             {"assigned_to": self.emp.pk, "note": "c"},
+                             format="json"),
+            lambda c: c.post(f"/api/assets/{asset.pk}/retire/", {},
+                             format="json"))
+
+        self.assertEqual(len(codes), 2,
+                         f"Both workers should complete, got {codes}: {results}")
+        asset.refresh_from_db()
+        self.assertLessEqual(self._open_count(asset), 1)
+        # Asset status must agree with assignment state.
+        if self._open_count(asset) == 1:
+            self.assertEqual(asset.status, "assigned")
+            self.assertIsNotNone(asset.assigned_to_id)
+        else:
+            self.assertIn(asset.status, ("available", "retired"))
+            self.assertIsNone(asset.assigned_to_id)
+
+    def test_concurrent_assign_and_complete_disposal(self):
+        """Simultaneous assign and disposal completion: at most one open."""
+        asset = Asset.objects.create(
+            asset_tag="CONC-5", name="conc5", category=self.acat)
+        disposal = Disposal.objects.create(
+            asset=asset, disposal_reason="end of life",
+            disposal_method="recycled", responsible_person=self.emp,
+            created_by=self.mgr, approval_status="approved",
+            approver=self.mgr)
+
+        codes, results = self._run_concurrent(
+            lambda c: c.post(f"/api/assets/{asset.pk}/assign/",
+                             {"assigned_to": self.emp.pk, "note": "c"},
+                             format="json"),
+            lambda c: c.post(
+                f"/api/assets/disposals/{disposal.pk}/complete/", {},
+                format="json"))
+
+        self.assertEqual(len(codes), 2,
+                         f"Both workers should complete, got {codes}: {results}")
+        asset.refresh_from_db()
+        self.assertLessEqual(self._open_count(asset), 1)
+        # Asset status must agree with assignment state.
+        if self._open_count(asset) == 1:
+            self.assertEqual(asset.status, "assigned")
+            self.assertIsNotNone(asset.assigned_to_id)
+        else:
+            self.assertIn(asset.status, ("available", "disposed"))
+            self.assertIsNone(asset.assigned_to_id)
+
+

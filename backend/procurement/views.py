@@ -16,16 +16,18 @@ from rest_framework.response import Response
 
 from accounts.models import User
 from assets.models import Asset, AssetCategory
+from assets.serializers import AssetSerializer
 from common.attachment_security import (
     add_download_security_headers, safe_content_disposition_filename,
 )
 from common.audit import log_action
 from common.models import Notification
-from inventory.models import StockMovement
+from inventory.models import StockItem, StockMovement
 from .models import (
     ProcurementSetting, PurchaseRequest, PurchaseRequestItem, PurchaseQuotation,
     PurchaseOrder, PurchaseOrderItem, GoodsReceipt, GoodsReceiptItem,
     ProcurementHistory, ProcurementAttachment, ProcurementAssetReceiptItem,
+    ProcurementIdempotencyKey,
     SupplierInvoice, SupplierInvoiceLine, InvoiceMatchResult, InvoiceException,
     VendorReturn, VendorReturnLine, VendorCreditNote, VendorCreditNoteLine,
     ProcurementFinancialHistory, derive_discrepancy_status,
@@ -1042,6 +1044,65 @@ class PurchaseOrderItemViewSet(viewsets.ModelViewSet):
             qs = qs.filter(purchase_order_id=po_id)
         return qs
 
+    def _parent_editable(self, po):
+        return po.status in ("draft", "pending_approval", "rejected")
+
+    def perform_create(self, serializer):
+        po = serializer.validated_data.get("purchase_order")
+        if po is None:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"purchase_order": "Purchase order is required."})
+        if not self._parent_editable(po):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"purchase_order": "Items can only be added to draft, pending approval, or rejected orders."})
+        if not is_manager_or_admin(self.request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Forbidden")
+        with transaction.atomic():
+            item = serializer.save()
+            self._recalculate_po_total(item.purchase_order)
+
+    def perform_update(self, serializer):
+        item = self.get_object()
+        if not self._parent_editable(item.purchase_order):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"detail": "Items can only be edited on draft, pending approval, or rejected orders."})
+        if not is_manager_or_admin(self.request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Forbidden")
+        with transaction.atomic():
+            updated = serializer.save()
+            self._recalculate_po_total(updated.purchase_order)
+
+    def perform_destroy(self, instance):
+        if not self._parent_editable(instance.purchase_order):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"detail": "Items can only be removed from draft, pending approval, or rejected orders."})
+        if not is_manager_or_admin(self.request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Forbidden")
+        with transaction.atomic():
+            po = instance.purchase_order
+            instance.delete()
+            self._recalculate_po_total(po)
+
+    @staticmethod
+    def _recalculate_po_total(po):
+        from decimal import Decimal
+        lines = list(po.items.all())
+        subtotal = Decimal("0")
+        tax = Decimal("0")
+        discount = Decimal("0")
+        shipping = Decimal("0")
+        for line in lines:
+            subtotal += Decimal(str((line.quantity or 0) * (line.unit_price or 0)))
+            tax += Decimal(str(line.tax or 0))
+            discount += Decimal(str(line.discount or 0))
+        po.subtotal = subtotal
+        po.tax = tax
+        po.discount = discount
+        po.save(update_fields=["subtotal", "tax", "discount", "total", "updated_at"])
+
 
 # ---------------------------------------------------------------------------
 # Goods receipts
@@ -1116,6 +1177,85 @@ class GoodsReceiptViewSet(viewsets.ModelViewSet):
                        reason="goods receipt created")
             recalculate_po_status(gr.purchase_order)
 
+    def create(self, request, *args, **kwargs):
+        """Idempotent receipt creation.
+
+        An ``Idempotency-Key`` header makes repeat submissions replay the first
+        successful response instead of creating a duplicate receipt. The key row
+        is locked before the write so concurrent same-key requests are
+        serialized and never produce two receipts.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        po = serializer.validated_data.get("purchase_order")
+        idempotency_key = request.META.get("HTTP_IDEMPOTENCY_KEY")
+
+        key_row = None
+        if idempotency_key:
+            try:
+                with transaction.atomic():
+                    key_row, created = ProcurementIdempotencyKey.objects.select_for_update().get_or_create(
+                        key=idempotency_key,
+                        defaults={
+                            "purchase_order": po,
+                            "received_by": request.user,
+                            "response_status": status.HTTP_201_CREATED,
+                            "response_payload": {},
+                        },
+                    )
+                    if not created:
+                        if (key_row.purchase_order_id != (po.pk if po else None)
+                                or key_row.received_by_id != request.user.pk):
+                            return Response(
+                                {"detail": "This idempotency key was already used "
+                                           "for a different request."},
+                                status=status.HTTP_409_CONFLICT,
+                            )
+                        if key_row.response_payload:
+                            return Response(
+                                key_row.response_payload,
+                                status=key_row.response_status,
+                                headers={"X-Idempotency-Replayed": "true"},
+                            )
+                        return Response(
+                            {"detail": "Receipt creation is in progress; retry shortly."},
+                            status=status.HTTP_409_CONFLICT,
+                        )
+            except Exception:
+                key_row = None
+
+        try:
+            self.perform_create(serializer)
+        except Exception:
+            if key_row is not None:
+                key_row.delete()
+            raise
+
+        gr = serializer.instance
+        response_data = self.get_serializer(gr).data
+        headers = self.get_success_headers(serializer.data)
+        response = Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
+
+        if key_row is not None:
+            ProcurementIdempotencyKey.objects.filter(pk=key_row.pk).update(
+                response_status=status.HTTP_201_CREATED,
+                response_payload=response_data,
+            )
+        return response
+
+    def update(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "Posted goods receipts are read-only and cannot be modified."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "Posted goods receipts cannot be deleted."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
 
 class GoodsReceiptItemViewSet(viewsets.ModelViewSet):
     queryset = GoodsReceiptItem.objects.all()
@@ -1159,6 +1299,15 @@ class GoodsReceiptItemViewSet(viewsets.ModelViewSet):
                 pk=serializer.validated_data["purchase_order_item"].pk)
             received = serializer.validated_data.get(
                 "quantity_received", 0) or 0
+            rejected = serializer.validated_data.get(
+                "quantity_rejected", 0) or 0
+            damaged = serializer.validated_data.get(
+                "quantity_damaged", 0) or 0
+            if received <= 0 and rejected <= 0 and damaged <= 0:
+                from rest_framework.exceptions import ValidationError
+                raise ValidationError({
+                    "quantity_received": "Receipt quantity must be greater than zero.",
+                })
             booked = (line.received_qty or 0) + (line.rejected_qty or 0) + (line.damaged_qty or 0)
             remaining = max(0, (line.quantity or 0) - booked)
             if received > remaining:
@@ -1174,17 +1323,27 @@ class GoodsReceiptItemViewSet(viewsets.ModelViewSet):
                 - (arrival.quantity_rejected or 0)
                 - (arrival.quantity_damaged or 0),
             )
-            line.received_qty = (line.received_qty or 0) + accepted
-            line.rejected_qty = (line.rejected_qty or 0) + (arrival.quantity_rejected or 0)
-            line.damaged_qty = (line.damaged_qty or 0) + (arrival.quantity_damaged or 0)
-            line.save(update_fields=["received_qty", "rejected_qty", "damaged_qty"])
+            accepted_in = arrival.quantity_received or 0
+            rejected_in = arrival.quantity_rejected or 0
+            damaged_in = arrival.quantity_damaged or 0
+            # Atomically increment the booked quantities so concurrent
+            # receiving requests cannot over-receive the line (the increment is
+            # a single SQL statement; select_for_update serializes the remaining
+            # check on databases that support row locking).
+            PurchaseOrderItem.objects.filter(pk=line.pk).update(
+                received_qty=F("received_qty") + accepted,
+                rejected_qty=F("rejected_qty") + rejected_in,
+                damaged_qty=F("damaged_qty") + damaged_in,
+            )
+            line.refresh_from_db()
 
             # Only accepted units enter normal stock, with a real movement row.
             if line.stock_item_id and accepted:
                 stock = line.stock_item
                 previous = stock.quantity or 0
-                stock.quantity = previous + accepted
-                stock.save(update_fields=["quantity", "updated_at"])
+                StockItem.objects.filter(pk=stock.pk).update(
+                    quantity=F("quantity") + accepted)
+                stock.refresh_from_db()
                 StockMovement.objects.create(
                     stock_item=stock,
                     movement_type="receive",
@@ -1223,6 +1382,19 @@ class GoodsReceiptItemViewSet(viewsets.ModelViewSet):
                     "warranty_expiry": None,
                 },
             )
+
+    def update(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "Posted receipt lines are read-only and cannot be modified."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "Posted receipt lines cannot be deleted."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
 
 class ProcurementAssetReceiptItemViewSet(viewsets.ModelViewSet):
@@ -1292,14 +1464,6 @@ class ProcurementAssetReceiptItemViewSet(viewsets.ModelViewSet):
             if department_id is None and purchase_request is not None:
                 department_id = purchase_request.department_id
 
-            if data.get("serial_number"):
-                if Asset.objects.filter(
-                        serial_number=data["serial_number"]).exists():
-                    return Response(
-                        {"serial_number": "This serial number is already "
-                                          "assigned to an asset."},
-                        status=status.HTTP_400_BAD_REQUEST)
-
             description_parts = [
                 po.purchase_request.pr_number if po.purchase_request_id else "",
                 f"{item.goods_receipt.gr_number} / {po.po_number}",
@@ -1311,27 +1475,37 @@ class ProcurementAssetReceiptItemViewSet(viewsets.ModelViewSet):
             if data.get("notes"):
                 description_parts.append(data["notes"])
 
+            purchase_cost = data.get("purchase_cost")
+            if purchase_cost is None:
+                purchase_cost = item.purchase_order_item.unit_price
+
+            # Reuse Asset Management validation (serial uniqueness, clean(),
+            # FK existence) instead of reimplementing it here.
+            asset_serializer = AssetSerializer(data={
+                "asset_tag": data["asset_tag"],
+                "name": data["name"],
+                "serial_number": data.get("serial_number", ""),
+                "category": category_id,
+                "department": department_id,
+                "vendor": item.vendor_id,
+                "status": "available",
+                "location": data.get("location", ""),
+                "purchase_date": item.expected_purchase_date or timezone.localdate(),
+                "purchase_cost": purchase_cost,
+                "warranty_expiry": data.get("warranty_expiry"),
+                "description": "\n".join(p for p in description_parts if p),
+            })
+            asset_serializer.is_valid(raise_exception=True)
             try:
-                asset = Asset.objects.create(
-                    asset_tag=data["asset_tag"],
-                    name=data["name"],
-                    serial_number=data.get("serial_number", ""),
-                    category=category,
-                    department_id=department_id,
-                    vendor=item.vendor,
-                    status="available",
-                    location=data.get("location", ""),
-                    purchase_date=item.expected_purchase_date or timezone.localdate(),
-                    purchase_cost=data.get("purchase_cost")
-                    if data.get("purchase_cost") is not None else item.purchase_cost,
-                    warranty_expiry=data.get("warranty_expiry"),
-                    description="\n".join(p for p in description_parts if p),
+                asset = asset_serializer.save()
+            except IntegrityError:
+                # DB backstop for a concurrent duplicate tag/serial write.
+                return Response(
+                    {"detail": "Could not register the asset: a concurrent "
+                               "write conflicted, or the asset tag / serial "
+                               "number is already in use."},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            except (DjangoValidationError, IntegrityError) as exc:
-                message = "; ".join(
-                    exc.messages) if isinstance(exc, DjangoValidationError) else str(exc)
-                return Response({"detail": message},
-                                status=status.HTTP_400_BAD_REQUEST)
 
             item.asset = asset
             item.status = "registered"

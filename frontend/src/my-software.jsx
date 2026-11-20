@@ -32,7 +32,7 @@ function MySoftwarePage() {
     <div className="my-software-page">
       <PageHeader title="My Software" />
       {error && <div className="alert alert-danger">{error}</div>}
-      <DataTable columns={columns} rows={items} keyOf="id" loading={loading} emptyTitle="No software allocated" />
+      <DataTable columns={columns} rows={items} keyOf={(r) => r.id} loading={loading} emptyTitle="No software allocated" />
     </div>
   );
 }

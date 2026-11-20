@@ -140,6 +140,10 @@ export function AssetForm({ id }) {
     })();
   }, []);
 
+  useEffect(() => {
+    return () => setOkMsg('');
+  }, []);
+
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
 
   // Create-then-upload: the asset row first (JSON), then the file against
@@ -467,7 +471,7 @@ export function AssetDetail({ id }) {
       } catch { setDisposals([]); }
       // Load maintenance cost summary for this asset
       try {
-        const cs = await api.get('/assets/reports/maintenance/', { params: { asset: id, report: 'maintenance' } });
+        const cs = await api.get('/assets/reports/?report=maintenance', { params: { asset: id, report: 'maintenance' } });
         setMaintCostSummary(cs.data);
       } catch { setMaintCostSummary(null); }
     } catch (e) {

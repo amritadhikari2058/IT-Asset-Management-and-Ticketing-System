@@ -1,0 +1,10 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90mD:/IT-Asset-Management-and-Ticketing-System/frontend[39m
+
+ [31m❯[39m src/tickets-collaboration.test.jsx [2m([22m[2m0 test[22m[2m)[22m
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [2mno tests[22m
+[2m   Start at [22m 14:31:37
+[2m   Duration [22m 4.73s[2m (environment 98%, transform 1%)[22m
+

@@ -1,0 +1,693 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90mD:/IT-Asset-Management-and-Ticketing-System/frontend[39m
+
+ [31m❯[39m src/tickets-collaboration.test.jsx [2m([22m[2m15 tests[22m[2m | [22m[31m15 failed[39m[2m)[22m[33m 925[2mms[22m[39m
+   [31m❯[39m TicketDetail comments and notes [2m(1)[22m
+[31m     [31m×[31m loads comments and notes[39m[33m 523[2mms[22m[39m
+   [31m❯[39m TicketDetail attachments [2m(14)[22m
+[31m     [31m×[31m lists attachments[39m[32m 42[2mms[22m[39m
+[31m     [31m×[31m uploads a file as multipart payload[39m[32m 67[2mms[22m[39m
+[31m     [31m×[31m shows upload and delete controls only to staff[39m[32m 27[2mms[22m[39m
+[31m     [31m×[31m shows backend validation errors on rejected upload[39m[32m 39[2mms[22m[39m
+[31m     [31m×[31m deletes an attachment after confirmation[39m[32m 22[2mms[22m[39m
+[31m     [31m×[31m downloads through the protected endpoint as a blob[39m[32m 17[2mms[22m[39m
+     [31m❯[39m TicketDetail history [2m(4)[22m
+[31m       [31m×[31m hides History from employees and never requests it[39m[32m 19[2mms[22m[39m
+[31m       [31m×[31m shows History to staff[39m[32m 22[2mms[22m[39m
+[31m       [31m×[31m shows empty state when no history entries[39m[32m 19[2mms[22m[39m
+[31m       [31m×[31m handles history request failure[39m[32m 16[2mms[22m[39m
+     [31m❯[39m TicketDetail permission-related UI behavior [2m(3)[22m
+[31m       [31m×[31m notes form internal checkbox hidden from employees[39m[32m 44[2mms[22m[39m
+[31m       [31m×[31m only staff can access attachment delete controls[39m[32m 17[2mms[22m[39m
+[31m       [31m×[31m only staff can see attachment upload control[39m[32m 18[2mms[22m[39m
+     [31m❯[39m TicketDetail cleanup during navigation [2m(1)[22m
+[31m       [31m×[31m cleans up object URLs when navigating away[39m[32m 16[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 15 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail comments and notes[2m > [22mloads comments and notes
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m67:18[22m[39m
+    [90m 65|[39m     staff();
+    [90m 66|[39m     render(<TicketDetail id='7' />);
+    [90m 67|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m 68|[39m     expect(mockGet).toHaveBeenCalledWith('/tickets/7/notes/');
+    [90m 69|[39m   });
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mlists attachments
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m76:18[22m[39m
+    [90m 74|[39m     staff();
+    [90m 75|[39m     render(<TicketDetail id='7' />);
+    [90m 76|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m 77|[39m     expect(mockGet).toHaveBeenCalledWith('/tickets/attachments/', { pa…
+    [90m 78|[39m   });
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22muploads a file as multipart payload
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m83:18[22m[39m
+    [90m 81|[39m     mockPost.mockResolvedValueOnce({ data: { id: 12, original_filename…
+    [90m 82|[39m     render(<TicketDetail id='7' />);
+    [90m 83|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m 84|[39m     const input = screen.getByLabelText('Choose a file to upload');
+    [90m 85|[39m     fireEvent.change(input, {
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mshows upload and delete controls only to staff
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m97:18[22m[39m
+    [90m 95|[39m     employee();
+    [90m 96|[39m     render(<TicketDetail id='7' />);
+    [90m 97|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m 98|[39m     expect(screen.queryByLabelText('Choose a file to upload')).toBeNul…
+    [90m 99|[39m     expect(screen.queryByRole('button', { name: /delete/i })).toBeNull…
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mshows backend validation errors on rejected upload
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m106:18[22m[39m
+    [90m104|[39m     mockPost.mockRejectedValueOnce({ response: { status: 400, data: { …
+    [90m105|[39m     render(<TicketDetail id='7' />);
+    [90m106|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m107|[39m     const input = screen.getByLabelText('Choose a file to upload');
+    [90m108|[39m     fireEvent.change(input, {
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mdeletes an attachment after confirmation
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m117:18[22m[39m
+    [90m115|[39m     staff();
+    [90m116|[39m     render(<TicketDetail id='7' />);
+    [90m117|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m118|[39m     expect(screen.getByRole('button', { name: /delete attachment/i }))…
+    [90m119|[39m   });
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mdownloads through the protected endpoint as a blob
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m130:18[22m[39m
+    [90m128|[39m     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mo…
+    [90m129|[39m     render(<TicketDetail id='7' />);
+    [90m130|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m131|[39m     fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+    [90m132|[39m     await waitFor(() => {
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mTicketDetail history[2m > [22mhides History from employees and never requests it
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m141:18[22m[39m
+    [90m139|[39m     employee();
+    [90m140|[39m     render(<TicketDetail id='7' />);
+    [90m141|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m142|[39m     expect(screen.queryByText('History')).toBeNull();
+    [90m143|[39m     expect(mockGet.mock.calls.filter(([url]) => 'histories' in String(…
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mTicketDetail history[2m > [22mshows History to staff
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m148:18[22m[39m
+    [90m146|[39m     staff();
+    [90m147|[39m     render(<TicketDetail id='7' />);
+    [90m148|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m149|[39m     await screen.getByText('History');
+    [90m150|[39m     expect(mockGet).toHaveBeenCalledWith('/tickets/histories/', { para…
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mTicketDetail history[2m > [22mshows empty state when no history entries
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m156:18[22m[39m
+    [90m154|[39m     mockGet.mockResolvedValueOnce({ data: [] });
+    [90m155|[39m     render(<TicketDetail id='7' />);
+    [90m156|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m157|[39m     await screen.getByText('History');
+    [90m158|[39m     expect(screen.getByText('No history entries.')).toBeTruthy();
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mTicketDetail history[2m > [22mhandles history request failure
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m164:18[22m[39m
+    [90m162|[39m     mockGet.mockRejectedValueOnce({ response: { status: 500, data: { d…
+    [90m163|[39m     render(<TicketDetail id='7' />);
+    [90m164|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m165|[39m     await screen.getByText('History');
+    [90m166|[39m   });
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mTicketDetail permission-related UI behavior[2m > [22mnotes form internal checkbox hidden from employees
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m173:18[22m[39m
+    [90m171|[39m     employee();
+    [90m172|[39m     render(<TicketDetail id='7' />);
+    [90m173|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m174|[39m     expect(screen.queryByLabelText('Internal note (hidden from employe…
+    [90m175|[39m   });
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mTicketDetail permission-related UI behavior[2m > [22monly staff can access attachment delete controls
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m179:18[22m[39m
+    [90m177|[39m     employee();
+    [90m178|[39m     render(<TicketDetail id='7' />);
+    [90m179|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m180|[39m     expect(screen.queryByRole('button', { name: /delete attachment/i }…
+    [90m181|[39m   });
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mTicketDetail permission-related UI behavior[2m > [22monly staff can see attachment upload control
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m185:18[22m[39m
+    [90m183|[39m     employee();
+    [90m184|[39m     render(<TicketDetail id='7' />);
+    [90m185|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m186|[39m     expect(screen.queryByLabelText('Choose a file to upload')).toBeNul…
+    [90m187|[39m   });
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/tickets-collaboration.test.jsx[2m > [22mTicketDetail attachments[2m > [22mTicketDetail cleanup during navigation[2m > [22mcleans up object URLs when navigating away
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "heading" and name `/Printer down/`
+
+Here are the accessible roles:
+
+  status:
+
+  Name "":
+  [36m<p[31m
+    [33mclass[31m=[32m"page-loading"[31m
+    [33mrole[31m=[32m"status"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<p[31m
+      [33mclass[31m=[32m"page-loading"[31m
+      [33mrole[31m=[32m"status"[31m
+    [36m>[31m
+      [36m<span[31m
+        [33maria-hidden[31m=[32m"true"[31m
+        [33mclass[31m=[32m"spinner"[31m
+      [36m/>[31m
+      [0mLoading ticket…[0m
+    [36m</p>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/tickets-collaboration.test.jsx:[2m195:18[22m[39m
+    [90m193|[39m     const createObjectURLSpy = vi.spyOn(global.URL, 'createObjectURL');
+    [90m194|[39m     render(<TicketDetail id='7' />);
+    [90m195|[39m     await screen.getByRole('heading', { name: /Printer down/ });
+    [90m   |[39m                  [31m^[39m
+    [90m196|[39m     fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+    [90m197|[39m     await waitFor(() => expect(createObjectURLSpy).toHaveBeenCalled());
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/15]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m15 failed[39m[22m[90m (15)[39m
+[2m   Start at [22m 14:38:14
+[2m   Duration [22m 7.56s[2m (environment 54%, import 16%, transform 15%, tests 14%)[22m
+

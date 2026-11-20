@@ -13,6 +13,8 @@ from changes.models import (
     ChangeRequest,
     ChangeTemplate,
     ChangeTask,
+    BlackoutPeriod,
+    ChangeSchedulingException,
     ChangeHistory,
     ChangeAssetImpact,
     ChangeServiceImpact,
@@ -40,6 +42,105 @@ from accounts.models import User
 def _now():
     return timezone.now()
 
+
+def _is_within_maintenance_window(planned_start, planned_end, window):
+    """Check if a change falls within a maintenance window."""
+    if not window or window.status != "active":
+        return False
+    # Window is inactive or expired
+    if window.end_at < timezone.now():
+        return False
+    # Check overlap
+    return planned_start <= window.end_at and window.start_at <= planned_end
+
+
+def _is_within_blackout_period(planned_start, planned_end, blackout_period):
+    """Check if a change falls within a blackout period."""
+    if not blackout_period or blackout_period.status != "active":
+        return False
+    # Check if blackout period is expired
+    if blackout_period.end_at < timezone.now():
+        return False
+    # Check overlap
+    return planned_start <= blackout_period.end_at and blackout_period.start_at <= planned_end
+
+
+def _has_approved_exception(change, blackout_period=None, maintenance_window=None):
+    """Check if a change has an approved exception for the given restriction."""
+    if blackout_period:
+        return ChangeSchedulingException.objects.filter(
+            change=change,
+            blackout_period=blackout_period,
+            status="approved",
+        ).exists()
+    if maintenance_window:
+        return ChangeSchedulingException.objects.filter(
+            change=change,
+            maintenance_window=maintenance_window,
+            status="approved",
+        ).exists()
+    return False
+
+
+def _check_scheduling_policy(change, allow_exception=True):
+    """
+    Check if a change satisfies the scheduling policy.
+
+    Returns (is_valid, reason, exception_info)
+    - is_valid: True if the change can be scheduled
+    - reason: Description of why it's invalid (if applicable)
+    - exception_info: Exception object if an approved exception exists
+    """
+    cs = change.planned_start
+    ce = change.planned_end
+
+    # Check maintenance windows
+    windows = MaintenanceWindow.objects.filter(
+        status="active", start_at__lte=ce, end_at__gte=cs
+    )
+    for window in windows:
+        # If the change is within an active maintenance window, it's allowed
+        if _is_within_maintenance_window(cs, ce, window):
+            if _has_approved_exception(change, maintenance_window=window):
+                # Has exception, check if it's approved
+                exc = ChangeSchedulingException.objects.get(
+                    change=change,
+                    maintenance_window=window,
+                    status="approved",
+                )
+                return True, "ok", exc
+            # Change is within maintenance window without exception - allowed
+            return True, "within_maintenance_window", None
+
+    # Check blackout periods
+    now = timezone.now()
+    blackout_periods = BlackoutPeriod.objects.filter(
+        status="active", end_at__gte=cs
+    )
+    for bp in blackout_periods:
+        # Check scope matching
+        scope_match = True
+        if bp.scope_department and change.department_id != bp.scope_department_id:
+            scope_match = False
+        if bp.scope_service and change.service_id != bp.scope_service_id:
+            scope_match = False
+        if not scope_match:
+            continue
+
+        # If change is within blackout period
+        if _is_within_blackout_period(cs, ce, bp):
+            if allow_exception and _has_approved_exception(change, blackout_period=bp):
+                exc = ChangeSchedulingException.objects.get(
+                    change=change,
+                    blackout_period=bp,
+                    status="approved",
+                )
+                return True, "ok", exc
+            # Change is in blackout period without approved exception - invalid
+            return False, f"blackout_period:{bp.name}", None
+
+    # No policy violations
+    return True, "ok", None
 
 def _generate_change_number():
     """Generate a unique CHG-YYYY-NNNNN change number.
@@ -452,6 +553,22 @@ def schedule_change(change, user, planned_start, planned_end, expected_downtime_
     if planned_end <= planned_start:
         raise ValidationError(
             "Planned end must be after planned start."
+        )
+
+    # Enforce scheduling policy authoritatively (blackout periods etc.).
+    # The change is not persisted until the policy passes; an unapproved
+    # exception can never be bypassed by the frontend.
+    change.planned_start = planned_start
+    change.planned_end = planned_end
+    is_valid, reason, _exc = _check_scheduling_policy(change, allow_exception=True)
+    if not is_valid:
+        if isinstance(reason, str) and reason.startswith("blackout_period:"):
+            bp_name = reason.split(":", 1)[1]
+            raise ValidationError(
+                {"scheduling_policy": f"Change overlaps active blackout period '{bp_name}'. An approved scheduling exception is required before scheduling."}
+            )
+        raise ValidationError(
+            {"scheduling_policy": reason or "Scheduling policy violation."}
         )
 
     with transaction.atomic():

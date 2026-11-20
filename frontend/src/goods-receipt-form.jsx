@@ -83,6 +83,8 @@ export function GoodsReceiptForm({ id, poId }) {
   const [globalError, setGlobalError] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [submittedReceipt, setSubmittedReceipt] = useState(null);
 
   const loadOrders = useCallback(async () => {
     try {
@@ -200,6 +202,8 @@ export function GoodsReceiptForm({ id, poId }) {
         });
       }
       setConfirming(false);
+      setSubmitted(true);
+      setSubmittedReceipt(created);
       window.location.hash = `#/procurement/receipts/${created.id}`;
     } catch (e) {
       const status = e?.response?.status;
@@ -442,6 +446,23 @@ export function GoodsReceiptForm({ id, poId }) {
 
       {globalError ? <ErrorSummary parsed={{ global: globalError }} /> : null}
 
+      {submitted && submittedReceipt ? (
+        <div className="panel" style={{ marginTop: 16 }}>
+          <div className="panel-head"><h3>Receipt recorded</h3></div>
+          <div className="panel-pad">
+            <p className="small">
+              Goods receipt <strong>{submittedReceipt.gr_number}</strong> was recorded against{' '}
+              <strong>{order?.po_number}</strong>. The receipt is now read-only.
+            </p>
+            <div className="row-gap" style={{ marginTop: 12 }}>
+              <a className="btn-primary" href={`#/procurement/receipts/${submittedReceipt.id}`}>View receipt</a>
+              <a className="btn-ghost" href="#/procurement/receipts">All receipts</a>
+              <button type="button" className="btn-ghost" onClick={() => { setSubmitted(false); setSubmittedReceipt(null); setGlobalError(''); }}>Record another receipt</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="panel">
         <div className="panel-head"><h3>Receipt details</h3></div>
         <div className="panel-pad">
@@ -557,7 +578,7 @@ export function GoodsReceiptForm({ id, poId }) {
             <button
               type="button" className="btn-primary"
               onClick={review}
-              disabled={busy || lines.length === 0 || !anyPlanned}
+              disabled={busy || submitted || lines.length === 0 || !anyPlanned}
             >
               Review and record receipt
             </button>

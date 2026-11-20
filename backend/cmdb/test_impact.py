@@ -154,10 +154,14 @@ class CycleOrphanVerificationTests(TestCase):
         ConfigurationItemRelationship.objects.create(
             source_ci=b, target_ci=c, relationship_type="contains", status="active",
         )
-        # create cycle edge directly in ORM (bypass serializer validation)
-        ConfigurationItemRelationship.objects.create(
-            source_ci=c, target_ci=a, relationship_type="contains", status="active",
-        )
+        # create cycle edge through a low-level write that bypasses
+        # serializer and model validation (needed to test cycle detection).
+        ConfigurationItemRelationship.objects.bulk_create([
+            ConfigurationItemRelationship(
+                source_ci=c, target_ci=a, relationship_type="contains",
+                status="active",
+            ),
+        ])
         self.assertGreaterEqual(detect_relationship_cycles(), 1)
         g = build_dependency_graph(a, view="combined", max_depth=10)
         self.assertEqual(g["cycleIndicator"], "cycle")

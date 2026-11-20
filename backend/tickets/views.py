@@ -19,9 +19,10 @@ from common.notifications import (
     TICKET_ASSIGNMENT_CATEGORY, TICKET_STATUS_CATEGORY, email_enabled_for,
 )
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
+from tickets.attachment_storage import delete_stored_file, store_upload
 from tickets.models import (
     Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketKbArticle,
-    TicketNote, TicketSLA,
+    TicketNote, TicketSLA, TicketSlaPause,
 )
 from tickets.serializers import (
     TicketAttachmentSerializer, TicketCategorySerializer,
@@ -52,7 +53,7 @@ def _ticket_visible_qs(user):
 #: Fields only IT staff may change (PERMISSIONS.md). Employees editing
 #: tickets may resubmit current values but any *change* is rejected.
 STAFF_ONLY_TICKET_FIELDS = ("assignee", "status", "priority", "category",
-                            "resolution_notes")
+                            "resolution_notes", "asset")
 
 
 #: Sortable list fields (strict allowlist — anything else falls back to
@@ -280,6 +281,44 @@ def _ticket_report_rows(source_rows, ok, failed):
     return rows
 
 
+def _manage_sla_pause(ticket, old_status, new_status, actor):
+    """Create/end TicketSlaPause rows when a ticket enters/leaves a waiting
+    state via a direct status change (single-ticket PATCH or bulk update).
+
+    Mirrors resolution_services.request_information / requester_replied so
+    that pause durations accumulate correctly regardless of which API path
+    drives the transition.
+
+    The ticket instance must already be locked via select_for_update() in the
+    calling transaction, so we use the locked ticket's current state rather
+    than re-querying.
+
+    Actor is passed from the calling view to preserve attribution in
+    started_by/ended_by fields on the SLA pause record.
+    """
+    WAITING = {"waiting_requester", "waiting_third_party"}
+    entering = bool(new_status and new_status in WAITING
+                    and old_status not in WAITING)
+    # Only end a pause if we actually have a new status to transition to;
+    # priority-only changes (new_status=None) must not end a pause.
+    leaving = bool(new_status and old_status in WAITING
+                   and new_status not in WAITING)
+    if entering:
+        # End any existing active pause before creating a new one
+        # to prevent overlapping active pauses.
+        TicketSlaPause.objects.filter(
+            ticket=ticket, ended_at__isnull=True, is_deleted=False
+        ).update(ended_at=timezone.now(), ended_by=actor)
+        TicketSlaPause.objects.create(
+            ticket=ticket, reason=new_status,
+            started_by=actor, pause_type=new_status,
+            started_at=timezone.now())
+    elif leaving:
+        TicketSlaPause.objects.filter(
+            ticket=ticket, ended_at__isnull=True, is_deleted=False
+        ).update(ended_at=timezone.now(), ended_by=actor)
+
+
 class TicketViewSet(viewsets.ModelViewSet):
     serializer_class = TicketSerializer
 
@@ -325,6 +364,12 @@ class TicketViewSet(viewsets.ModelViewSet):
                 and serializer.validated_data.get("assignee") is not None):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied("Only IT staff can assign tickets.")
+        # Employees cannot assign assets at creation (staff-only).
+        # The asset field ties into duplicate detection and accountability.
+        if (not _is_ticket_staff(user)
+                and serializer.validated_data.get("asset") is not None):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only IT staff can assign assets to tickets.")
         dept = serializer.validated_data.get("department")
         if dept is None and getattr(user, "home_department_id", None):
             serializer.validated_data["department_id"] = user.home_department_id
@@ -408,10 +453,20 @@ class TicketViewSet(viewsets.ModelViewSet):
             pass
 
     def perform_update(self, serializer):
-        obj = self.get_object()
+        # select_for_update() inside the transaction boundary prevents
+        # concurrent lost updates: two writers cannot both read the same
+        # ticket state, validate transitions against it, and then both write
+        # the second one silently overwriting the first.
+        queryset = self.filter_queryset(self.get_queryset())
+        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+        lookup_value = self.kwargs[lookup_url_kwarg]
+        obj = queryset.select_for_update(of=("self",)).get(
+            **{self.lookup_field: lookup_value})
+        self.check_object_permissions(self.request, obj)
         old = {"status": obj.status, "priority": obj.priority,
                "category": obj.category_id, "assignee": obj.assignee_id,
-               "resolution_notes": obj.resolution_notes}
+               "resolution_notes": obj.resolution_notes,
+               "asset": obj.asset_id}
         if not _is_ticket_staff(self.request.user):
             _reject_staff_only_changes(old, serializer.validated_data)
         new_status = serializer.validated_data.get("status")
@@ -419,6 +474,19 @@ class TicketViewSet(viewsets.ModelViewSet):
             from rest_framework.exceptions import ValidationError
             raise ValidationError(
                 {"status": f"Invalid transition {obj.status} -> {new_status}."})
+        # Cross-department changes require justification (same rule as
+        # perform_create). Department is not a staff-only field, so an
+        # employee may change it, but must state why when moving away from
+        # their home department.
+        new_dept = serializer.validated_data.get("department")
+        actor = self.request.user
+        if (new_dept is not None and not _is_ticket_staff(actor)
+                and getattr(actor, "home_department_id", None)
+                and new_dept.pk != actor.home_department_id
+                and not serializer.validated_data.get("on_behalf_reason")):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"on_behalf_reason":
+                                   "Required when moving a ticket to another department."})
         # Stamp/clear the resolution timestamps on REAL transitions so the
         # single-ticket path matches bulk_update (which already stamps):
         # -> resolved sets resolved_at, -> closed sets closed_at, and a
@@ -432,9 +500,16 @@ class TicketViewSet(viewsets.ModelViewSet):
             elif new_status in ("reopened", "in_progress", "open"):
                 serializer.validated_data["resolved_at"] = None
                 serializer.validated_data["closed_at"] = None
+        # SLA pause management: create a pause when entering a waiting state,
+        # end the active pause when leaving one. Mirrors resolution_services.
+        # Called inside the transaction so a rollback undoes both the ticket
+        # change and the SLA pause record together.
         updated = None
         with transaction.atomic():
             updated = serializer.save()
+            _manage_sla_pause(updated, old["status"],
+                              new_status if status_changed else None,
+                              self.request.user)
             changes = {k: (old.get(k), getattr(updated, k if k != "category"
                                                else "category_id"))
                        for k in old}
@@ -544,7 +619,7 @@ class TicketViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get", "post"])
     def notes(self, request, pk=None):
         ticket = self.get_object()
-        if request.method == "get":
+        if request.method == "GET":
             notes = ticket.notes.all()
             # Employees see only requester-visible updates on their tickets.
             if getattr(request.user, "role", "") == "employee":
@@ -723,7 +798,10 @@ class TicketViewSet(viewsets.ModelViewSet):
             asset = (data.get("asset") or data.get("asset_tag")
                      or data.get("asset_id"))
             if asset not in (None, ""):
-                if isinstance(asset, int) or (
+                if not _is_ticket_staff(user):
+                    # Employees cannot assign assets; strip the field
+                    pass  # deliberately omit from out
+                elif isinstance(asset, int) or (
                         isinstance(asset, str) and asset.strip().isdigit()):
                     out["asset"] = int(asset)
                 else:
@@ -764,6 +842,10 @@ class TicketViewSet(viewsets.ModelViewSet):
             if (not _is_ticket_staff(user)
                     and vd.get("assignee") is not None):
                 return {"assignee": "Only IT staff can assign tickets."}
+            # Employees cannot assign assets via bulk creation either.
+            if (not _is_ticket_staff(user)
+                    and vd.get("asset") is not None):
+                return {"asset": "Only IT staff can assign assets to tickets."}
             target = vd.get("department") or getattr(
                 user, "home_department", None)
             if (target and getattr(user, "home_department_id", None)
@@ -778,6 +860,19 @@ class TicketViewSet(viewsets.ModelViewSet):
             for i, raw in enumerate(rows, start=row_offset):
                 data = raw if isinstance(raw, dict) else {}
                 errors = _row_errors(data)
+                # Check original rows_in data for asset assignment from non-staff.
+                # raw is normalized ( _norm() may have stripped asset), so check rows_in.
+                idx = i - row_offset  # 0-based index into rows_in
+                if 0 <= idx < len(rows_in):
+                    orig = rows_in[idx]
+                    if (not _is_ticket_staff(user)
+                            and isinstance(orig, dict)
+                            and (orig.get("asset") not in (None, "")
+                                 or orig.get("asset_tag") not in (None, "")
+                                 or orig.get("asset_id") not in (None, ""))):
+                        if errors is None:
+                            errors = {}
+                        errors["asset"] = "Only IT staff can assign assets to tickets."
                 entry = {"row": i, "valid": errors is None,
                          "title": data.get("title", ""),
                          "errors": errors or {}}
@@ -864,7 +959,8 @@ class TicketViewSet(viewsets.ModelViewSet):
         if unknown:
             return Response({"detail": f"Only {sorted(allowed)} allowed.",
                              "unknown": sorted(unknown)}, status=400)
-        tickets = list(_ticket_visible_qs(request.user).filter(id__in=ids))
+        tickets = list(_ticket_visible_qs(request.user).filter(
+            id__in=ids).select_for_update(of=("self",)))
         if request.data.get("preview", True) in (True, "true", "1", 1):
             invalid = []
             for t in tickets:
@@ -912,6 +1008,15 @@ class TicketViewSet(viewsets.ModelViewSet):
                                         "assignee "
                                         f"{target.employee_id} is inactive")
                                 t.assignee = target
+                        elif field == "priority":
+                            # Validate priority against allowed choices,
+                            # mirroring serializer validation for single-ticket PATCH.
+                            if val not in dict(Ticket.PRIORITY_CHOICES):
+                                raise ValueError(
+                                    f"Invalid priority: {val}. "
+                                    f"Must be one of: {', '.join(dict(Ticket.PRIORITY_CHOICES))}."
+                                )
+                            setattr(t, field, val)
                         else:
                             setattr(t, field, val)
                     # Same timestamp rule as the single-ticket path:
@@ -928,6 +1033,11 @@ class TicketViewSet(viewsets.ModelViewSet):
                                                "open"):
                             t.resolved_at = None
                             t.closed_at = None
+                    # SLA pause management: create/end pauses when entering
+                    # or leaving a waiting state (mirrors perform_update).
+                    _manage_sla_pause(t, old["status"],
+                                      target_status if target_status != old["status"] else None,
+                                      request.user)
                     t.save()
                     _write_history(t, request.user, "bulk_change",
                                    old=old, new=dict(changes))
@@ -960,7 +1070,8 @@ class TicketViewSet(viewsets.ModelViewSet):
     def bulk_delete(self, request):
         """Bulk SOFT delete only. Never hard-deletes (spec)."""
         ids = request.data.get("ids", [])
-        tickets = list(_ticket_visible_qs(request.user).filter(id__in=ids))
+        tickets = list(_ticket_visible_qs(request.user).filter(
+            id__in=ids).select_for_update(of=("self",)))
         if request.data.get("preview", True) in (True, "true", "1", 1):
             return Response({"preview": [{"id": t.pk, "title": t.title}
                                           for t in tickets],
@@ -1074,6 +1185,15 @@ class TicketAttachmentViewSet(viewsets.ModelViewSet):
     queryset = TicketAttachment.objects.all()
     serializer_class = TicketAttachmentSerializer
 
+    def get_permissions(self):
+        # Uploads stay available to anyone who can see the ticket (the
+        # serializer and perform_create enforce that scope), but editing or
+        # deleting an existing attachment is an IT-staff operation — the UI
+        # exposes those controls to staff only.
+        if self.action in ("update", "partial_update", "destroy"):
+            return [IsITStaff()]
+        return super().get_permissions()
+
     def get_queryset(self):
         # Only attachments on visible tickets (private files, no public URLs).
         visible_ids = _ticket_visible_qs(self.request.user).values("pk")
@@ -1087,17 +1207,80 @@ class TicketAttachmentViewSet(viewsets.ModelViewSet):
             if not visible:
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied("Cannot attach to this ticket.")
-        obj = serializer.save(
-            uploaded_by=self.request.user,
-            original_filename=getattr(
-                serializer.validated_data.get("file"), "name", "")[:255])
-        log_action(actor=self.request.user, action="create", instance=obj)
+        upload = serializer.validated_data.get("file")
+        filename = (getattr(upload, "name", "") or "")[:255]
+        size = getattr(upload, "size", None)
+        # Write the physical file first so the exact storage object this
+        # request created is known. Django's own FileField.save() writes the
+        # file *before* the INSERT, leaving an unreferenced file behind if
+        # the row (or the history/audit rows written with it) fails.
+        # Passing the resulting name back as a plain string keeps Django
+        # from writing the file a second time.
+        stored_name = store_upload(TicketAttachment, upload)
+        try:
+            with transaction.atomic():
+                save_kwargs = {
+                    "uploaded_by": self.request.user,
+                    "original_filename": filename,
+                }
+                if stored_name:
+                    save_kwargs["file"] = stored_name
+                obj = serializer.save(**save_kwargs)
+                _write_history(
+                    obj.ticket, self.request.user, "attachment_added",
+                    new={"attachment_id": obj.pk, "filename": filename,
+                         "size": size})
+                log_action(actor=self.request.user, action="create",
+                           instance=obj)
+        except Exception:
+            # The transaction rolled back, so no row references the file
+            # this request just wrote. Remove exactly that file (never the
+            # client-supplied name, which may belong to another row) and let
+            # the original exception surface unchanged.
+            delete_stored_file(TicketAttachment, stored_name)
+            raise
+
+    def perform_update(self, serializer):
+        """Replace the file (if one was sent) without orphaning it on failure.
+
+        The superseded file is still left in storage after a successful
+        replacement, matching the pre-existing retention behaviour; only a
+        failed database write is cleaned up here.
+        """
+        upload = serializer.validated_data.get("file")
+        stored_name = store_upload(TicketAttachment, upload)
+        try:
+            with transaction.atomic():
+                save_kwargs = {}
+                if stored_name:
+                    save_kwargs["file"] = stored_name
+                    save_kwargs["original_filename"] = (
+                        getattr(upload, "name", "") or "")[:255]
+                obj = serializer.save(**save_kwargs)
+                if stored_name:
+                    _write_history(
+                        obj.ticket, self.request.user, "attachment_updated",
+                        new={"attachment_id": obj.pk,
+                             "filename": obj.original_filename,
+                             "size": getattr(upload, "size", None)})
+                    log_action(actor=self.request.user, action="update",
+                               instance=obj)
+        except Exception:
+            delete_stored_file(TicketAttachment, stored_name)
+            raise
 
     def destroy(self, request, *args, **kwargs):
         obj = self.get_object()
-        # Soft delete keeps the physical file (record retained).
-        obj.soft_delete(by_user=request.user, reason="attachment removed")
-        log_action(actor=request.user, action="soft_delete", instance=obj)
+        # Soft delete keeps the physical file (record retained). History is
+        # written in the same transaction so a failed delete leaves neither a
+        # deleted row nor a misleading timeline entry.
+        with transaction.atomic():
+            obj.soft_delete(by_user=request.user, reason="attachment removed")
+            _write_history(
+                obj.ticket, request.user, "attachment_removed",
+                old={"attachment_id": obj.pk,
+                     "filename": obj.original_filename})
+            log_action(actor=request.user, action="soft_delete", instance=obj)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["get"])
@@ -1151,6 +1334,13 @@ class TicketKbArticleViewSet(viewsets.ModelViewSet):
             # vote on their own ticket links.
             return qs.filter(ticket__requester=user)
         return qs
+
+    def get_permissions(self):
+        # Employees may vote ``helpful`` on links for their own tickets; all
+        # other mutations (including unlink/delete) are staff operations.
+        if self.action in ("create", "destroy"):
+            return [IsITStaff()]
+        return super().get_permissions()
 
     def perform_create(self, serializer):
         if not _is_ticket_staff(self.request.user):
@@ -1381,7 +1571,8 @@ def category_report(request):
         ser.is_valid(raise_exception=True)
         try:
             ticket = close_ticket(ticket, request.user,
-                                 ser.validated_data.get("reason", ""))
+                                 ser.validated_data.get("reason", ""),
+                                 ser.validated_data.get("expected_ticket_version"))
         except Exception as exc:
             return Response({"detail": str(exc)}, status=400)
         return Response(TicketSerializer(ticket).data)
@@ -1427,11 +1618,22 @@ def category_report(request):
     def timeline(self, request, pk=None):
         from tickets.models import TicketHistory
         ticket = self.get_object()
-        qs = TicketHistory.objects.filter(ticket=ticket).order_by("timestamp")
         user = request.user
-        staff = getattr(user, "role", "") in ("system_admin", "it_manager",
-                                              "it_support") or getattr(
+        role = getattr(user, "role", "")
+        is_admin_or_manager = role in ("system_admin", "it_manager") or getattr(
             user, "is_superuser", False)
+        is_support = role == "it_support"
+        if is_admin_or_manager:
+            pass
+        elif is_support and not user.has_perm("tickets.view_ticket_history"):
+            return Response(
+                {"detail": "You do not have permission to view ticket history."},
+                status=403)
+        elif not is_admin_or_manager and not is_support:
+            return Response(
+                {"detail": "You do not have permission to view ticket history."},
+                status=403)
+        qs = TicketHistory.objects.filter(ticket=ticket).order_by("timestamp")
         events = []
         for h in qs:
             events.append({

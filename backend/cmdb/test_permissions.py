@@ -129,7 +129,7 @@ class UnknownAndInactiveTests(CMDBPermissionBase):
     def test_inactive_user_denied_regardless_of_role(self):
         for role in ("system_admin", "it_manager", "it_support"):
             with self.subTest(role=role):
-                user = make_user(role, suffix=f"inactive-{role}")
+                user = make_user(role, suffix="inactive")
                 user.is_active = False
                 user.save(update_fields=["is_active"])
                 client = api_client(user)

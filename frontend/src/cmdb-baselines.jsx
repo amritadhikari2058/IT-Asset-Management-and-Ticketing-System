@@ -41,6 +41,10 @@ export function BaselinesPage() {
   const canCreate = CMDB_PERMISSIONS.canCreateBaselines(role);
   const canApprove = CMDB_PERMISSIONS.canApproveBaselines(role);
 
+  if (role === 'employee') {
+    return <div className="error-summary" role="alert">Employees have no CMDB baseline access.</div>;
+  }
+
   const load = async () => {
     setLoading(true);
     setError('');
@@ -160,6 +164,7 @@ export function BaselinesPage() {
   return (
     <div>
       <PageHeader title="Configuration Baselines" sub="Create, review, approve, compare, and supersede configuration baselines" />
+      {!canCreate && <div className="error-summary" role="alert">System Admin permission is required to manage baselines.</div>}
 
       {error && <div className="error-summary" role="alert">{error}</div>}
       {msg && <div className="success-banner" role="status">{msg}</div>}

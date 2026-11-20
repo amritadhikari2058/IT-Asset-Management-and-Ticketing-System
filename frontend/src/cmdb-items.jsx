@@ -185,7 +185,10 @@ export function CmdbItemsList() {
     },
   ]), [typeById]);
 
-  if (role === 'employee' || !canView) {
+  if (role === 'employee') {
+    return <div className="error-summary" role="alert">Employees have no CMDB CI list access.</div>;
+  }
+  if (!canView) {
     return <div className="error-summary" role="alert">You do not have permission to view configuration items.</div>;
   }
 

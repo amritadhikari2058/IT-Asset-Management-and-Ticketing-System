@@ -13,6 +13,7 @@ from common.audit import log_action
 
 from .impact import analyze_ci_impact
 from .models import (
+    HIERARCHY_PARENT_DIRECTION,
     ConfigurationItem,
     ConfigurationItemHistory,
     ConfigurationItemRelationship,
@@ -130,6 +131,12 @@ def sync_asset_to_ci(asset, actor=None, create_missing=True,
 
     Returns (ci_or_None, created_bool).
     """
+    if asset is None or getattr(asset, "is_deleted", False):
+        return None, False
+
+    if asset is None or getattr(asset, "is_deleted", False):
+        return None, False
+
     ci = ConfigurationItem.objects.filter(asset=asset, is_deleted=False).first()
 
     if ci is None:
@@ -228,6 +235,9 @@ def _status_for_product(product):
 def sync_software_product_to_ci(product, actor=None, create_missing=True,
                                 update_existing=True):
     """Idempotent SoftwareProduct -> CI synchronization."""
+    if product is None or getattr(product, "is_deleted", False):
+        return None, False
+
     ci = ConfigurationItem.objects.filter(
         software_product=product, is_deleted=False,
     ).first()
@@ -452,13 +462,41 @@ def replace_ci(ci, replacement_ci, actor):
 # Relationship lifecycle
 # ---------------------------------------------------------------------------
 
+
+HIERARCHY_MUTATION_LOCK_KEY = 0x434D4248
+
+
+def _serialize_hierarchy_mutations():
+    """Serialize hierarchy mutations across processes/connections.
+
+    select_for_update() on existing relationship rows cannot prevent two
+    concurrent transactions from inserting new (phantom) edges.  On PostgreSQL
+    a transaction-scoped advisory lock provides a stable, deterministic
+    serialization point without adding infrastructure.
+    """
+    from django.db import connection
+
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                [HIERARCHY_MUTATION_LOCK_KEY],
+            )
+
+
 def create_relationship(source_ci, target_ci, relationship_type, *,
                         status="active", actor=None, description="",
                         confidence="confirmed", source="manual",
                         discovered=False):
     """Validated relationship creation with history."""
-    validate_relationship(source_ci, target_ci, relationship_type, status=status)
     with transaction.atomic():
+        if relationship_type in HIERARCHY_PARENT_DIRECTION:
+            _serialize_hierarchy_mutations()
+            ConfigurationItemRelationship.objects.select_for_update().filter(
+                is_deleted=False,
+                relationship_type__in=tuple(HIERARCHY_PARENT_DIRECTION),
+            ).count()
+        validate_relationship(source_ci, target_ci, relationship_type, status=status)
         try:
             rel = ConfigurationItemRelationship.objects.create(
                 source_ci=source_ci,
@@ -493,6 +531,12 @@ def activate_relationship(rel, actor):
         if locked.status == "active":
             return locked
         previous = locked.status
+        if locked.relationship_type in HIERARCHY_PARENT_DIRECTION:
+            _serialize_hierarchy_mutations()
+            ConfigurationItemRelationship.objects.select_for_update().filter(
+                is_deleted=False,
+                relationship_type__in=tuple(HIERARCHY_PARENT_DIRECTION),
+            ).count()
         # activation must not duplicate an existing inverse or create cycles
         validate_relationship(
             locked.source_ci, locked.target_ci,
@@ -547,6 +591,12 @@ def confirm_relationship(rel, actor):
         if locked.status not in ("proposed", "inactive"):
             return locked
         previous = locked.status
+        if locked.relationship_type in HIERARCHY_PARENT_DIRECTION:
+            _serialize_hierarchy_mutations()
+            ConfigurationItemRelationship.objects.select_for_update().filter(
+                is_deleted=False,
+                relationship_type__in=tuple(HIERARCHY_PARENT_DIRECTION),
+            ).count()
         validate_relationship(
             locked.source_ci, locked.target_ci,
             locked.relationship_type, status="active",

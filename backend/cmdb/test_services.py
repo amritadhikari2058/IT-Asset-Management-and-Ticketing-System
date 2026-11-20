@@ -146,6 +146,17 @@ class AssetSyncServiceTests(TestCase):
             ).exists()
         )
 
+    def test_sync_deleted_asset_returns_none(self):
+        asset = self._asset()
+        from django.utils import timezone
+
+        asset.is_deleted = True
+        asset.deleted_at = timezone.now()
+        asset.save(update_fields=["is_deleted", "deleted_at"])
+        ci, created = sync_asset_to_ci(asset, actor=self.admin)
+        self.assertIsNone(ci)
+        self.assertFalse(created)
+
 
 class SoftwareSyncServiceTests(TestCase):
     def setUp(self):
@@ -364,6 +375,18 @@ class RelationshipServiceTests(TestCase):
                 self.a, self.a, "depends_on", status="active", actor=self.admin,
             )
 
+    def test_deleted_ci_relationship_rejected(self):
+        c = ConfigurationItem.objects.create(
+            name="Deleted", ci_type=self.ci_type, status="active",
+            source="manual",
+        )
+        c.is_deleted = True
+        c.save(update_fields=["is_deleted"])
+        with self.assertRaises(Exception):
+            create_relationship(
+                self.a, c, "depends_on", status="active", actor=self.admin,
+            )
+
     def test_hierarchy_cycle_rejected(self):
         c = ConfigurationItem.objects.create(
             name="C", ci_type=self.ci_type, status="active", source="manual",
@@ -424,3 +447,157 @@ class HistoryImmutabilityTests(TestCase):
             configuration_item=self.ci, event_type="retired",
         ).count()
         self.assertEqual(before, after)
+
+
+import threading
+from django.db import connection
+from unittest import skipUnless
+
+
+@skipUnless(connection.vendor == "postgresql", "PostgreSQL required for concurrency verification")
+class HierarchyConcurrencyTests(TestCase):
+    def setUp(self):
+        self.admin = make_user("system_admin")
+        self.ci_type = ConfigurationItemType.objects.create(
+            name="Server", code="SERVERCONC", category="hardware",
+        )
+        self.a = ConfigurationItem.objects.create(
+            name="A", ci_type=self.ci_type, status="active", source="manual",
+        )
+        self.b = ConfigurationItem.objects.create(
+            name="B", ci_type=self.ci_type, status="active", source="manual",
+        )
+
+    def test_concurrent_hierarchy_creation_does_not_create_cycle(self):
+        results = {}
+
+        def worker(key, src, tgt):
+            try:
+                rel = create_relationship(
+                    src, tgt, "contains", status="active", actor=self.admin,
+                )
+                results[key] = ("ok", rel.id)
+            except Exception as exc:  # noqa: BLE001
+                results[key] = ("error", type(exc).__name__)
+            finally:
+                connection.close()
+
+        t1 = threading.Thread(target=worker, args=("ab", self.a, self.b))
+        t2 = threading.Thread(target=worker, args=("ba", self.b, self.a))
+        t1.start()
+        t2.start()
+        t1.join(timeout=30)
+        t2.join(timeout=30)
+
+        self.assertEqual(set(results), {"ab", "ba"})
+        ab_exists = ConfigurationItemRelationship.objects.filter(
+            source_ci=self.a, target_ci=self.b,
+            relationship_type="contains", status="active", is_deleted=False,
+        ).exists()
+        ba_exists = ConfigurationItemRelationship.objects.filter(
+            source_ci=self.b, target_ci=self.a,
+            relationship_type="contains", status="active", is_deleted=False,
+        ).exists()
+        self.assertFalse(
+            ab_exists and ba_exists,
+            f"concurrent hierarchy cycle created: {results}",
+        )
+
+
+@skipUnless(connection.vendor == "postgresql", "PostgreSQL required for concurrency verification")
+class HierarchyActivationConcurrencyTests(TestCase):
+    def setUp(self):
+        self.admin = make_user("system_admin")
+        self.ci_type = ConfigurationItemType.objects.create(
+            name="Server", code="SERVERACT", category="hardware",
+        )
+        self.a = ConfigurationItem.objects.create(
+            name="A", ci_type=self.ci_type, status="active", source="manual",
+        )
+        self.b = ConfigurationItem.objects.create(
+            name="B", ci_type=self.ci_type, status="active", source="manual",
+        )
+        self.rel_ab = create_relationship(
+            self.a, self.b, "contains", status="proposed", actor=self.admin,
+        )
+        self.rel_ba = create_relationship(
+            self.b, self.a, "contains", status="proposed", actor=self.admin,
+        )
+
+    def test_concurrent_activation_does_not_create_cycle(self):
+        results = {}
+
+        def worker(key, rel):
+            try:
+                activated = activate_relationship(rel, self.admin)
+                results[key] = ("ok", activated.status)
+            except Exception as exc:  # noqa: BLE001
+                results[key] = ("error", type(exc).__name__)
+            finally:
+                connection.close()
+
+        t1 = threading.Thread(target=worker, args=("ab", self.rel_ab))
+        t2 = threading.Thread(target=worker, args=("ba", self.rel_ba))
+        t1.start()
+        t2.start()
+        t1.join(timeout=30)
+        t2.join(timeout=30)
+
+        self.assertEqual(set(results), {"ab", "ba"})
+        ab_active = ConfigurationItemRelationship.objects.filter(
+            pk=self.rel_ab.pk, status="active", is_deleted=False,
+        ).exists()
+        ba_active = ConfigurationItemRelationship.objects.filter(
+            pk=self.rel_ba.pk, status="active", is_deleted=False,
+        ).exists()
+        self.assertFalse(
+            ab_active and ba_active,
+            f"concurrent activation created a cycle: {results}",
+        )
+
+
+@skipUnless(connection.vendor == "postgresql", "PostgreSQL required for concurrency verification")
+class HierarchyDirectModelConcurrencyTests(TestCase):
+    def setUp(self):
+        self.ci_type = ConfigurationItemType.objects.create(
+            name="Server", code="SERVERDIR", category="hardware",
+        )
+        self.a = ConfigurationItem.objects.create(
+            name="A", ci_type=self.ci_type, status="active", source="manual",
+        )
+        self.b = ConfigurationItem.objects.create(
+            name="B", ci_type=self.ci_type, status="active", source="manual",
+        )
+
+    def test_direct_model_save_does_not_create_cycle(self):
+        results = {}
+
+        def worker(key, src, tgt):
+            try:
+                rel = ConfigurationItemRelationship.objects.create(
+                    source_ci=src, target_ci=tgt,
+                    relationship_type="contains", status="active",
+                )
+                results[key] = ("ok", rel.id)
+            except Exception as exc:  # noqa: BLE001
+                results[key] = ("error", type(exc).__name__)
+            finally:
+                connection.close()
+
+        t1 = threading.Thread(target=worker, args=("ab", self.a, self.b))
+        t2 = threading.Thread(target=worker, args=("ba", self.b, self.a))
+        t1.start()
+        t2.start()
+        t1.join(timeout=30)
+        t2.join(timeout=30)
+
+        self.assertEqual(set(results), {"ab", "ba"})
+        ab_exists = ConfigurationItemRelationship.objects.filter(
+            source_ci=self.a, target_ci=self.b,
+            relationship_type="contains", status="active", is_deleted=False,
+        ).exists()
+        ba_exists = ConfigurationItemRelationship.objects.filter(
+            source_ci=self.b, target_ci=self.a,
+            relationship_type="contains", status="active", is_deleted=False,
+        ).exists()
+        self.assertFalse(ab_exists and ba_exists, results)

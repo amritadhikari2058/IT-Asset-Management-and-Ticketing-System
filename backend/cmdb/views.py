@@ -46,6 +46,7 @@ from .models import (
     ConfigurationItemRelationship,
     ConfigurationItemTicketLink,
     ConfigurationItemType,
+    HIERARCHY_PARENT_DIRECTION,
     ServiceConfigurationItemLink,
 )
 from .permissions import (
@@ -583,6 +584,31 @@ class ConfigurationItemRelationshipViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         return list_response(request, self.get_queryset(),
                              ConfigurationItemRelationshipSerializer, cap=500)
+
+    def create(self, request, *args, **kwargs):
+        relationship_type = (request.data or {}).get("relationship_type")
+        if relationship_type in HIERARCHY_PARENT_DIRECTION:
+            with transaction.atomic():
+                domain_service._serialize_hierarchy_mutations()
+                return super().create(request, *args, **kwargs)
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        requested_type = (request.data or {}).get(
+            "relationship_type", instance.relationship_type,
+        )
+        if (
+            requested_type in HIERARCHY_PARENT_DIRECTION
+            or instance.relationship_type in HIERARCHY_PARENT_DIRECTION
+        ):
+            with transaction.atomic():
+                domain_service._serialize_hierarchy_mutations()
+                return super().update(
+                    request, *args, partial=partial, **kwargs,
+                )
+        return super().update(request, *args, partial=partial, **kwargs)
 
     def perform_create(self, serializer):
         try:

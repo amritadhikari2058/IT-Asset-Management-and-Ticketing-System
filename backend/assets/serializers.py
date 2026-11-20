@@ -130,12 +130,17 @@ class AssetSerializer(serializers.ModelSerializer):
 class VendorSerializer(serializers.ModelSerializer):
     """Serializer for vendor / supplier records."""
 
+    asset_count = serializers.IntegerField(read_only=True, default=0)
+    stock_item_count = serializers.IntegerField(read_only=True, default=0)
+
     class Meta:
         model = Vendor
         fields = ["id", "name", "code", "contact_person", "email",
                   "phone", "website", "address", "tax_registration",
-                  "notes", "is_deleted", "created_at", "updated_at"]
-        read_only_fields = ["id", "is_deleted", "created_at", "updated_at"]
+                  "notes", "is_deleted", "created_at", "updated_at",
+                  "asset_count", "stock_item_count"]
+        read_only_fields = ["id", "is_deleted", "created_at", "updated_at",
+                            "asset_count", "stock_item_count"]
 
     def validate_name(self, value):
         """Normalize vendor name: trim, collapse internal spaces, uppercase."""
@@ -157,11 +162,23 @@ class VendorSerializer(serializers.ModelSerializer):
         return value
 
     def validate_website(self, value):
-        """Validate URL format."""
+        """Ensure website has a scheme (defense-in-depth; normalization
+        happens in to_internal_value before URLField validation)."""
         value = (value or "").strip()
         if value and not value.startswith(('http://', 'https://')):
             value = 'https://' + value
         return value
+
+    def to_internal_value(self, data):
+        """Normalize website URL before URLField validation so that
+        scheme-less values like 'example.com' become 'https://example.com'
+        instead of being rejected as invalid URLs."""
+        if isinstance(data, dict):
+            website = data.get("website")
+            if website and not website.startswith(("http://", "https://")):
+                data = dict(data)
+                data["website"] = "https://" + website
+        return super().to_internal_value(data)
 
     def validate_phone(self, value):
         """Phone: trim but don't over-restrict international formats."""
@@ -171,26 +188,21 @@ class VendorSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         """Cross-field validation: prevent duplicate names differing only by
         capitalization, spaces, or normalization."""
-        name = attrs.get("name") or ""
-        code = attrs.get("code") or ""
+        name = (attrs.get("name") or "").strip()
+        code = (attrs.get("code") or "").strip()
 
-        # Normalize for comparison
-        normalized_name = (name or "").strip()
-        while "  " in normalized_name:
-            normalized_name = normalized_name.replace("  ", " ")
-        normalized_name = normalized_name.upper()
-
-        # Check for duplicates (excluding current instance if updating)
+        # Build queryset excluding current instance (for updates)
         queryset = Vendor.objects.all()
         if self.instance:
             queryset = queryset.exclude(pk=self.instance.pk)
 
-        if Vendor.objects.filter(name__iexact=name).exclude(pk__in=queryset.values('pk')).exists():
+        # Check for duplicate names (case-insensitive)
+        if name and queryset.filter(name__iexact=name).exists():
             raise serializers.ValidationError(
                 {"name": "A vendor with that name already exists."})
 
         # Check code uniqueness
-        if code and Vendor.objects.filter(code__iexact=code).exclude(pk__in=queryset.values('pk')).exists():
+        if code and queryset.filter(code__iexact=code).exists():
             raise serializers.ValidationError(
                 {"code": "A vendor with that code already exists."})
 

@@ -41,11 +41,20 @@ export function ProcurementRouter({ route: routeProp }) {
   const auth = useAuth();
   const caps = procurementCapabilities(auth);
   const [location, setLocation] = useState(() => {
-    if (routeProp) { const [route, query = ''] = String(routeProp).split('?'); return { route: route || '/procurement', query }; }
+    if (routeProp) {
+      const clean = String(routeProp).replace(/^#/, '');
+      const [route, query = ''] = clean.split('?');
+      return { route: route || '/procurement', query };
+    }
     return readHash();
   });
   useEffect(() => {
-    if (routeProp) { const [route, query = ''] = String(routeProp).split('?'); setLocation({ route: route || '/procurement', query }); return undefined; }
+    if (routeProp) {
+      const clean = String(routeProp).replace(/^#/, '');
+      const [route, query = ''] = clean.split('?');
+      setLocation({ route: route || '/procurement', query });
+      return undefined;
+    }
     const onChange = () => setLocation(readHash());
     window.addEventListener('hashchange', onChange);
     return () => window.removeEventListener('hashchange', onChange);

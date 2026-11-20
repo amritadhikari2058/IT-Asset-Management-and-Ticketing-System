@@ -80,9 +80,9 @@ describe('CMDB Impact Analysis', () => {
 
   it('truncation state shown when result exceeds bounds', async () => {
     makeAdminAuth();
-    mockGet.mockResolvedValueOnce({ data: [], warning: 'result exceeds depth limit' });
+    mockGet.mockResolvedValueOnce({ data: { truncated: true, warning: 'result exceeds depth limit' } });
     render(<ImpactAnalysisPage match={{ params: { id: 1 } }} />);
-    await screen.findByText(/truncated/i);
+    expect((await screen.findAllByText(/truncated/i)).length).toBeGreaterThan(0);
   });
 
   it('excludes inaccessible Ticket, Change, CI, or Service data', async () => {

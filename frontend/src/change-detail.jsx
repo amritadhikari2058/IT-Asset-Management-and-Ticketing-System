@@ -6,11 +6,11 @@
 import React, { useEffect, useState } from 'react';
 import { PageHeader, Badge, Button } from './components';
 import { useAuth } from './auth';
-import { fetchPage, parseApiError, formatDate, formatDateTime, statusBadgeVariant, riskBadgeVariant, priorityBadgeVariant, actionAvailability, STATUS_LABELS } from './changes-utils';
+import { fetchPage, parseApiError, formatDate, formatDateTime, statusBadgeVariant, riskBadgeVariant, priorityBadgeVariant, actionAvailability, STATUS_LABELS, CHANGE_TYPE_LABELS, RISK_LEVEL_LABELS, PRIORITY_LABELS } from './changes-utils';
 
 export function ChangeDetail({ match }) {
   const { isStaff, role } = useAuth();
-  const [change, setChange] = useState(null);
+  const [change, setChange] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');

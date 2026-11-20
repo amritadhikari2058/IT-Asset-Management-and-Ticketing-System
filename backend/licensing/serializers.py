@@ -612,6 +612,7 @@ class LicenseComplianceFindingSerializer(serializers.ModelSerializer):
             "resolved_by",
             "resolved_by_email",
             "resolution_note",
+            "remediation_note",
             "fingerprint",
             "created_at",
             "updated_at",

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
-  Badge, ConfirmDialog, DataTable, ErrorSummary, Field, LoadingRows, Modal, PageHeader, Pager,
+  Badge, ConfirmDialog, DataTable, ErrorSummary, Field, LoadingRows, Modal, PageHeader, Pager, PageSizeSelector,
 } from './components';
 import {
   PURCHASE_REQUEST_STATUS_LABELS,
@@ -16,7 +16,7 @@ import {
   statusBadgeVariant,
 } from './procurement-utils';
 
-const PAGE_SIZE = 20;
+// Page-size preference persisted in localStorage; fall back to DRF default 20.
 
 function StatusPill({ status }) {
   return (
@@ -46,13 +46,24 @@ export function PurchaseRequestsPage() {
   const [actionError, setActionError] = useState('');
   const [notice, setNotice] = useState('');
 
+  // Page-size preference persisted in localStorage; fall back to DRF default 20.
+  const [pageSize, setPageSize] = useState(() => {
+    if (typeof window === 'undefined') return 20;
+    try {
+      const saved = window.localStorage.getItem('itdesk.pageSize');
+      return saved ? Number(saved) : 20;
+    } catch {
+      return 20;
+    }
+  });
+
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
       const response = await api.get(buildPurchaseRequestListUrl({
         page,
-        page_size: PAGE_SIZE,
+        page_size: pageSize,
         search: filters.q,
         status: filters.status,
         approval: filters.approval,
@@ -72,7 +83,12 @@ export function PurchaseRequestsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const pageCount = Math.max(1, Math.ceil(count / PAGE_SIZE));
+  // Reset to page 1 when page size changes
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize]);
+
+  const pageCount = Math.max(1, Math.ceil(count / pageSize));
   const currentPage = Math.min(page, pageCount);
 
   const update = (key, value) => {
@@ -317,6 +333,7 @@ export function PurchaseRequestsPage() {
             emptyTitle="No purchase requests match these filters."
             emptyHint="Adjust the filters or create a new request."
           />
+          <PageSizeSelector value={pageSize} onChange={setPageSize} />
           <Pager
             count={count}
             hasPrev={currentPage > 1}

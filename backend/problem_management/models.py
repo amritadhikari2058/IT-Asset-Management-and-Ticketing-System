@@ -569,6 +569,72 @@ class ProblemSoftwareProductLink(SoftDeleteModel):
         return f"{self.problem_id} ↔ product {self.software_product_id}"
 
 
+class ProblemKbArticleLink(SoftDeleteModel):
+    """Direct traceability link between a Problem and a KB article.
+
+    A problem can reference many KB articles; an article can be referenced by
+    many problems. The link records why the article is relevant (relation_type)
+    and how confident the linking operator is (relevance).
+
+    Deletion behaviour:
+    - KB articles are not soft-deleted; they are shelved via status="archived".
+      An archived article stays linked so the problem's evidence trail is
+      preserved, and its status is surfaced so operators can see it is no
+      longer current.
+    - If an article is ever hard-deleted, CASCADE removes the link while the
+      Problem and its history are preserved.
+    """
+
+    RELATION_TYPE_CHOICES = [
+        ("reference", "Reference"),
+        ("workaround_source", "Workaround Source"),
+        ("root_cause_reference", "Root-Cause Reference"),
+        ("known_error_reference", "Known-Error Reference"),
+        ("procedure", "Procedure"),
+        ("other", "Other"),
+    ]
+    RELEVANCE_CHOICES = [
+        ("confirmed", "Confirmed"),
+        ("high", "High"),
+        ("medium", "Medium"),
+        ("low", "Low"),
+        ("candidate", "Candidate"),
+    ]
+
+    problem = models.ForeignKey(
+        Problem, on_delete=models.PROTECT, related_name="kb_links",
+    )
+    article = models.ForeignKey(
+        "assets.KnowledgeBaseArticle", on_delete=models.CASCADE,
+        related_name="problem_links",
+    )
+    relation_type = models.CharField(
+        max_length=30, choices=RELATION_TYPE_CHOICES, default="reference",
+    )
+    relevance = models.CharField(
+        max_length=12, choices=RELEVANCE_CHOICES, default="medium",
+    )
+    linked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="problem_kb_links_created",
+    )
+    linked_at = models.DateTimeField(auto_now_add=True)
+    note = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-linked_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["problem", "article"],
+                condition=Q(is_deleted=False),
+                name="pm_active_problem_kb_link",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.problem_id} ↔ KB#{self.article_id} ({self.relation_type})"
+
+
 # ---------------------------------------------------------------------------
 # Problem Task (Gate 1 model; lifecycle actions arrive with readiness gates)
 # ---------------------------------------------------------------------------

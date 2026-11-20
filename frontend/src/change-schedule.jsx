@@ -18,6 +18,9 @@ export function ChangeSchedule({ match }) {
   const [readiness, setReadiness] = useState(null);
   const [conflicts, setConflicts] = useState([]);
   const [scheduleConflicts, setScheduleConflicts] = useState([]);
+  const [blackoutPeriods, setBlackoutPeriods] = useState([]);
+  const [maintenanceWindows, setMaintenanceWindows] = useState([]);
+  const [schedulingExceptions, setSchedulingExceptions] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState(null);
 
@@ -34,11 +37,18 @@ export function ChangeSchedule({ match }) {
       fetchPage(`/changes/${id}/readiness/`),
       fetchPage(`/changes/${id}/conflicts/`),
       fetchPage(`/changes/${id}/schedule_conflicts/`),
-    ]).then(([changeData, readinessData, conflictsData, scheduleData]) => {
+      fetchPage(`/blackout-periods/`),
+      fetchPage(`/maintenance-windows/`),
+      fetchPage(`/scheduling-exceptions/`),
+    ]).then(([changeData, readinessData, conflictsData, scheduleData, blackoutData, maintenanceData, exceptionData]) => {
       setChange(changeData);
       setReadiness(readinessData);
       setConflicts(conflictsData || []);
       setScheduleConflicts(scheduleData || []);
+      setBlackoutPeriods((blackoutData && blackoutData.items) || blackoutData || []);
+      setMaintenanceWindows((maintenanceData && maintenanceData.items) || maintenanceData || []);
+      const exItems = (exceptionData && exceptionData.items) || exceptionData || [];
+      setSchedulingExceptions(exItems.filter((ex) => String(ex.change) === String(id) || ex.change === parseInt(id, 10) || (ex.change && ex.change.id === parseInt(id, 10))));
       // Pre-fill form with existing scheduled times
       if (changeData.planned_start) {
         setPlannedStart(formatDateTimeForInput(changeData.planned_start));
@@ -66,6 +76,7 @@ export function ChangeSchedule({ match }) {
   }
 
   const handleSchedule = async () => {
+    if (submitting) return;
     if (!plannedStart || !plannedEnd) {
       setActionError('Planned start and end are required.');
       return;
@@ -87,7 +98,9 @@ export function ChangeSchedule({ match }) {
       });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        setActionError(errorData.detail || Object.values(errorData).join(' '));
+        let msg = errorData.detail || errorData.scheduling_policy || Object.values(errorData).join(' ');
+        if (!msg) msg = 'Scheduling failed.';
+        setActionError(msg);
         setSubmitting(false);
         return;
       }
@@ -283,6 +296,104 @@ export function ChangeSchedule({ match }) {
             </div>
           </div>
         )}
+
+        {/* Scheduling Policy Feedback */}
+        <div className="panel panel-default mt-3">
+          <div className="panel-heading">Scheduling Policy Feedback</div>
+          <div className="panel-body">
+            {(() => {
+              const ps = plannedStart ? new Date(plannedStart) : (change.planned_start ? new Date(change.planned_start) : null);
+              const pe = plannedEnd ? new Date(plannedEnd) : (change.planned_end ? new Date(change.planned_end) : null);
+              const hasWindow = ps && pe && !isNaN(ps) && !isNaN(pe);
+              const activeBlackouts = hasWindow ? blackoutPeriods.filter((bp) => {
+                if (bp.status !== 'active') return false;
+                const bps = new Date(bp.start_at);
+                const bpe = new Date(bp.end_at);
+                if (isNaN(bps) || isNaN(bpe)) return false;
+                if (!(ps <= bpe && bps <= pe)) return false;
+                // Scope matching (best-effort)
+                if (bp.scope_department && change.department && String(bp.scope_department) !== String(change.department) && String(bp.scope_department) !== String(change.department_id)) return false;
+                if (bp.scope_service && change.service && String(bp.scope_service) !== String(change.service) && String(bp.scope_service) !== String(change.service_id)) return false;
+                return true;
+              }) : [];
+              const eligibleWindows = hasWindow ? maintenanceWindows.filter((w) => {
+                if (w.status !== 'active') return false;
+                const ws = new Date(w.start_at);
+                const we = new Date(w.end_at);
+                if (isNaN(ws) || isNaN(we)) return false;
+                return ws <= pe && ps <= we;
+              }) : [];
+              const pendingEx = schedulingExceptions.filter((e) => e.status === 'pending');
+              const approvedEx = schedulingExceptions.filter((e) => e.status === 'approved');
+              const rejectedEx = schedulingExceptions.filter((e) => e.status === 'rejected');
+              const blackoutRequiresException = activeBlackouts.length > 0 && !activeBlackouts.every((bp) =>
+                approvedEx.some((ex) => String(ex.blackout_period) === String(bp.id) || (ex.blackout_period && String(ex.blackout_period.id) === String(bp.id)))
+              );
+              return (
+                <div>
+                  {!hasWindow && (
+                    <p className="text-muted">Enter planned start/end to evaluate scheduling policy.</p>
+                  )}
+                  {hasWindow && (
+                    <>
+                      {/* Maintenance window eligibility */}
+                      {eligibleWindows.length > 0 ? (
+                        <div className="alert alert-success">
+                          <strong>Maintenance window eligible:</strong> This change falls within active maintenance window(s): {eligibleWindows.map((w) => w.name || w.code).join(', ')}.
+                        </div>
+                      ) : (
+                        <div className="alert alert-warning">
+                          <strong>Maintenance window:</strong> Planned time is not within any active maintenance window.
+                        </div>
+                      )}
+                      {/* Blackout conflicts */}
+                      {activeBlackouts.length > 0 ? (
+                        <div className="alert alert-danger">
+                          <strong>Blackout-period conflict:</strong> Planned time overlaps blackout period(s): {activeBlackouts.map((bp) => bp.name).join(', ')}.
+                          {blackoutRequiresException && (
+                            <span> An approved scheduling exception is required before scheduling can proceed.</span>
+                          )}
+                          {!blackoutRequiresException && (
+                            <span> An approved exception is on file.</span>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="alert alert-success">
+                          <strong>No blackout-period conflict:</strong> Planned time does not overlap any active blackout period.
+                        </div>
+                      )}
+                      {/* Exception status summary */}
+                      <p>
+                        <strong>Scheduling exceptions for this change:</strong>{' '}
+                        Pending: {pendingEx.length}, Approved: {approvedEx.length}, Rejected: {rejectedEx.length}.
+                      </p>
+                      {blackoutRequiresException && (
+                        <p className="text-danger">
+                          <strong>Exception required:</strong> Submit a scheduling exception request and obtain approval before scheduling.
+                        </p>
+                      )}
+                      {schedulingExceptions.length > 0 && (
+                        <ul className="list-unstyled">
+                          {schedulingExceptions.map((ex) => (
+                            <li key={ex.id}>
+                              <Badge kind={ex.status === 'approved' ? 'success' : ex.status === 'rejected' ? 'danger' : 'warning'}>{ex.status}</Badge>{' '}
+                              {ex.justification}
+                              {ex.blackout_period ? ` (blackout: ${ex.blackout_period})` : ''}
+                              {ex.maintenance_window ? ` (window: ${ex.maintenance_window})` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
+                  {actionError && (
+                    <div className="alert alert-danger"><strong>Scheduling validation failed:</strong> {actionError}</div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
 
         {/* Scheduling Form */}
         {canSchedule && (

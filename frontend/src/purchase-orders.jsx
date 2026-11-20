@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
-  ConfirmDialog, DataTable, ErrorSummary, Field, LoadingRows, Modal, PageHeader, Pager,
+  ConfirmDialog, DataTable, ErrorSummary, Field, LoadingRows, Modal, PageHeader, Pager, PageSizeSelector,
 } from './components';
 import {
   PURCHASE_ORDER_STATUS_LABELS,
@@ -15,8 +15,6 @@ import {
   safeResults,
   statusBadgeVariant,
 } from './procurement-utils';
-
-const PAGE_SIZE = 20;
 
 function StatusPill({ status }) {
   return (
@@ -44,13 +42,24 @@ export function PurchaseOrdersPage() {
   const [actionError, setActionError] = useState('');
   const [notice, setNotice] = useState('');
 
+  // Page-size preference persisted in localStorage; fall back to DRF default 20.
+  const [pageSize, setPageSize] = useState(() => {
+    if (typeof window === 'undefined') return 20;
+    try {
+      const saved = window.localStorage.getItem('itdesk.pageSize');
+      return saved ? Number(saved) : 20;
+    } catch {
+      return 20;
+    }
+  });
+
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
       const response = await api.get(buildPurchaseOrderListUrl({
         page,
-        page_size: PAGE_SIZE,
+        page_size: pageSize,
         search: filters.q,
         status: filters.status,
         created_from: filters.createdFrom,
@@ -69,7 +78,12 @@ export function PurchaseOrdersPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const pageCount = Math.max(1, Math.ceil(count / PAGE_SIZE));
+  // Reset to page 1 when page size changes
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize]);
+
+  const pageCount = Math.max(1, Math.ceil(count / pageSize));
   const currentPage = Math.min(page, pageCount);
   const update = (key, value) => { setFilters((f) => ({ ...f, [key]: value })); setPage(1); };
 
@@ -237,6 +251,7 @@ export function PurchaseOrdersPage() {
             emptyTitle="No purchase orders match these filters."
             emptyHint="Purchase orders are generated from an approved request with a selected vendor."
           />
+          <PageSizeSelector value={pageSize} onChange={setPageSize} />
           <Pager
             count={count}
             hasPrev={currentPage > 1}

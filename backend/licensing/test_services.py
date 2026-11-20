@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
+from unittest.mock import patch
 
 from accounts.models import Department, User
 from assets.models import Asset, AssetCategory, Vendor
@@ -35,6 +36,7 @@ from licensing.services import (
     review_renewal_request,
     revoke_allocation,
     revoke_allocations_for_offboarding,
+    record_license_history,
     submit_renewal_request,
     suspend_agreement,
     terminate_agreement,
@@ -530,3 +532,221 @@ class LicensingServicesTests(TestCase):
         alloc.refresh_from_db()
         self.assertEqual(alloc.status, "revoked")
         self.assertIn("Employee departure", alloc.revocation_reason)
+
+
+# ============================================================================
+# PER-ALLOCATION REVOCATION ATOMICITY
+# ============================================================================
+
+class LicenseRevocationAtomicityTests(TestCase):
+    """Verify each allocation revocation rolls back independently on failure."""
+
+    def setUp(self):
+        self.dept = Department.objects.create(name="Engineering", code="ENG01")
+        self.it_dept = Department.objects.create(name="IT Services", code="IT01")
+
+        self.sys_admin = User.objects.create_user(
+            username="admin@test.com", email="admin@test.com",
+            employee_id="ADM-001", role="system_admin",
+            home_department=self.it_dept,
+        )
+        self.it_manager = User.objects.create_user(
+            username="manager@test.com", email="manager@test.com",
+            employee_id="MGR-001", role="it_manager",
+            home_department=self.it_dept,
+        )
+        self.it_support = User.objects.create_user(
+            username="support@test.com", email="support@test.com",
+            employee_id="SUP-001", role="it_support",
+            home_department=self.it_dept,
+        )
+        self.emp1 = User.objects.create_user(
+            username="alice@test.com", email="alice@test.com",
+            employee_id="EMP-101", role="employee",
+            home_department=self.dept,
+        )
+        self.emp2 = User.objects.create_user(
+            username="bob@test.com", email="bob@test.com",
+            employee_id="EMP-102", role="employee",
+            home_department=self.dept,
+        )
+
+        self.product = SoftwareProduct.objects.create(
+            name="PyCharm Professional", publisher="JetBrains",
+            code="JB-PYCHARM-PRO", category="development",
+            license_model="named_user", license_required=True,
+            approved_status="approved", created_by=self.sys_admin,
+        )
+
+    def _make_agreement(self, quantity_purchased=2):
+        return LicenseAgreement.objects.create(
+            agreement_number=generate_agreement_number(),
+            software_product=self.product,
+            status="active",
+            quantity_purchased=quantity_purchased,
+            created_by=self.sys_admin,
+        )
+
+    def _make_allocation(self, agreement, user):
+        return allocate_license(
+            agreement=agreement, allocation_type="user",
+            assigned_user=user, actor=self.it_support,
+        )
+
+    def _fail_history_for(self, target_pk):
+        """Return a side_effect that fails history recording for one allocation."""
+
+        def _side(*args, **kwargs):
+            alloc = kwargs.get("allocation")
+            if alloc is not None and getattr(alloc, "pk", None) == target_pk:
+                raise RuntimeError("history recording failed")
+            return record_license_history(*args, **kwargs)
+
+        return _side
+
+    def test_successful_revocation_updates_allocation_and_history(self):
+        agreement = self._make_agreement()
+        alloc = self._make_allocation(agreement, self.emp1)
+        self.assertEqual(alloc.status, "active")
+
+        result = revoke_allocations_for_offboarding(
+            user=self.emp1, actor=self.it_manager, reason="Employee departure",
+        )
+        self.assertEqual(result["revoked_count"], 1)
+        self.assertTrue(result["results"][0]["success"])
+
+        alloc.refresh_from_db()
+        self.assertEqual(alloc.status, "revoked")
+        self.assertEqual(alloc.revoked_by, self.it_manager)
+
+        agreement.refresh_from_db()
+        self.assertEqual(agreement.quantity_allocated, 0)
+
+        self.assertTrue(
+            LicenseHistory.objects.filter(
+                allocation=alloc, event_type="allocation_revoked",
+            ).exists()
+        )
+
+    def test_history_failure_rolls_back_allocation_and_counters(self):
+        agreement = self._make_agreement()
+        alloc = self._make_allocation(agreement, self.emp1)
+        agreement.refresh_from_db()
+        before_allocated = agreement.quantity_allocated
+
+        with patch(
+            "licensing.services.record_license_history",
+            side_effect=self._fail_history_for(alloc.pk),
+        ):
+            result = revoke_allocations_for_offboarding(
+                user=self.emp1, actor=self.it_manager, reason="Employee departure",
+            )
+
+        self.assertEqual(result["revoked_count"], 0)
+        self.assertFalse(result["results"][0]["success"])
+        self.assertIn("history recording failed", result["results"][0]["error"])
+
+        alloc.refresh_from_db()
+        self.assertEqual(alloc.status, "active")
+        self.assertIsNone(alloc.revoked_at)
+
+        agreement.refresh_from_db()
+        self.assertEqual(agreement.quantity_allocated, before_allocated)
+
+        self.assertFalse(
+            LicenseHistory.objects.filter(
+                allocation=alloc, event_type="allocation_revoked",
+            ).exists()
+        )
+
+    def test_failed_allocation_does_not_block_others(self):
+        product2 = SoftwareProduct.objects.create(
+            name="IDE Ultimate", publisher="JetBrains", code="JB-IDE-ULT",
+            category="development", license_model="named_user", license_required=True,
+            approved_status="approved", created_by=self.sys_admin,
+        )
+        agreement2 = LicenseAgreement.objects.create(
+            agreement_number=generate_agreement_number(),
+            software_product=product2,
+            status="active",
+            quantity_purchased=2,
+            created_by=self.sys_admin,
+        )
+        agreement = self._make_agreement(quantity_purchased=2)
+        alloc_fail = self._make_allocation(agreement, self.emp1)
+        alloc_ok = self._make_allocation(agreement2, self.emp1)
+
+        with patch(
+            "licensing.services.record_license_history",
+            side_effect=self._fail_history_for(alloc_fail.pk),
+        ):
+            result = revoke_allocations_for_offboarding(
+                user=self.emp1, actor=self.it_manager, reason="Employee departure",
+            )
+
+        self.assertEqual(result["revoked_count"], 1)
+        self.assertEqual(len(result["results"]), 2)
+        success_results = [r for r in result["results"] if r["success"]]
+        fail_results = [r for r in result["results"] if not r["success"]]
+        self.assertEqual(len(success_results), 1)
+        self.assertEqual(len(fail_results), 1)
+        self.assertEqual(fail_results[0]["allocation_id"], alloc_fail.pk)
+        self.assertEqual(success_results[0]["allocation_id"], alloc_ok.pk)
+
+        alloc_fail.refresh_from_db()
+        self.assertEqual(alloc_fail.status, "active")
+        alloc_ok.refresh_from_db()
+        self.assertEqual(alloc_ok.status, "revoked")
+
+        agreement.refresh_from_db()
+        self.assertEqual(agreement.quantity_allocated, 1)
+
+        agreement2.refresh_from_db()
+        self.assertEqual(agreement2.quantity_allocated, 0)
+
+    def test_deactivation_succeeds_when_reclamation_fails(self):
+        agreement = self._make_agreement()
+        alloc = self._make_allocation(agreement, self.emp1)
+
+        with patch(
+            "licensing.services.record_license_history",
+            side_effect=self._fail_history_for(alloc.pk),
+        ):
+            from lifecycle.services import deactivate_account
+            deactivate_account(self.emp1, self.sys_admin)
+
+        self.emp1.refresh_from_db()
+        self.assertFalse(self.emp1.is_active)
+
+        alloc.refresh_from_db()
+        self.assertEqual(alloc.status, "active")
+
+    def test_retry_after_failure_succeeds_without_duplicate_history(self):
+        agreement = self._make_agreement()
+        alloc = self._make_allocation(agreement, self.emp1)
+
+        # First attempt fails during history recording.
+        with patch(
+            "licensing.services.record_license_history",
+            side_effect=self._fail_history_for(alloc.pk),
+        ):
+            result1 = revoke_allocations_for_offboarding(
+                user=self.emp1, actor=self.it_manager, reason="Employee departure",
+            )
+        self.assertEqual(result1["revoked_count"], 0)
+        alloc.refresh_from_db()
+        self.assertEqual(alloc.status, "active")
+
+        # Retry without the failure injection.
+        result2 = revoke_allocations_for_offboarding(
+            user=self.emp1, actor=self.it_manager, reason="Employee departure retry",
+        )
+        self.assertEqual(result2["revoked_count"], 1)
+        alloc.refresh_from_db()
+        self.assertEqual(alloc.status, "revoked")
+        self.assertEqual(alloc.revoked_by, self.it_manager)
+
+        history_count = LicenseHistory.objects.filter(
+            allocation=alloc, event_type="allocation_revoked",
+        ).count()
+        self.assertEqual(history_count, 1)

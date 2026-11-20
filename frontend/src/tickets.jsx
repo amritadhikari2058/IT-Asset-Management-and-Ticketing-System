@@ -73,6 +73,10 @@ export function TicketForm({ id }) {
     })();
   }, [id, isEdit, user]);
 
+  useEffect(() => {
+    return () => setOkMsg('');
+  }, []);
+
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const crossDept = user?.home_department && form.department && Number(form.department) !== Number(user.home_department);
 
@@ -322,9 +326,6 @@ export function TicketDetail({ id }) {
   const [kbLinkBusy, setKbLinkBusy] = useState(false);
   const [watching, setWatching] = useState(false);
   const [watchers, setWatchers] = useState([]);
-  const [queue, setQueue] = useState(null);
-  const [queueMembers, setQueueMembers] = useState([]);
-  const [queueLoading, setQueueLoading] = useState(true);
   const [filter, setFilter] = useState('');
 
   const load = async () => {
@@ -340,10 +341,6 @@ export function TicketDetail({ id }) {
         const at = await api.get('/tickets/attachments/', { params: { ticket: id } });
         setAttachments(at.data.results ?? at.data ?? []);
       } catch { setAttachments([]); }
-      try {
-        setQueue((await api.get(`/tickets/${id}/queue/`)).data);
-        setQueueMembers((await api.get(`/tickets/${id}/queue/members/`)).data ?? []);
-      } catch { setQueue(null); setQueueMembers([]); }
       try {
         setWatchers((await api.get(`/tickets/${id}/watchers/`)).data ?? []);
       } catch { setWatchers([]); }

@@ -249,7 +249,7 @@ describe('Application sidebar navigation', () => {
     it('renders groups in the intended order', () => {
       renderApp('system_admin');
       const sections = Array.from(
-        document.querySelectorAll('.sidenav-section')
+        document.querySelectorAll('.sidenav-section-title')
       ).map((el) => (el.textContent || '').trim());
       expect(sections[0]).toBe('Overview');
       expect(sections[1]).toBe('Service Operations');
@@ -262,20 +262,22 @@ describe('Application sidebar navigation', () => {
   describe('Concise module labels', () => {
     it('shows concise labels without long legacy names', () => {
       renderApp('system_admin');
-      expect(screen.getByRole('link', { name: 'Dashboard' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'Tickets' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'Monitoring' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'Problems' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'Changes' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'Services' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'Assets' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'CMDB' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'Procurement' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'Users' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'Categories' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'Departments' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: 'SLA' })).toBeTruthy();
-      expect(screen.getByRole('link', { name: /Notifications/ })).toBeTruthy();
+      const allLinks = screen.getAllByRole('link');
+      const linkTexts = allLinks.map((l) => l.textContent.trim());
+      expect(linkTexts).toContain('Dashboard');
+      expect(linkTexts).toContain('Tickets');
+      expect(linkTexts).toContain('Monitoring');
+      expect(linkTexts).toContain('Problems');
+      expect(linkTexts).toContain('Changes');
+      expect(linkTexts).toContain('Services');
+      expect(linkTexts).toContain('Assets');
+      expect(linkTexts).toContain('CMDB');
+      expect(linkTexts).toContain('Procurement');
+      expect(linkTexts).toContain('Users');
+      expect(linkTexts).toContain('Categories');
+      expect(linkTexts).toContain('Departments');
+      expect(linkTexts).toContain('SLA');
+      expect(linkTexts.some((t) => /Notifications/.test(t))).toBeTruthy();
     });
 
     it('does not show long legacy labels', () => {
@@ -489,6 +491,70 @@ describe('Application sidebar navigation', () => {
       fireEvent.click(ticketsLink);
       // After navigation, menu should close
       expect(screen.queryByRole('button', { name: 'Close navigation' })).toBeNull();
+    });
+  });
+
+  describe('Section expand/collapse', () => {
+    const getSectionHeader = (name) => {
+      const headers = screen.getAllByRole('button', {
+        className: 'sidenav-section-header',
+      });
+      return headers.find((h) => {
+        const titleEl = h.querySelector('.sidenav-section-title');
+        return titleEl ? titleEl.textContent.trim() === name : false;
+      });
+    };
+
+    it('expands a collapsed section when its header is clicked', () => {
+      renderApp('system_admin');
+      // Overview starts collapsed (active route #/tickets is under Service Operations)
+      const overviewHeader = getSectionHeader('Overview');
+      expect(overviewHeader.getAttribute('aria-expanded')).toBe('false');
+      fireEvent.click(overviewHeader);
+      expect(overviewHeader.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('collapses an expanded section when its header is clicked again', () => {
+      renderApp('system_admin');
+      // Service Operations starts expanded (contains #/tickets)
+      const svcHeader = getSectionHeader('Service Operations');
+      expect(svcHeader.getAttribute('aria-expanded')).toBe('true');
+      fireEvent.click(svcHeader);
+      expect(svcHeader.getAttribute('aria-expanded')).toBe('false');
+      fireEvent.click(svcHeader);
+      expect(svcHeader.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('expanding one section does not affect other sections', () => {
+      renderApp('system_admin');
+      const overviewHeader = getSectionHeader('Overview');
+      const svcHeader = getSectionHeader('Service Operations');
+      // Overview starts collapsed, Service Operations starts expanded
+      fireEvent.click(overviewHeader); // Overview → expanded
+      fireEvent.click(svcHeader); // Service Operations → collapsed
+      expect(overviewHeader.getAttribute('aria-expanded')).toBe('true');
+      expect(svcHeader.getAttribute('aria-expanded')).toBe('false');
+      // Each section maintains its own state
+    });
+
+    it('aria-expanded matches submenu visibility', () => {
+      renderApp('system_admin');
+      const overviewHeader = getSectionHeader('Overview');
+      expect(overviewHeader.getAttribute('aria-expanded')).toBe('false');
+      fireEvent.click(overviewHeader);
+      expect(overviewHeader.getAttribute('aria-expanded')).toBe('true');
+      fireEvent.click(overviewHeader);
+      expect(overviewHeader.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('collapsed section content has collapsed class', () => {
+      renderApp('system_admin');
+      const overviewHeader = getSectionHeader('Overview');
+      const sectionContent = document.getElementById('sidenav-section-content-0');
+      expect(sectionContent).not.toBeNull();
+      expect(sectionContent.classList.contains('collapsed')).toBeTruthy();
+      fireEvent.click(overviewHeader);
+      expect(sectionContent.classList.contains('collapsed')).toBeFalsy();
     });
   });
 });

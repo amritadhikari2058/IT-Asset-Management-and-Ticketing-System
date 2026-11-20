@@ -8,8 +8,11 @@ api.interceptors.request.use((cfg) => {
   return cfg;
 });
 
-// Shared in-flight refresh so concurrent 401s do one token request.
+// Shared in-flight refresh so concurrent 401s do one token request. The
+// promise is keyed by the refresh token it was started with, so a refresh
+// begun in a previous session is never reused after a logout/new login.
 let refreshPromise = null;
+let refreshPromiseToken = null;
 
 function isAuthUrl(url = '') {
   return (
@@ -25,9 +28,10 @@ function clearAuth() {
   window.dispatchEvent(new Event('auth-expired'));
 }
 
-function refreshAccessToken() {
-  if (!refreshPromise) {
-    const refresh = localStorage.getItem('refresh');
+function refreshAccessToken(refresh) {
+  if (!refresh) return Promise.reject(new Error('No refresh token to refresh with.'));
+  if (!refreshPromise || refreshPromiseToken !== refresh) {
+    refreshPromiseToken = refresh;
     const base = (api.defaults && api.defaults.baseURL) || '';
     refreshPromise = axios
       .post(`${base}/token/refresh/`, { refresh })
@@ -39,7 +43,11 @@ function refreshAccessToken() {
         return r.data.access;
       })
       .finally(() => {
-        refreshPromise = null;
+        // A newer session may already have replaced this promise.
+        if (refreshPromiseToken === refresh) {
+          refreshPromise = null;
+          refreshPromiseToken = null;
+        }
       });
   }
   return refreshPromise;
@@ -59,20 +67,24 @@ api.interceptors.response.use(
     ) {
       return Promise.reject(error);
     }
-    if (!localStorage.getItem('refresh')) {
+    const refresh = localStorage.getItem('refresh');
+    if (!refresh) {
       clearAuth();
       return Promise.reject(error);
     }
     config._retry = true;
     try {
-      const token = await refreshAccessToken();
-      if (!localStorage.getItem('refresh')) {
-        // Logged out while refreshing; do not replay the request.
+      const token = await refreshAccessToken(refresh);
+      if (localStorage.getItem('refresh') !== refresh) {
+        // Logged out (or signed in as someone else) while refreshing; never
+        // replay the request with a token minted for the previous session.
         return Promise.reject(error);
       }
       config.headers = { ...(config.headers || {}), Authorization: `Bearer ${token}` };
       return api(config);
     } catch {
+      // Only tear down the session whose refresh actually failed.
+      if (localStorage.getItem('refresh') !== refresh) return Promise.reject(error);
       clearAuth();
       return Promise.reject(error);
     }

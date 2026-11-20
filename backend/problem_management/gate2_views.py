@@ -13,14 +13,15 @@ from .gate2_serializers import (
 )
 from .models import (
     ProblemAssetLink, ProblemConfigurationItemLink, ProblemEvidence,
-    ProblemServiceLink, ProblemSoftwareProductLink, ProblemTask,
-    ProblemTimelineEvent, ProblemTicketLink, RootCauseAnalysis,
+    ProblemKbArticleLink, ProblemServiceLink, ProblemSoftwareProductLink,
+    ProblemTask, ProblemTimelineEvent, ProblemTicketLink, RootCauseAnalysis,
 )
 from .permissions import ProblemManagementPermission
 from .serializers import (
     ProblemAssetLinkSerializer, ProblemConfigurationItemLinkSerializer,
-    ProblemServiceLinkSerializer, ProblemSoftwareProductLinkSerializer,
-    ProblemTaskSerializer, ProblemTicketLinkSerializer,
+    ProblemKbArticleLinkSerializer, ProblemServiceLinkSerializer,
+    ProblemSoftwareProductLinkSerializer, ProblemTaskSerializer,
+    ProblemTicketLinkSerializer,
 )
 
 
@@ -190,3 +191,8 @@ class LinkedServicesView(ProblemCollectionView):
 class LinkedProductsView(ProblemCollectionView):
     model = ProblemSoftwareProductLink
     serializer_class = ProblemSoftwareProductLinkSerializer
+
+
+class LinkedKBsView(ProblemCollectionView):
+    model = ProblemKbArticleLink
+    serializer_class = ProblemKbArticleLinkSerializer

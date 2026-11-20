@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
-  Badge, DataTable, EmptyState, ExportDialog, Link, LoadingRows, PageHeader,
+  Badge, DataTable, EmptyState, ExportDialog, Link, PageHeader,
 } from './components';
 
 function Kpi({ label, value, sub }) {
@@ -40,15 +40,6 @@ function DateRange({ from, to, onFrom, onTo }) {
   );
 }
 
-const STATUS_LABELS = {
-  available: 'Available',
-  assigned: 'Assigned',
-  in_repair: 'In maintenance',
-  retired: 'Retired',
-  lost: 'Lost',
-  disposed: 'Disposed',
-};
-
 function fmtDate(d) {
   if (!d) return '—';
   const dt = d instanceof Date ? d : new Date(d + 'T00:00:00');
@@ -65,11 +56,11 @@ function DistributionChart({ data, valueKey, labelKey, subKey, color }) {
   const max = Math.max(...data.map((r) => Number(r[valueKey]) || 0), 1);
   return (
     <div className="distro">
-      {data.map((row) => {
+      {data.map((row, i) => {
         const v = Number(row[valueKey]) || 0;
         const pct = Math.round((v / max) * 100);
         return (
-          <div key={row.id ?? row[valueKey] ?? Math.random()} className="distro-row">
+          <div key={row.id ?? i} className="distro-row">
             <div className="distro-label">
               {labelKey ? row[labelKey] : row}
               {subKey && row[subKey] != null ? ` · ${row[subKey]}` : ''}
@@ -88,19 +79,42 @@ function DistributionChart({ data, valueKey, labelKey, subKey, color }) {
   );
 }
 
+const REPORT_DEFS = [
+  { key: 'financial', label: 'Financial' },
+  { key: 'maintenance', label: 'Maintenance' },
+  { key: 'warranty', label: 'Warranty' },
+  { key: 'utilization', label: 'Utilization' },
+  { key: 'inventory', label: 'Inventory' },
+  { key: 'assets_by_department', label: 'Assets by dept.' },
+  { key: 'assets_by_location', label: 'Asset locations' },
+  { key: 'assets_with_incomplete_info', label: 'Incomplete info' },
+  { key: 'warranty_by_department', label: 'Warranty by dept.' },
+  { key: 'warranty_by_category', label: 'Warranty by cat.' },
+  { key: 'warranty_by_vendor', label: 'Warranty vendors' },
+  { key: 'purchase_cost_by_department', label: 'Cost by dept.' },
+  { key: 'purchase_cost_trends', label: 'Cost trends' },
+];
+
+const REPORT_URLS = Object.fromEntries(
+  REPORT_DEFS.map((r) => [r.key, `/assets/reports/?report=${r.key}`]),
+);
+
+function readReportFromHash() {
+  try {
+    const raw = String(window.location.hash || '').split('?')[1] || '';
+    return new URLSearchParams(raw).get('report') || 'financial';
+  } catch {
+    return 'financial';
+  }
+}
+
+function SectionHeading({ children }) {
+  return <h2 style={{ marginTop: 'var(--sp-3)' }}>{children}</h2>;
+}
+
 export function AssetReportsPage() {
   const { isStaff } = useAuth();
-  if (!isStaff) {
-    return (
-      <div className="form-wrap">
-        <h1>Asset reports</h1>
-        <div className="error-summary" role="alert">Only IT staff can view asset reports.</div>
-        <p><a className="back-link" href="#/assets">← Back to assets</a></p>
-      </div>
-    );
-  }
-
-  const [route, setRoute] = useState('financial');
+  const [route, setRoute] = useState(readReportFromHash);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [data, setData] = useState(null);
@@ -112,50 +126,60 @@ export function AssetReportsPage() {
   const [exportOpen, setExportOpen] = useState(false);
 
   useEffect(() => {
+    const sync = () => setRoute(readReportFromHash());
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+
+  useEffect(() => {
+    if (!isStaff) return undefined;
+    let cancelled = false;
     (async () => {
       setLoading(true);
       setError('');
       try {
+        const url = REPORT_URLS[route];
+        if (!url) {
+          if (!cancelled) {
+            setError('Unknown report.');
+            setData(null);
+          }
+          return;
+        }
         const params = {};
         if (fromDate) params.from_date = fromDate;
         if (toDate) params.to_date = toDate;
-
-        let url;
-        if (route === 'financial') {
-          url = '/assets/reports/financial/';
-        } else if (route === 'maintenance') {
-          url = '/assets/reports/maintenance/';
-        } else if (route === 'warranty') {
-          url = '/assets/reports/warranty/';
-        } else if (route === 'utilization') {
-          url = '/assets/reports/utilization/';
-        } else if (route === 'inventory') {
-          url = '/assets/reports/inventory/';
-          params.page_size = 100;
-        } else {
-          setError('Unknown report.');
-          setLoading(false);
-          return;
-        }
+        if (route === 'inventory') params.page_size = 100;
 
         const r = await api.get(url, { params });
-        setData(r.data);
-      } catch (e) {
-        setError('Could not load report.');
+        if (!cancelled) setData(r.data);
+      } catch {
+        if (!cancelled) {
+          setError('Could not load report.');
+          setData(null);
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route, resetFilters, fromDate, toDate]);
+  }, [isStaff, route, resetFilters, fromDate, toDate]);
 
-  const navItems = [
-    { key: 'financial', label: 'Financial overview' },
-    { key: 'maintenance', label: 'Maintenance analytics' },
-    { key: 'warranty', label: 'Warranty monitoring' },
-    { key: 'utilization', label: 'Utilization' },
-    { key: 'inventory', label: 'Inventory report' },
-  ];
+  if (!isStaff) {
+    return (
+      <div className="form-wrap">
+        <h1>Asset reports</h1>
+        <div className="error-summary" role="alert">Only IT staff can view asset reports.</div>
+        <p><a className="back-link" href="#/assets">← Back to assets</a></p>
+      </div>
+    );
+  }
+
+  const goTo = (key) => {
+    setRoute(key);
+    window.location.hash = `#/assets/reports?report=${key}`;
+  };
 
   if (loading) {
     return (
@@ -178,18 +202,18 @@ export function AssetReportsPage() {
     <div className="panel">
       <PageHeader
         title="Asset reports"
-        sub="Financial, maintenance, warranty, and utilization insights for IT assets."
+        sub="Financial, maintenance, warranty, utilization, inventory, and asset breakdown reports."
       />
 
       <div className="tab-row" role="tablist">
-        {navItems.map((n) => (
+        {REPORT_DEFS.map((n) => (
           <button
             key={n.key}
             type="button"
             className={`tab${route === n.key ? ' active' : ''}`}
             role="tab"
             aria-selected={route === n.key}
-            onClick={() => setRoute(n.key)}
+            onClick={() => goTo(n.key)}
           >
             {n.label}
           </button>
@@ -200,7 +224,11 @@ export function AssetReportsPage() {
         <div className="row-gap small muted" style={{ marginBottom: 'var(--sp-2)' }}>
           Showing: {fromDate || '—'} to {toDate || '—'}
           {' '}
-          <button type="button" className="btn-ghost btn-small" onClick={() => setResetFilters((n) => n + 1)}>
+          <button
+            type="button"
+            className="btn-ghost btn-small"
+            onClick={() => { setFromDate(''); setToDate(''); setResetFilters((n) => n + 1); }}
+          >
             Clear date filters
           </button>
         </div>
@@ -210,19 +238,53 @@ export function AssetReportsPage() {
 
       {route === 'financial' && <FinancialOverview data={data} />}
       {route === 'maintenance' && <MaintenanceAnalytics data={data} />}
-      {route === 'warranty' && <WarrantyMonitoring data={data} fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />}
+      {route === 'warranty' && (
+        <WarrantyMonitoring
+          data={data}
+          fromDate={fromDate}
+          toDate={toDate}
+          setFromDate={setFromDate}
+          setToDate={setToDate}
+        />
+      )}
       {route === 'utilization' && <Utilization data={data} />}
-      {route === 'inventory' && <InventoryReport data={data} />}
+      {route === 'inventory' && (
+        <InventoryReport
+          data={data}
+          fromDate={fromDate}
+          toDate={toDate}
+          exportOpen={exportOpen}
+          setExportOpen={setExportOpen}
+        />
+      )}
+      {route === 'assets_by_department' && <AssetsByDepartment data={data} />}
+      {route === 'assets_by_location' && <AssetsByLocation data={data} />}
+      {route === 'assets_with_incomplete_info' && <AssetsWithIncompleteInfo data={data} />}
+      {route === 'warranty_by_department' && (
+        <WarrantyBreakdown data={data} dimension="by_department" label="Department" heading="Warranty by department" />
+      )}
+      {route === 'warranty_by_category' && (
+        <WarrantyBreakdown data={data} dimension="by_category" label="Category" heading="Warranty by category" />
+      )}
+      {route === 'warranty_by_vendor' && (
+        <WarrantyBreakdown data={data} dimension="by_vendor" label="Vendor" heading="Warranty by vendor" />
+      )}
+      {route === 'purchase_cost_by_department' && <PurchaseCostByDepartment data={data} />}
+      {route === 'purchase_cost_trends' && <PurchaseCostTrends data={data} />}
     </div>
   );
 }
 
 function FinancialOverview({ data }) {
   if (!data) return null;
+  const byCategory = data.by_category || [];
+  const byVendor = data.by_vendor || [];
   return (
     <div>
+      <SectionHeading>Financial overview</SectionHeading>
       <div className="kpi-grid" style={{ marginTop: 'var(--sp-3)' }}>
-        <Kpi label="Total purchase cost" value={fmtMoney(data.total_purchase_cost)} sub={`${data.total_assets} assets`} />
+        <Kpi label="Total assets" value={data.total_assets} sub="All assets" />
+        <Kpi label="Total purchase cost" value={fmtMoney(data.total_purchase_cost)} sub="Recorded acquisition cost" />
         <Kpi label="Assets without cost" value={data.assets_without_cost} sub="No purchase cost recorded" />
         <Kpi label="Total maintenance" value={fmtMoney(data.total_maintenance_cost)} sub="All maintenance records" />
         <Kpi
@@ -235,33 +297,33 @@ function FinancialOverview({ data }) {
       <div className="row-gap" style={{ marginTop: 'var(--sp-3)' }}>
         <div className="panel panel-pad" style={{ flex: '1 1 45%' }}>
           <h4 style={{ marginTop: 0 }}>Purchase cost by category</h4>
-          {data.by_category.length === 0 ? (
+          {byCategory.length === 0 ? (
             <p className="muted">No assets with a recorded category.</p>
           ) : (
             <DataTable
-              rows={data.by_category.map((r) => ({
-                category: r.category,
-                "Asset count": r.asset_count,
-                "Purchase cost": fmtMoney(r.purchase_cost),
-              }))}
-              keys={['category', 'Asset count', 'Purchase cost']}
-              rowKey="category"
+              columns={[
+                { key: 'category', label: 'Category' },
+                { key: 'asset_count', label: 'Asset count' },
+                { key: 'purchase_cost', label: 'Purchase cost', render: (r) => fmtMoney(r.purchase_cost) },
+              ]}
+              rows={byCategory}
+              keyOf={(r) => r.category}
             />
           )}
         </div>
         <div className="panel panel-pad" style={{ flex: '1 1 45%' }}>
           <h4 style={{ marginTop: 0 }}>Purchase cost by vendor</h4>
-          {data.by_vendor.length === 0 ? (
+          {byVendor.length === 0 ? (
             <p className="muted">No assets with a recorded vendor.</p>
           ) : (
             <DataTable
-              rows={data.by_vendor.map((r) => ({
-                vendor: r.vendor,
-                "Asset count": r.asset_count,
-                "Purchase cost": fmtMoney(r.purchase_cost),
-              }))}
-              keys={['vendor', 'Asset count', 'Purchase cost']}
-              rowKey="vendor"
+              columns={[
+                { key: 'vendor', label: 'Vendor' },
+                { key: 'asset_count', label: 'Asset count' },
+                { key: 'purchase_cost', label: 'Purchase cost', render: (r) => fmtMoney(r.purchase_cost) },
+              ]}
+              rows={byVendor}
+              keyOf={(r) => r.vendor}
             />
           )}
         </div>
@@ -282,8 +344,12 @@ function FinancialOverview({ data }) {
 
 function MaintenanceAnalytics({ data }) {
   if (!data) return null;
+  const byCategory = data.by_category || [];
+  const byVendor = data.by_vendor || [];
+  const topAssets = data.top_assets || [];
   return (
     <div>
+      <SectionHeading>Maintenance analytics</SectionHeading>
       <div className="kpi-grid" style={{ marginTop: 'var(--sp-3)' }}>
         <Kpi label="Total records" value={data.total_records} sub="All maintenance events" />
         <Kpi label="Total spend" value={fmtMoney(data.total_cost)} sub="Total maintenance cost" />
@@ -300,7 +366,7 @@ function MaintenanceAnalytics({ data }) {
       {data.total_records === 0 ? (
         <EmptyState
           title="No maintenance records"
-          body="No maintenance events match the current filters. Adjust the date range or clear filters."
+          hint="No maintenance events match the current filters. Adjust the date range or clear filters."
         />
       ) : (
         <>
@@ -308,7 +374,7 @@ function MaintenanceAnalytics({ data }) {
             <div className="panel panel-pad" style={{ flex: '1 1 45%' }}>
               <h4 style={{ marginTop: 0 }}>By status</h4>
               <DistributionChart
-                data={Object.entries(data.by_status).map(([k, v]) => ({ id: k, status: k, count: v }))}
+                data={Object.entries(data.by_status || {}).map(([k, v]) => ({ id: k, status: k, count: v }))}
                 valueKey="count"
                 labelKey="status"
                 color="var(--status-available)"
@@ -317,7 +383,7 @@ function MaintenanceAnalytics({ data }) {
             <div className="panel panel-pad" style={{ flex: '1 1 45%' }}>
               <h4 style={{ marginTop: 0 }}>By type</h4>
               <DistributionChart
-                data={Object.entries(data.by_type).map(([k, v]) => ({ id: k, type: k, count: v }))}
+                data={Object.entries(data.by_type || {}).map(([k, v]) => ({ id: k, type: k, count: v }))}
                 valueKey="count"
                 labelKey="type"
                 color="var(--accent)"
@@ -328,33 +394,33 @@ function MaintenanceAnalytics({ data }) {
           <div className="row-gap" style={{ marginTop: 'var(--sp-3)' }}>
             <div className="panel panel-pad" style={{ flex: '1 1 45%' }}>
               <h4 style={{ marginTop: 0 }}>Expenditure by category</h4>
-              {data.by_category.length === 0 ? (
+              {byCategory.length === 0 ? (
                 <p className="muted">No maintenance records with a category.</p>
               ) : (
                 <DataTable
-                  rows={data.by_category.map((r) => ({
-                    Category: r.category,
-                    "Records": r.count,
-                    "Cost": fmtMoney(r.cost),
-                  }))}
-                  keys={['Category', 'Records', 'Cost']}
-                  rowKey="Category"
+                  columns={[
+                    { key: 'category', label: 'Category' },
+                    { key: 'count', label: 'Records' },
+                    { key: 'cost', label: 'Cost', render: (r) => fmtMoney(r.cost) },
+                  ]}
+                  rows={byCategory}
+                  keyOf={(r) => r.category}
                 />
               )}
             </div>
             <div className="panel panel-pad" style={{ flex: '1 1 45%' }}>
               <h4 style={{ marginTop: 0 }}>Expenditure by vendor</h4>
-              {data.by_vendor.length === 0 ? (
+              {byVendor.length === 0 ? (
                 <p className="muted">No maintenance records with a vendor.</p>
               ) : (
                 <DataTable
-                  rows={data.by_vendor.map((r) => ({
-                    Vendor: r.vendor,
-                    "Records": r.count,
-                    "Cost": fmtMoney(r.cost),
-                  }))}
-                  keys={['Vendor', 'Records', 'Cost']}
-                  rowKey="Vendor"
+                  columns={[
+                    { key: 'vendor', label: 'Vendor' },
+                    { key: 'count', label: 'Records' },
+                    { key: 'cost', label: 'Cost', render: (r) => fmtMoney(r.cost) },
+                  ]}
+                  rows={byVendor}
+                  keyOf={(r) => r.vendor}
                 />
               )}
             </div>
@@ -362,21 +428,25 @@ function MaintenanceAnalytics({ data }) {
 
           <div className="panel panel-pad" style={{ marginTop: 'var(--sp-3)' }}>
             <h4 style={{ marginTop: 0 }}>Frequently maintained assets</h4>
-            {data.top_assets.length === 0 ? (
+            {topAssets.length === 0 ? (
               <p className="muted">No assets with maintenance records.</p>
             ) : (
               <DataTable
-                rows={data.top_assets.map((r) => ({
-                  "Asset": r.asset_tag,
-                  Name: r.name,
-                  "Records": r.count,
-                  "Cost": fmtMoney(r.cost),
-                  Actions: r.asset_id ? (
-                    <Link href={`#/assets/${r.asset_id}`} className="btn-ghost btn-small">View</Link>
-                  ) : '',
-                }))}
-                keys={['Asset', 'Name', 'Records', 'Cost', 'Actions']}
-                rowKey="Asset"
+                columns={[
+                  { key: 'asset_tag', label: 'Asset' },
+                  { key: 'name', label: 'Name' },
+                  { key: 'count', label: 'Records' },
+                  { key: 'cost', label: 'Cost', render: (r) => fmtMoney(r.cost) },
+                  {
+                    key: 'actions',
+                    label: 'Actions',
+                    render: (r) => (r.asset_id
+                      ? <Link href={`#/assets/${r.asset_id}`} className="btn-ghost btn-small">View</Link>
+                      : ''),
+                  },
+                ]}
+                rows={topAssets}
+                keyOf={(r) => r.asset_tag}
               />
             )}
           </div>
@@ -388,22 +458,28 @@ function MaintenanceAnalytics({ data }) {
 
 function WarrantyMonitoring({ data, fromDate, toDate, setFromDate, setToDate }) {
   if (!data) return null;
+  const soon = (days) => {
+    const v = data.expiring_soon;
+    return v && typeof v === 'object' ? (v[days] ?? 0) : 0;
+  };
+  const expiringList = data.expiring_list || [];
   return (
     <div>
+      <SectionHeading>Warranty monitoring</SectionHeading>
       <div className="kpi-grid" style={{ marginTop: 'var(--sp-3)' }}>
-        <Kpi label="Expired" value={data.expired_count} sub="Warranty past expiry" />
-        <Kpi label="Expiring within 30 days" value={data.expiring_soon?.[30] ?? 0} sub="Due soon" />
-        <Kpi label="Expiring within 90 days" value={data.expiring_soon?.[90] ?? 0} sub="Due in 3 months" />
-        <Kpi label="Expiring within 180 days" value={data.expiring_soon?.[180] ?? 0} sub="Due in 6 months" />
-        <Kpi label="Without warranty" value={data.without_warranty} sub="No expiry recorded" />
+        <Kpi label="Expired" value={data.expired_count ?? 0} sub="Warranty past expiry" />
+        <Kpi label="Expiring within 30 days" value={soon(30)} sub="Due soon" />
+        <Kpi label="Expiring within 90 days" value={soon(90)} sub="Due in 3 months" />
+        <Kpi label="Expiring within 180 days" value={soon(180)} sub="Due in 6 months" />
+        <Kpi label="Without warranty" value={data.without_warranty ?? 0} sub="No expiry recorded" />
         <Kpi
           label="Total with warranty"
-          value={data.total_with_warranty}
+          value={data.total_with_warranty ?? 0}
           sub="Assets with warranty_expiry"
         />
       </div>
 
-      {data.expired_count > 0 || (data.expiring_soon && (data.expiring_soon[30] || data.expiring_soon[90] || data.expiring_soon[180]) > 0) ? (
+      {data.expired_count > 0 || soon(30) > 0 || soon(90) > 0 || soon(180) > 0 ? (
         <div className="panel panel-pad" style={{ marginTop: 'var(--sp-3)' }}>
           <h4 style={{ marginTop: 0 }}>Warranty status list</h4>
           {(() => {
@@ -415,8 +491,8 @@ function WarrantyMonitoring({ data, fromDate, toDate, setFromDate, setToDate }) 
                 </div>
               );
             }
-            ['30', '90', '180'].forEach((days, i) => {
-              const n = data.expiring_soon?.[Number(days)] ?? 0;
+            [30, 90, 180].forEach((days) => {
+              const n = soon(days);
               if (n > 0) {
                 items.push(
                   <div key={`soon-${days}`} className="distro-section-title">
@@ -433,21 +509,25 @@ function WarrantyMonitoring({ data, fromDate, toDate, setFromDate, setToDate }) 
       <div className="row-gap" style={{ marginTop: 'var(--sp-3)' }}>
         <div className="panel panel-pad" style={{ flex: '1 1 45%' }}>
           <h4 style={{ marginTop: 0 }}>Expiring soon (next 90 days)</h4>
-          {data.expiring_list && data.expiring_list.length > 0 ? (
+          {expiringList.length > 0 ? (
             <DataTable
-              rows={data.expiring_list.map((r) => ({
-                "Asset": r.asset_tag,
-                "Name": r.name,
-                Category: r.category,
-                Vendor: r.vendor,
-                "Expiry": fmtDate(r.expiry),
-                "Days left": r.days_left,
-                Actions: r.asset_tag ? (
-                  <Link href={`#/assets/${r.asset_tag}`} className="btn-ghost btn-small">View</Link>
-                ) : '',
-              }))}
-              keys={['Asset', 'Name', 'Category', 'Vendor', 'Expiry', 'Days left', 'Actions']}
-              rowKey="Asset"
+              columns={[
+                { key: 'asset_tag', label: 'Asset' },
+                { key: 'name', label: 'Name' },
+                { key: 'category', label: 'Category' },
+                { key: 'vendor', label: 'Vendor' },
+                { key: 'expiry', label: 'Expiry', render: (r) => fmtDate(r.expiry) },
+                { key: 'days_left', label: 'Days left' },
+                {
+                  key: 'actions',
+                  label: 'Actions',
+                  render: (r) => (r.asset_tag
+                    ? <Link href={`#/assets/${r.asset_tag}`} className="btn-ghost btn-small">View</Link>
+                    : ''),
+                },
+              ]}
+              rows={expiringList}
+              keyOf={(r) => r.asset_tag}
             />
           ) : (
             <p className="muted">No warranties expiring in the next 90 days.</p>
@@ -456,7 +536,7 @@ function WarrantyMonitoring({ data, fromDate, toDate, setFromDate, setToDate }) 
         <div className="panel panel-pad" style={{ flex: '1 1 45%' }}>
           <h4 style={{ marginTop: 0 }}>Assets without warranty</h4>
           <p className="muted">
-            {data.without_warranty} asset{data.without_warranty !== 1 ? 's' : ''} have no warranty_expiry recorded.
+            {data.without_warranty ?? 0} asset{(data.without_warranty ?? 0) !== 1 ? 's' : ''} have no warranty_expiry recorded.
             Use the inventory report to find and update them.
           </p>
         </div>
@@ -467,9 +547,8 @@ function WarrantyMonitoring({ data, fromDate, toDate, setFromDate, setToDate }) 
         <DateRange
           from={fromDate}
           to={toDate}
-          onFromChange={setFromDate}
-          onToChange={setToDate}
-          label="Warranty expiry range"
+          onFrom={setFromDate}
+          onTo={setToDate}
         />
       </div>
     </div>
@@ -479,8 +558,10 @@ function WarrantyMonitoring({ data, fromDate, toDate, setFromDate, setToDate }) 
 function Utilization({ data }) {
   if (!data) return null;
   const sc = data.status_counts || {};
+  const distribution = Array.isArray(data.assignment_distribution) ? data.assignment_distribution : [];
   return (
     <div>
+      <SectionHeading>Asset utilization</SectionHeading>
       <div className="kpi-grid" style={{ marginTop: 'var(--sp-3)' }}>
         <Kpi label="Total assets" value={data.total_assets} sub="All non-deleted assets" />
         <Kpi label="Available" value={sc.available ?? data.available_count ?? 0} sub="Ready to assign" />
@@ -503,17 +584,16 @@ function Utilization({ data }) {
         </div>
         <div className="panel panel-pad" style={{ flex: '1 1 45%' }}>
           <h4 style={{ marginTop: 0 }}>Assignment distribution (top holders)</h4>
-          {data.assignment_distribution && data.assignment_distribution.length > 0 ? (
+          {distribution.length > 0 ? (
             <DataTable
-              rows={data.assignment_distribution.map((r, i) => ({
-                "#": i + 1,
-                Employee: r.employee_name || r.email,
-                "Employee ID": r.employee_id,
-                Department: r.department,
-                "Assets held": r.asset_count,
-              }))}
-              keys={['#', 'Employee', 'Employee ID', 'Department', 'Assets held']}
-              rowKey="Employee"
+              columns={[
+                { key: 'employee_name', label: 'Employee', render: (r) => r.employee_name || r.email },
+                { key: 'employee_id', label: 'Employee ID' },
+                { key: 'department', label: 'Department' },
+                { key: 'asset_count', label: 'Assets held' },
+              ]}
+              rows={distribution}
+              keyOf={(r) => r.employee_id || r.email}
             />
           ) : (
             <p className="muted">No assigned assets to display.</p>
@@ -524,14 +604,16 @@ function Utilization({ data }) {
   );
 }
 
-function InventoryReport({ data }) {
+function InventoryReport({ data, fromDate, toDate, exportOpen, setExportOpen }) {
   if (!data) return null;
+  const items = data.items || [];
   return (
     <div>
+      <SectionHeading>Asset inventory</SectionHeading>
       <div className="row-gap" style={{ marginTop: 'var(--sp-3)', justifyContent: 'space-between', alignItems: 'flex-end' }}>
         <div>
-          <h4 style={{ marginTop: 0 }}>Filtered asset inventory</h4>
-          <p className="muted small">{data.count} asset{data.count !== 1 ? 's' : ''} in result set</p>
+          <h4 style={{ marginTop: 0 }}>Inventory results</h4>
+          <p className="muted small">{data.count ?? items.length} asset{(data.count ?? items.length) !== 1 ? 's' : ''} in result set</p>
         </div>
         <button type="button" className="btn-secondary" onClick={() => setExportOpen(true)}>
           Export…
@@ -546,27 +628,193 @@ function InventoryReport({ data }) {
         />
       )}
 
-      {data.items && data.items.length > 0 ? (
+      {items.length > 0 ? (
         <DataTable
-          rows={(data.items || []).map((r) => ({
-            "Asset tag": r.asset_tag,
-            "Name": r.name,
-            Category: r.category,
-            Status: r.status,
-            "Assigned to": r.assigned_to || '—',
-            "Purchase cost": r.purchase_cost != null ? fmtMoney(r.purchase_cost) : '—',
-            "Warranty expiry": r.warranty_expiry ? fmtDate(r.warranty_expiry) : '—',
-            Actions: r.id ? (
-              <Link href={`#/assets/${r.id}`} className="btn-ghost btn-small">View</Link>
-            ) : '',
-          }))}
-          keys={['Asset tag', 'Name', 'Category', 'Status', 'Assigned to', 'Purchase cost', 'Warranty expiry', 'Actions']}
-          rowKey="Asset tag"
+          columns={[
+            { key: 'asset_tag', label: 'Asset tag' },
+            { key: 'name', label: 'Name' },
+            { key: 'category', label: 'Category' },
+            { key: 'status', label: 'Status' },
+            { key: 'assigned_to', label: 'Assigned to', render: (r) => r.assigned_to || '—' },
+            { key: 'purchase_cost', label: 'Purchase cost', render: (r) => (r.purchase_cost != null ? fmtMoney(r.purchase_cost) : '—') },
+            { key: 'warranty_expiry', label: 'Warranty expiry', render: (r) => (r.warranty_expiry ? fmtDate(r.warranty_expiry) : '—') },
+            {
+              key: 'actions',
+              label: 'Actions',
+              render: (r) => (r.id
+                ? <Link href={`#/assets/${r.id}`} className="btn-ghost btn-small">View</Link>
+                : ''),
+            },
+          ]}
+          rows={items}
+          keyOf={(r) => r.id || r.asset_tag}
         />
       ) : (
         <EmptyState
           title="No assets match the current filters"
-          body="Try widening the date range or clearing filters."
+          hint="Try widening the date range or clearing filters."
+        />
+      )}
+    </div>
+  );
+}
+
+function AssetsByDepartment({ data }) {
+  if (!data) return null;
+  const rows = data.by_department || [];
+  return (
+    <div>
+      <SectionHeading>Assets by department</SectionHeading>
+      <div className="kpi-grid" style={{ marginTop: 'var(--sp-3)' }}>
+        <Kpi label="Departments" value={data.total ?? rows.length} sub="Groups with assets" />
+      </div>
+      {rows.length === 0 ? (
+        <EmptyState title="No department data" hint="No assets are grouped by department yet." />
+      ) : (
+        <DataTable
+          columns={[
+            { key: 'department', label: 'Department' },
+            { key: 'asset_count', label: 'Assets' },
+          ]}
+          rows={rows}
+          keyOf={(r) => r.department}
+        />
+      )}
+    </div>
+  );
+}
+
+function AssetsByLocation({ data }) {
+  if (!data) return null;
+  const rows = data.by_location || [];
+  return (
+    <div>
+      <SectionHeading>Assets by location</SectionHeading>
+      <div className="kpi-grid" style={{ marginTop: 'var(--sp-3)' }}>
+        <Kpi label="Locations" value={data.total ?? rows.length} sub="Groups with assets" />
+      </div>
+      {rows.length === 0 ? (
+        <EmptyState title="No location data" hint="No assets are grouped by location yet." />
+      ) : (
+        <DataTable
+          columns={[
+            { key: 'location', label: 'Location' },
+            { key: 'asset_count', label: 'Assets' },
+          ]}
+          rows={rows}
+          keyOf={(r) => r.location}
+        />
+      )}
+    </div>
+  );
+}
+
+function AssetsWithIncompleteInfo({ data }) {
+  if (!data) return null;
+  return (
+    <div>
+      <SectionHeading>Assets with incomplete info</SectionHeading>
+      <div className="kpi-grid" style={{ marginTop: 'var(--sp-3)' }}>
+        <Kpi label="Assets with missing data" value={data.total ?? 0} sub="At least one field missing" />
+        <Kpi label="Missing department" value={data.missing_department ?? 0} sub="No department set" />
+        <Kpi label="Missing vendor" value={data.missing_vendor ?? 0} sub="No vendor set" />
+        <Kpi label="Missing serial" value={data.missing_serial ?? 0} sub="No serial number" />
+        <Kpi label="Missing purchase cost" value={data.missing_purchase_cost ?? 0} sub="No cost recorded" />
+      </div>
+      <div className="panel panel-pad" style={{ marginTop: 'var(--sp-3)' }}>
+        <p className="muted" style={{ marginBottom: 0 }}>
+          Use the asset inventory report to find and update records with missing information.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function WarrantyBreakdown({ data, dimension, label, heading }) {
+  if (!data) return null;
+  const rows = data[dimension] || [];
+  const key = dimension === 'by_department' ? 'department' : dimension === 'by_category' ? 'category' : 'vendor';
+  return (
+    <div>
+      <SectionHeading>{heading}</SectionHeading>
+      <div className="kpi-grid" style={{ marginTop: 'var(--sp-3)' }}>
+        <Kpi label="With warranty" value={data.total_with_warranty ?? 0} sub="Assets with an expiry date" />
+        <Kpi label="Without warranty" value={data.total_without_warranty ?? 0} sub="Assets with no expiry date" />
+      </div>
+      {rows.length === 0 ? (
+        <EmptyState
+          title="No warranty data available"
+          hint="No warranty records match the current filters."
+        />
+      ) : (
+        <DataTable
+          columns={[
+            { key, label },
+            { key: 'total', label: 'Assets' },
+            { key: 'expired', label: 'Expired' },
+            { key: 'expiring_30', label: '≤ 30 days' },
+            { key: 'expiring_90', label: '≤ 90 days' },
+            { key: 'expiring_180', label: '≤ 180 days' },
+            { key: 'without', label: 'No warranty' },
+          ]}
+          rows={rows}
+          keyOf={(r) => r[key]}
+        />
+      )}
+    </div>
+  );
+}
+
+function PurchaseCostByDepartment({ data }) {
+  if (!data) return null;
+  const rows = data.by_department || [];
+  return (
+    <div>
+      <SectionHeading>Purchase cost by department</SectionHeading>
+      <div className="kpi-grid" style={{ marginTop: 'var(--sp-3)' }}>
+        <Kpi label="Total purchase cost" value={fmtMoney(data.total)} sub="All departments" />
+      </div>
+      {rows.length === 0 ? (
+        <EmptyState title="No purchase cost data" hint="No assets are grouped by department yet." />
+      ) : (
+        <DataTable
+          columns={[
+            { key: 'department', label: 'Department' },
+            { key: 'asset_count', label: 'Assets' },
+            { key: 'purchase_cost', label: 'Purchase cost', render: (r) => fmtMoney(r.purchase_cost) },
+          ]}
+          rows={rows}
+          keyOf={(r) => r.department}
+        />
+      )}
+    </div>
+  );
+}
+
+function PurchaseCostTrends({ data }) {
+  if (!data) return null;
+  const rows = data.by_month || [];
+  return (
+    <div>
+      <SectionHeading>Purchase cost trends</SectionHeading>
+      <div className="kpi-grid" style={{ marginTop: 'var(--sp-3)' }}>
+        <Kpi label="Assets with purchase date" value={data.total_assets ?? 0} sub="Across all months" />
+      </div>
+      {rows.length === 0 ? (
+        <EmptyState title="No purchase cost trends" hint="No assets have a purchase date recorded." />
+      ) : (
+        <DataTable
+          columns={[
+            {
+              key: 'period',
+              label: 'Month',
+              render: (r) => `${String(r.month).padStart(2, '0')}/${r.year}`,
+            },
+            { key: 'purchase_cost', label: 'Purchase cost', render: (r) => fmtMoney(r.purchase_cost) },
+            { key: 'asset_count', label: 'Assets' },
+          ]}
+          rows={rows}
+          keyOf={(r) => `${r.year}-${r.month}`}
         />
       )}
     </div>

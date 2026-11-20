@@ -177,7 +177,7 @@ def approve_baseline(baseline, actor):
     with transaction.atomic():
         locked = (
             ConfigurationBaseline.objects
-            .select_for_update()
+            .select_for_update(of=("self",))
             .select_related("created_by")
             .get(pk=baseline.pk)
         )

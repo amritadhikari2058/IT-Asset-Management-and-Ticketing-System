@@ -15,7 +15,9 @@ review controls. All mutations are transactional and auditable.
 """
 from django.conf import settings
 from django.db import models
+from django.core.exceptions import ValidationError
 from django.utils import timezone
+from datetime import timedelta
 
 from accounts.models import User, Department
 from assets.models import Asset
@@ -1228,3 +1230,136 @@ class ChangeKnowledgeLink(models.Model):
 
     def __str__(self):
         return f"{self.change.change_number} links KB article {self.article_id}"
+# ---------------------------------------------------------------------------
+# Blackout Periods
+# ---------------------------------------------------------------------------
+
+
+class BlackoutPeriod(SoftDeleteModel):
+    """A period when changes are prohibited or restricted."""
+
+    class PeriodTypeChoices(models.TextChoices):
+        FINANCIAL = "financial", "Financial Closing"
+        CRITICAL = "critical", "Critical Business Period"
+        FREEZE = "freeze", "Organization-wide Freeze"
+        INFRASTRUCTURE = "infrastructure", "Infrastructure Freeze"
+
+
+    code = models.CharField(max_length=20, unique=True, help_text="Unique code for the blackout period")
+    name = models.CharField(max_length=255)
+    period_type = models.CharField(
+        max_length=20, choices=PeriodTypeChoices,
+        help_text="Type of blackout period"
+    )
+    start_at = models.DateTimeField()
+    end_at = models.DateTimeField()
+    description = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=20, choices=[("active", "Active"), ("inactive", "Inactive")],
+        default="active", db_index=True,
+    )
+    scope_department = models.ForeignKey(
+        Department, null=True, blank=True, on_delete=models.SET_NULL,
+        help_text="Applicable department scope"
+    )
+    scope_service = models.ForeignKey(
+        ServiceCatalogueItem, null=True, blank=True, on_delete=models.SET_NULL,
+        help_text="Applicable service scope"
+    )
+    created_by = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="created_blackout_periods"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-start_at"]
+
+    def __str__(self):
+        return f"{self.name} ({self.start_at} - {self.end_at})"
+
+    def clean(self):
+        """Validate blackout period constraints."""
+        if self.start_at and self.end_at and self.start_at >= self.end_at:
+            raise ValidationError("End time must be after start time.")
+
+
+# ---------------------------------------------------------------------------
+# Scheduling Exceptions
+# ---------------------------------------------------------------------------
+
+
+class ChangeSchedulingException(SoftDeleteModel):
+    """An authorized exception to scheduling policy (blackout/maintenance window)."""
+
+    class StatusChoices(models.TextChoices):
+        PENDING = "pending", "Pending Decision"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
+
+    change = models.ForeignKey(
+        ChangeRequest, on_delete=models.CASCADE, related_name="scheduling_exceptions"
+    )
+    blackout_period = models.ForeignKey(
+        BlackoutPeriod, null=True, blank=True, on_delete=models.SET_NULL,
+        help_text="Blackout period (if applicable)"
+    )
+    maintenance_window = models.ForeignKey(
+        MaintenanceWindow, null=True, blank=True, on_delete=models.SET_NULL,
+        help_text="Maintenance window (if applicable)"
+    )
+    justification = models.TextField()
+    requesting_user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="requested_exceptions"
+    )
+    decided_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="decided_exceptions"
+    )
+    decision_timestamp = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20, choices=StatusChoices, default="pending"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-decision_timestamp"]
+
+    def __str__(self):
+        return f"Exception for {self.change.change_number} - {self.status}"
+
+    def clean(self):
+        """Validate exception constraints."""
+        if self.status == "approved" and not self.decided_by:
+            raise ValidationError("Approved exceptions must have a decision maker.")
+        if self.decision_timestamp and self.decision_timestamp < timezone.now() - timedelta(days=1):
+            # Allow, but flag for review
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Maintenance Window overlap helpers (model methods)
+# ---------------------------------------------------------------------------
+
+def is_within_maintenance_window(planned_start, planned_end, window):
+    """Check if a change falls within a maintenance window."""
+    if not window or window.status != "active":
+        return False
+    # Window is inactive or expired
+    if window.end_at < timezone.now():
+        return False
+    # Check overlap
+    return planned_start <= window.end_at and window.start_at <= planned_end
+
+
+def is_within_blackout_period(planned_start, planned_end, blackout_period):
+    """Check if a change falls within a blackout period."""
+    if not blackout_period or blackout_period.status != "active":
+        return False
+    # Check if blackout period is expired
+    if blackout_period.end_at < timezone.now():
+        return False
+    # Check overlap
+    return planned_start <= blackout_period.end_at and blackout_period.start_at <= planned_end

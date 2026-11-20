@@ -303,6 +303,7 @@ class ConfigurationItemType(SoftDeleteModel):
 
     def save(self, *args, **kwargs):
         self.code = (self.code or "").strip().upper()
+        self.clean()
         super().save(*args, **kwargs)
 
 
@@ -492,6 +493,7 @@ class ConfigurationItem(SoftDeleteModel):
         return f"{prefix}{n:06d}"
 
     def save(self, *args, **kwargs):
+        self.clean()
         if not self.ci_number:
             # Concurrency-safe allocation: bounded retries on unique collision.
             last_exc = None
@@ -593,6 +595,31 @@ class ConfigurationItemRelationship(SoftDeleteModel):
             raise ValidationError("Self-reference not allowed")
         if not self.relationship_type:
             raise ValidationError({"relationship_type": "relationship_type is required"})
+        if self.source_ci_id and self.target_ci_id:
+            if getattr(self.source_ci, "is_deleted", False) or getattr(
+                self.target_ci, "is_deleted", False,
+            ):
+                raise ValidationError("Cannot relate to a deleted configuration item")
+            validate_relationship(
+                self.source_ci, self.target_ci, self.relationship_type,
+                status=self.status or "active",
+            )
+
+    def save(self, *args, **kwargs):
+        if self.relationship_type in HIERARCHY_PARENT_DIRECTION:
+            from django.db import connection
+
+            if connection.vendor == "postgresql":
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        [0x434D4248],
+                    )
+            with transaction.atomic():
+                self.clean()
+                return super().save(*args, **kwargs)
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class ConfigurationItemHistory(models.Model):
@@ -1031,6 +1058,8 @@ def validate_relationship(source_ci, target_ci, relationship_type, status="activ
     """Full server-side validation for a relationship candidate."""
     if not source_ci or not target_ci:
         raise ValidationError("source_ci and target_ci are required")
+    if getattr(source_ci, "is_deleted", False) or getattr(target_ci, "is_deleted", False):
+        raise ValidationError("Cannot relate to a deleted configuration item")
     if source_ci.id == target_ci.id:
         raise ValidationError("Self-reference not allowed")
     if relationship_type not in INVERSE_REL_TYPES:

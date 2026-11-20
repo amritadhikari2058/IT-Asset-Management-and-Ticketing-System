@@ -1296,6 +1296,53 @@ class ExportDatasetTests(TestCase):
         after = AuditLog.objects.filter(action="export").count()
         self.assertEqual(after, before + 1)
 
+    def test_employee_forbidden_on_assignments_export(self):
+        """Assignments carry employee_email/assigned_by_email (PII); export
+        must require IT staff, matching the employees dataset."""
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/assignments/?format=csv")
+        self.assertEqual(res.status_code, 403)
+
+    def test_it_staff_can_export_assignments(self):
+        res = self.c.get("/api/common/exports/assignments/?format=csv")
+        self.assertEqual(res.status_code, 200)
+
+    def test_employee_asset_export_limited_to_visible_assets(self):
+        """The assets export must not bypass the asset list API's employee
+        scope (assigned to the employee or in their home department)."""
+        from accounts.models import Department
+        from assets.models import Asset, AssetCategory
+        other_dep = Department.objects.create(name="Other", code="OTHR")
+        visible_cat = AssetCategory.objects.create(name="Visible")
+        hidden_cat = AssetCategory.objects.create(name="Hidden")
+        visible = Asset.objects.create(
+            asset_tag="VISIBLE-1", name="visible", category=visible_cat,
+            department=self.dep, assigned_to=self.emp, status="assigned")
+        hidden = Asset.objects.create(
+            asset_tag="HIDDEN-1", name="hidden", category=hidden_cat,
+            department=other_dep)
+
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/assets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("VISIBLE-1", blob)
+        self.assertNotIn("HIDDEN-1", blob)
+
+    def test_it_staff_asset_export_sees_all_assets(self):
+        from accounts.models import Department
+        from assets.models import Asset, AssetCategory
+        other_dep = Department.objects.create(name="Other2", code="OT2")
+        hidden_cat = AssetCategory.objects.create(name="Hidden2")
+        hidden = Asset.objects.create(
+            asset_tag="HIDDEN-2", name="hidden", category=hidden_cat,
+            department=other_dep)
+        res = self.c.get("/api/common/exports/assets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("HIDDEN-2", blob)
+
+
 
 class UserNotificationPreferenceTests(TestCase):
     """Notification preference API permissions + centralized enforcement."""

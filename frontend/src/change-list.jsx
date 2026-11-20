@@ -12,6 +12,16 @@ const CHANGE_LIST_API = '/changes/';
 
 export function ChangeList({ initialFilters = {} }) {
   const { isStaff, role } = useAuth();
+  // Page-size preference persisted in localStorage; fall back to DRF default 20.
+  const [pageSize, setPageSize] = useState(() => {
+    if (typeof window === 'undefined') return 20;
+    try {
+      const saved = window.localStorage.getItem('itdesk.pageSize');
+      return saved ? Number(saved) : 20;
+    } catch {
+      return 20;
+    }
+  });
   const [changes, setChanges] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -23,7 +33,7 @@ export function ChangeList({ initialFilters = {} }) {
     setLoading(true);
     setError(null);
     try {
-      const url = buildChangeListUrl(filters);
+      const url = buildChangeListUrl(filters, pageSize, page);
       const fullUrl = url ? `${CHANGE_LIST_API}${url}` : CHANGE_LIST_API;
       const response = await fetchPage(fullUrl);
       setChanges(response.items ?? []);
@@ -36,7 +46,7 @@ export function ChangeList({ initialFilters = {} }) {
 
   useEffect(() => {
     fetchChanges();
-  }, [refreshKey]);
+  }, [refreshKey, pageSize]);
 
   const onFilterChange = (newFilters) => {
     setFilters(newFilters);
@@ -135,17 +145,20 @@ export function ChangeList({ initialFilters = {} }) {
         </table>
       )}
       {changes.length > 0 && (
-        <Pager
-          count={changes.length}
-          page={page}
-          pageSize={20}
-          onPageChange={(newPage) => setPage(newPage)}
-          onPageSizeChange={(newSize) => {
-            setPageSize(newSize);
-            setPage(1);
-            setRefreshKey(prev => prev + 1);
-          }}
-        />
+        <>
+          <PageSizeSelector value={pageSize} onChange={setPageSize} />
+          <Pager
+            count={changes.length}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={(newPage) => setPage(newPage)}
+            onPageSizeChange={(newSize) => {
+              setPageSize(newSize);
+              setPage(1);
+              setRefreshKey(prev => prev + 1);
+            }}
+          />
+        </>
       )}
     </div>
   );

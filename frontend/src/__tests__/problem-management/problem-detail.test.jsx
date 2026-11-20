@@ -11,9 +11,12 @@ vi.mock('../../services/problem-management', () => ({
   getRCA: vi.fn(),
   linkedAssets: vi.fn(),
   linkedCIs: vi.fn(),
+  linkedKBs: vi.fn(),
   linkedProducts: vi.fn(),
   linkedServices: vi.fn(),
   linkedTickets: vi.fn(),
+  createKbLink: vi.fn(),
+  deleteKbLink: vi.fn(),
   listEvidence: vi.fn(),
   listExceptions: vi.fn(),
   listTasks: vi.fn(),
@@ -53,10 +56,13 @@ describe('Problem Detail', () => {
     problemDetail.mockResolvedValue(PROBLEM);
     const svc = await import('../../services/problem-management');
     ['fiveWhys', 'linkedAssets', 'linkedCIs', 'linkedProducts', 'linkedServices',
-      'linkedTickets', 'listEvidence', 'listExceptions', 'listTasks', 'listValidations',
-      'listWorkarounds', 'problemHistory', 'rootCauseFactors'].forEach((name) => {
+      'linkedTickets', 'linkedKBs', 'listEvidence', 'listExceptions', 'listTasks',
+      'listValidations', 'listWorkarounds', 'problemHistory', 'rootCauseFactors'
+    ].forEach((name) => {
       svc[name].mockResolvedValue({ results: [] });
     });
+    svc.createKbLink.mockResolvedValue({});
+    svc.deleteKbLink.mockResolvedValue({});
     svc.problemReadiness.mockResolvedValue({
       ready_for_resolution: false,
       ready_for_closure: false,

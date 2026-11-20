@@ -17,6 +17,7 @@ from .models import (
     ProblemAssetLink,
     ProblemConfigurationItemLink,
     ProblemHistory,
+    ProblemKbArticleLink,
     ProblemServiceLink,
     ProblemSoftwareProductLink,
     ProblemTask,
@@ -35,6 +36,7 @@ from .serializers import (
     ProblemCreateSerializer,
     ProblemDetailSerializer,
     ProblemHistorySerializer,
+    ProblemKbArticleLinkSerializer,
     ProblemListSerializer,
     ProblemServiceLinkSerializer,
     ProblemSoftwareProductLinkSerializer,
@@ -237,6 +239,13 @@ class _LinkViewSet(viewsets.ModelViewSet):
                        f"{link.relationship_type} ({link.relevance}).",
                 changed_fields=["ticket"],
             )
+        elif isinstance(link, ProblemKbArticleLink):
+            services.record_history(
+                link.problem, "kb_linked", self.request.user,
+                detail=f'KB article "{link.article.title}" linked '
+                       f"as {link.relation_type} ({link.relevance}).",
+                changed_fields=["article"],
+            )
         else:
             services.record_history(
                 link.problem, "linked", self.request.user,
@@ -252,6 +261,11 @@ class _LinkViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         if isinstance(instance, ProblemTicketLink):
             services.unlink_ticket_link(actor=self.request.user, link=instance)
+        elif isinstance(instance, ProblemKbArticleLink):
+            services.remove_link(
+                actor=self.request.user, link=instance,
+                event_detail=f'KB article "{instance.article.title}" link removed.',
+            )
         else:
             self.service_remove(
                 actor=self.request.user, link=instance,
@@ -305,6 +319,14 @@ class ProblemSoftwareProductLinkViewSet(_LinkViewSet):
     queryset = ProblemSoftwareProductLink.objects.all()
     target_field = "software_product"
     serializer_class = ProblemSoftwareProductLinkSerializer
+
+
+class ProblemKbArticleLinkViewSet(_LinkViewSet):
+    queryset_class = ProblemKbArticleLink
+    queryset = ProblemKbArticleLink.objects.all()
+    target_field = "article"
+    creator_field = "linked_by"
+    serializer_class = ProblemKbArticleLinkSerializer
 
 
 class ProblemTaskViewSet(viewsets.ModelViewSet):

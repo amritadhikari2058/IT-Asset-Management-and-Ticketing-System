@@ -163,6 +163,23 @@ p { margin: 0 0 var(--sp-2); }
   font-size: var(--font-xs); font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--muted-text); padding: var(--sp-3) var(--sp-2) var(--sp-1);
 }
+
+/* Collapsible section headers (button version of .sidenav-section) */
+.sidenav-section-header {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; background: none; border: 0; padding: var(--sp-3) var(--sp-2) var(--sp-1);
+  font: inherit; font-size: var(--font-xs); font-weight: 650; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted-text); text-align: left;
+  cursor: pointer; border-radius: var(--radius-sm); transition: background var(--t-fast);
+}
+.sidenav-section-header:hover { background: var(--surface-hover); }
+.sidenav-section-header:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.sidenav-section-header[aria-expanded="true"] { background: var(--surface-sunken); color: var(--heading-text); }
+.sidenav-section-header[aria-expanded="false"] .sidenav-section-chevron { transform: rotate(-90deg); }
+.sidenav-section-chevron { font-size: 10px; line-height: 1; transition: transform var(--t-fast); display: inline-block; }
+.sidenav-section-content { padding-left: var(--sp-2); }
+.sidenav-section-content.collapsed { display: none; }
+
 .sidenav a {
   display: flex; align-items: center; gap: var(--sp-2); padding: 6px var(--sp-2);
   border-radius: var(--radius); color: var(--main-text); font-size: var(--font-body-lg);

@@ -339,6 +339,104 @@ class UserAdminActionTests(TestCase):
         self.assertEqual(self.emp.role, "employee")
 
 
+class UserCreateRoleTests(TestCase):
+    """Role-escalation guards on user creation (create endpoint).
+
+    Only a system administrator may create another system administrator or
+    IT manager. Lower-privileged creators who request an equal-or-higher
+    role are silently downgraded to employee; the effective role is
+    recorded in the audit log.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.sup = _make_user("S1", "sup@x", "sup@x", "it_support", self.dep)
+        self.c = APIClient()
+
+    def _post_create(self, actor, **payload):
+        auth(self.c, actor)
+        return self.c.post("/api/accounts/users/", payload, format="json")
+
+    def _base_payload(self, employee_id, email, role="employee"):
+        return {
+            "employee_id": employee_id,
+            "username": email,
+            "email": email,
+            "password": "pw12345678",
+            "first_name": "New",
+            "last_name": "User",
+            "role": role,
+            "home_department": self.dep.pk,
+        }
+
+    def test_system_admin_can_create_system_admin(self):
+        res = self._post_create(self.admin, **self._base_payload(
+            "S2", "s2@example.com", "system_admin"))
+        self.assertEqual(res.status_code, 201, res.data)
+        u = User.objects.get(employee_id="S2")
+        self.assertEqual(u.role, "system_admin")
+        self.assertTrue(AuditLog.objects.filter(
+            object_id=str(u.pk), action="create").exists())
+
+    def test_system_admin_can_create_it_manager(self):
+        res = self._post_create(self.admin, **self._base_payload(
+            "M2", "m2@example.com", "it_manager"))
+        self.assertEqual(res.status_code, 201, res.data)
+        u = User.objects.get(employee_id="M2")
+        self.assertEqual(u.role, "it_manager")
+
+    def test_it_manager_cannot_create_system_admin(self):
+        res = self._post_create(self.mgr, **self._base_payload(
+            "M3", "m3@example.com", "system_admin"))
+        self.assertEqual(res.status_code, 201, res.data)
+        u = User.objects.get(employee_id="M3")
+        # Downgraded to employee; no escalation.
+        self.assertEqual(u.role, "employee")
+        self.assertTrue(AuditLog.objects.filter(
+            object_id=str(u.pk), action="create").exists())
+
+    def test_it_manager_cannot_create_it_manager(self):
+        res = self._post_create(self.mgr, **self._base_payload(
+            "M4", "m4@example.com", "it_manager"))
+        self.assertEqual(res.status_code, 201, res.data)
+        u = User.objects.get(employee_id="M4")
+        self.assertEqual(u.role, "employee")
+
+    def test_it_support_cannot_create_system_admin(self):
+        res = self._post_create(self.sup, **self._base_payload(
+            "S3", "s3@example.com", "system_admin"))
+        self.assertEqual(res.status_code, 201, res.data)
+        u = User.objects.get(employee_id="S3")
+        self.assertEqual(u.role, "employee")
+
+    def test_it_support_can_create_employee(self):
+        res = self._post_create(self.sup, **self._base_payload(
+            "S4", "s4@example.com", "employee"))
+        self.assertEqual(res.status_code, 201, res.data)
+        u = User.objects.get(employee_id="S4")
+        self.assertEqual(u.role, "employee")
+
+    def test_employee_cannot_create_users(self):
+        res = self._post_create(self.emp, **self._base_payload(
+            "E2", "e2@example.com", "employee"))
+        self.assertEqual(res.status_code, 403)
+
+    def test_anonymous_cannot_create_users(self):
+        self.c.credentials()
+        res = self.c.post("/api/accounts/users/",
+                          self._base_payload("E3", "e3@example.com"), format="json")
+        self.assertEqual(res.status_code, 401)
+
+    def test_change_role_does_not_bypass_create_restriction(self):
+        """IT Manager cannot escalate via the dedicated change_role action."""
+        auth(self.c, self.mgr)
+        res = self.c.post(f"/api/accounts/users/{self.emp.pk}/change_role/",
+                          {"role": "system_admin"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.role, "employee")
+
+
 class UserOrderingTests(TestCase):
     def setUp(self):
         self.dep, self.admin, self.mgr, self.emp = make_users()

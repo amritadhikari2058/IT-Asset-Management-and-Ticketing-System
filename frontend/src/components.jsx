@@ -923,3 +923,76 @@ export function Select({ label, children, ...props }) {
 export function Option(props) {
   return <option {...props} />;
 }
+
+/** Page-size selector for server-paginated tables.
+ *  Shows standard options (10/25/50/100) and a custom input.
+ *  onChange receives either '' (unspecified/back to default),
+ *  a number, or the current value on invalid input.
+ *  value: current page size number or '' for default.
+ *  maxPageSize: maximum allowed value (default 100, matching DRF).
+ */
+export function PageSizeSelector({ value, onChange, showCustom = true, maxPageSize = 100 }) {
+  const handleChange = (e) => {
+    const raw = e.target.value.trim();
+    if (raw === '') {
+      onChange('');
+      return;
+    }
+    if (/^\d+$/.test(raw)) {
+      const num = Number(raw);
+      if (num <= 0) {
+        onChange(value);
+        return;
+      }
+      if (num > maxPageSize) {
+        onChange(value);
+        return;
+      }
+      onChange(num);
+    } else {
+      onChange(value);
+    }
+  };
+
+  if (value === '') {
+    return (
+      <div className="form-field form-field-small">
+        <label className="form-label">Rows per page</label>
+        <select className="input" onChange={handleChange} aria-label="Rows per page">
+          <option value="">Custom...</option>
+          <option value={10}>10</option>
+          <option value={20}>20</option>
+          <option value={25}>25</option>
+          <option value={50}>50</option>
+          <option value={100}>100</option>
+        </select>
+      </div>
+    );
+  }
+
+  const numValue = Number(value);
+  return (
+    <div className="form-field form-field-small">
+      <label className="form-label">Rows per page</label>
+      <select className="input" value={String(value)} onChange={handleChange} aria-label="Rows per page">
+        <option value={10}>10</option>
+        <option value={25}>25</option>
+        <option value={50}>50</option>
+        <option value={100}>100</option>
+      </select>
+      {showCustom && (
+        <input
+          type="number"
+          className="input"
+          min="1"
+          max={maxPageSize}
+          step="1"
+          value={numValue !== numValue ? '' : String(numValue)}
+          onChange={handleChange}
+          aria-label="Custom rows per page"
+          placeholder="Enter custom value"
+        />
+      )}
+    </div>
+  );
+}

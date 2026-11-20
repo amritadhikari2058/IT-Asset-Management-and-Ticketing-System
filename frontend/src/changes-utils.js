@@ -129,7 +129,7 @@ export function safeResults(arr) {
   return arr;
 }
 
-export function buildChangeListUrl(filters = {}) {
+export function buildChangeListUrl(filters = {}, pageSize, page) {
   const params = new URLSearchParams();
   const orderedKeys = [
     'type', 'category', 'status', 'priority', 'risk', 'department',
@@ -141,6 +141,8 @@ export function buildChangeListUrl(filters = {}) {
       params.append(key, String(filters[key]));
     }
   }
+  if (pageSize !== undefined) params.append('page_size', pageSize);
+  if (page !== undefined) params.append('page', page);
   return params.toString() ? `?${params.toString()}` : '';
 }
 

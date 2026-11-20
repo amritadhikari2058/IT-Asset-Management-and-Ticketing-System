@@ -50,12 +50,12 @@ def check_sla_escalations(self):
             except TicketSLA.DoesNotExist:
                 continue
 
-            due = ticket.sla_due_at
+            due = ticket.get_sla_due_at()
             if not due:
                 continue
 
-            approach_dt = sla_cfg.escalation_deadline(ticket.sla_due_at)
-            if now >= approach_dt and now < sla_cfg.breach_deadline(ticket.sla_due_at):
+            approach_dt = sla_cfg.escalation_deadline(due)
+            if now >= approach_dt and now < sla_cfg.breach_deadline(due):
                 if not ticket.sla_escalations.filter(level="approach").exists():
                     _send_notification(ticket, "approach",
                                        f"SLA approaching ({ticket.priority})",
@@ -66,7 +66,7 @@ def check_sla_escalations(self):
                         ticket=ticket, level="approach")
                     _email_utils.send_sla_approaching(ticket)
 
-            if now >= sla_cfg.breach_deadline(ticket.sla_due_at):
+            if now >= sla_cfg.breach_deadline(due):
                 if not ticket.sla_escalations.filter(level="breach").exists():
                     _send_notification(ticket, "breach",
                                        f"SLA breached ({ticket.priority})",

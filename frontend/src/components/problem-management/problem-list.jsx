@@ -29,9 +29,18 @@ function statusKind(status) {
 
 export function ProblemList() {
   const { isStaff } = useAuth();
+  // Page-size preference persisted in localStorage; fall back to DRF default 20.
+  const [pageSize, setPageSize] = useState(() => {
+    if (typeof window === 'undefined') return 20;
+    try {
+      const saved = window.localStorage.getItem('itdesk.pageSize');
+      return saved ? Number(saved) : 20;
+    } catch {
+      return 20;
+    }
+  });
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [page, setPage] = useState(1);
-  const pageSize = 20;
   const [rows, setRows] = useState([]);
   const [count, setCount] = useState(null);
   const [hasNext, setHasNext] = useState(false);
@@ -66,6 +75,11 @@ export function ProblemList() {
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [queryKey, page]);
+
+  // Reset to page 1 when page size changes
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize]);
 
   const update = (patch) => {
     setPage(1);
@@ -169,6 +183,7 @@ export function ProblemList() {
             emptyHint="Adjust the filters or create the first problem."
           />
         )}
+      <PageSizeSelector value={pageSize} onChange={setPageSize} />
       <Pager
         count={count}
         hasNext={hasNext}

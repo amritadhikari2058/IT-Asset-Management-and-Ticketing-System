@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { HashRouter, useLocation } from 'react-router-dom';
 import { useAuth, AuthProvider } from './auth';
 import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, SLAConfig, SLAReport, Tickets, Users, VerifyEmail } from './pages';
@@ -424,13 +424,74 @@ function Shell() {
   const { access, logout, user, profileLoading, isAdmin, isStaff, canManageScheduledReports, canViewVendors, canViewProcurement, canViewProcurementReports } = useAuth();
   const canUseMonitoring = !!isStaff && user?.is_active !== false;
   const canUseProblemManagement = !!isStaff && user?.is_active !== false;
-  const caps = { isStaff, isAdmin, canManageScheduledReports, canViewVendors, canViewProcurement, canViewProcurementReports, canUseMonitoring, canUseProblemManagement };
+  const caps = useMemo(() => ({
+    isStaff, isAdmin, canManageScheduledReports, canViewVendors,
+    canViewProcurement, canViewProcurementReports, canUseMonitoring,
+    canUseProblemManagement,
+  }), [isStaff, isAdmin, canManageScheduledReports, canViewVendors,
+    canViewProcurement, canViewProcurementReports, canUseMonitoring,
+    canUseProblemManagement]);
   const routerLocation = useLocation();
   const hash = routerLocation.pathname === '/' ? '#/tickets' : `#${routerLocation.pathname}${routerLocation.search}`;
+  const nav = useMemo(() => visibleNav(NAV, caps), [caps]);
   const [navOpen, setNavOpen] = useState(false);
+  // Sections the user has explicitly collapsed. Initialized with all sections
+  // collapsed except the one containing the active route.
+  const [collapsedSections, setCollapsedSections] = useState(() => {
+    // First pass: find which section contains the active route
+    let activeSection = null;
+    let currentSection = null;
+    for (let i = 0; i < nav.length; i += 1) {
+      if (nav[i].section) {
+        currentSection = nav[i].section;
+      } else if (isActive(hash, nav[i].hash)) {
+        activeSection = currentSection;
+      }
+    }
+    // Second pass: collapse all sections except the one containing the active route
+    const collapsed = new Set();
+    currentSection = null;
+    for (let i = 0; i < nav.length; i += 1) {
+      if (nav[i].section) {
+        currentSection = nav[i].section;
+        if (currentSection !== activeSection) {
+          collapsed.add(currentSection);
+        }
+      }
+    }
+    return collapsed;
+  });
+
+  // Toggle a module section open/closed. Clicking one section never affects others.
+  const toggleSection = (sectionName) => {
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(sectionName)) next.delete(sectionName);
+      else next.add(sectionName);
+      return next;
+    });
+  };
+
+  // Auto-expand the section that contains the currently active route when
+  // navigating, so the user is never dropped into a collapsed section.
   useEffect(() => {
-    setNavOpen(false);
-  }, [hash]);
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      let currentSection = null;
+      for (let i = 0; i < nav.length; i += 1) {
+        if (nav[i].section) {
+          currentSection = nav[i].section;
+        } else if (isActive(hash, nav[i].hash) && currentSection) {
+          next.delete(currentSection);
+        }
+      }
+      return next;
+    });
+  }, [hash, nav]);
+
+  // A section is collapsed only if the user has collapsed it (and it has not
+  // been auto-expanded by navigation).
+  const isSectionCollapsed = (sectionName) => collapsedSections.has(sectionName);
   if (!access) {
     if (hash.startsWith('#/verify-email')) return <VerifyEmail />;
     if (hash.startsWith('#/reset-password')) return <ResetPassword />;
@@ -445,7 +506,6 @@ function Shell() {
   }
   const el = matchRoute(hash, { isStaff, isAdmin, canUseMonitoring, canUseProblemManagement });
   const active = (h) => isActive(hash, h) ? 'active' : '';
-  const nav = visibleNav(NAV, caps);
   return (
     <div className="shell">
       <a className="skip-link" href="#main-content">Skip to main content</a>
@@ -456,13 +516,54 @@ function Shell() {
         </a>
         <nav className="sidenav" aria-label="Primary">
           {nav.map((n, i) => n.section
-            ? <div key={i} className="sidenav-section">{n.section}</div>
-            : (
-              <a key={n.hash} href={n.hash} className={active(n.hash)} aria-current={isActive(hash, n.hash) ? 'page' : undefined} onClick={() => setNavOpen(false)}>
-                <span className="nav-label">{n.label}</span>
-                {n.badge && <NotifBadge />}
-              </a>
-            ))}
+            ? (
+              <React.Fragment key={i}>
+                <button
+                  className="sidenav-section-header"
+                  type="button"
+                  aria-expanded={!isSectionCollapsed(n.section)}
+                  aria-controls={`sidenav-section-content-${i}`}
+                  onClick={() => toggleSection(n.section)}
+                >
+                  <span className="sidenav-section-title">{n.section}</span>
+                  <span
+                    className="sidenav-section-chevron"
+                    aria-hidden="true"
+                  >
+                    {isSectionCollapsed(n.section) ? '▶' : '▼'}
+                  </span>
+                </button>
+                <div
+                  id={`sidenav-section-content-${i}`}
+                  className={`sidenav-section-content${
+                    isSectionCollapsed(n.section) ? ' collapsed' : ''
+                  }`}
+                >
+                  {(() => {
+                    const items = [];
+                    let j = i + 1;
+                    while (j < nav.length && !nav[j].section) {
+                      items.push(nav[j]);
+                      j += 1;
+                    }
+                    return items.map((item) => (
+                      <a
+                        key={item.hash}
+                        href={item.hash}
+                        className={active(item.hash)}
+                        aria-current={isActive(hash, item.hash) ? 'page' : undefined}
+                        onClick={() => setNavOpen(false)}
+                      >
+                        <span className="nav-label">{item.label}</span>
+                        {item.badge && <NotifBadge />}
+                      </a>
+                    ));
+                  })()}
+                </div>
+              </React.Fragment>
+            )
+            : null
+          )}
         </nav>
         <div className="sidebar-foot">
           <span className="user-chip">

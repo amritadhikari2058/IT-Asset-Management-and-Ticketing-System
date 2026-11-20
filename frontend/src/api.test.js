@@ -129,3 +129,85 @@ describe('auth interceptor', () => {
     expect(localStorage.getItem('access')).toBe('old-access');
   });
 });
+
+describe('logout / refresh races', () => {
+  const flush = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  it('does not restore tokens or retry when logout happens mid-refresh', async () => {
+    let resolveRefresh;
+    mockPost.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRefresh = resolve; }),
+    );
+    const err = err401();
+    const pending = handlers.err(err);
+    await flush();
+
+    // Logout (same tab or mirrored from another tab) clears both tokens.
+    localStorage.removeItem('access');
+    localStorage.removeItem('refresh');
+
+    resolveRefresh({ data: { access: 'late-access' } });
+    await expect(pending).rejects.toBe(err);
+    expect(localStorage.getItem('access')).toBeNull();
+    expect(instance).not.toHaveBeenCalled();
+  });
+
+  it('starts a fresh refresh for a new session instead of reusing the old one', async () => {
+    let resolveOldRefresh;
+    mockPost.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveOldRefresh = resolve; }),
+    );
+    const err1 = err401('/tickets/');
+    const first = handlers.err(err1);
+    await flush();
+    expect(mockPost).toHaveBeenCalledTimes(1);
+
+    // Logout + login as another user while the first refresh is in flight.
+    localStorage.setItem('access', 'new-access');
+    localStorage.setItem('refresh', 'new-refresh');
+
+    mockPost.mockResolvedValueOnce({ data: { access: 'new-refreshed' } });
+    const second = handlers.err(err401('/assets/'));
+    expect(mockPost).toHaveBeenCalledTimes(2);
+    expect(mockPost.mock.calls[1]).toEqual([
+      'http://x/api/token/refresh/',
+      { refresh: 'new-refresh' },
+    ]);
+
+    resolveOldRefresh({ data: { access: 'old-minted' } });
+    await expect(first).rejects.toBe(err1);
+    await expect(second).resolves.toBeTruthy();
+
+    // Only the new session's token is replayed; the stale one is discarded.
+    expect(instance).toHaveBeenCalledTimes(1);
+    expect(instance.mock.calls[0][0].headers.Authorization).toBe('Bearer new-refreshed');
+    expect(localStorage.getItem('access')).toBe('new-refreshed');
+  });
+
+  it('does not clear a newer session when an older refresh fails', async () => {
+    let rejectOldRefresh;
+    mockPost.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectOldRefresh = reject; }),
+    );
+    const seen = [];
+    const onExpired = () => seen.push(true);
+    window.addEventListener('auth-expired', onExpired);
+
+    const err = err401();
+    const pending = handlers.err(err);
+    await flush();
+
+    localStorage.setItem('access', 'new-access');
+    localStorage.setItem('refresh', 'new-refresh');
+    rejectOldRefresh(new Error('old refresh rejected'));
+
+    await expect(pending).rejects.toBe(err);
+    expect(localStorage.getItem('access')).toBe('new-access');
+    expect(localStorage.getItem('refresh')).toBe('new-refresh');
+    expect(seen).toEqual([]);
+    window.removeEventListener('auth-expired', onExpired);
+  });
+});

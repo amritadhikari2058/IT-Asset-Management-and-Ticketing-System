@@ -18,6 +18,7 @@ from .models import (
     ProblemAssetLink,
     ProblemConfigurationItemLink,
     ProblemHistory,
+    ProblemKbArticleLink,
     ProblemServiceLink,
     ProblemSoftwareProductLink,
     ProblemTask,
@@ -329,6 +330,38 @@ class ProblemTicketLinkSerializer(serializers.ModelSerializer):
             ).exists():
                 raise serializers.ValidationError(
                     "This ticket is already linked to the problem."
+                )
+        return attrs
+
+
+class ProblemKbArticleLinkSerializer(serializers.ModelSerializer):
+    """Links a KB article to a Problem, exposing article metadata for display."""
+
+    article_title = serializers.CharField(source="article.title", read_only=True)
+    article_status = serializers.CharField(source="article.status", read_only=True)
+    article_slug = serializers.CharField(source="article.slug", read_only=True)
+
+    class Meta:
+        model = ProblemKbArticleLink
+        fields = [
+            "id", "problem", "article", "article_title", "article_status",
+            "article_slug", "relation_type", "relevance", "note",
+            "linked_by", "linked_at", "is_deleted",
+        ]
+        read_only_fields = [
+            "id", "linked_by", "linked_at", "is_deleted",
+            "article_title", "article_status", "article_slug",
+        ]
+
+    def validate(self, attrs):
+        if self.instance is None:
+            problem = attrs.get("problem")
+            article = attrs.get("article")
+            if problem and article and ProblemKbArticleLink.objects.filter(
+                problem=problem, article=article, is_deleted=False,
+            ).exists():
+                raise serializers.ValidationError(
+                    {"article": "This KB article is already linked to the problem."}
                 )
         return attrs
 

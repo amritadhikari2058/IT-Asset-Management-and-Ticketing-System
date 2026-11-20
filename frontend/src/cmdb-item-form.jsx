@@ -58,6 +58,7 @@ export function CiForm({ id: idProp, match, onSaved }) {
   const { role: authRole, user } = useAuth();
   const role = authRole ?? user?.role;
   const [form, setForm] = useState(EMPTY_FORM);
+  const [recordVersion, setRecordVersion] = useState(null);
   const [types, setTypes] = useState([]);
   const [loading, setLoading] = useState(!!id);
   const [saving, setSaving] = useState(false);
@@ -90,6 +91,7 @@ export function CiForm({ id: idProp, match, onSaved }) {
           else next[k] = ci[k] ?? '';
         });
         setForm(next);
+        setRecordVersion(ci.record_version ?? null);
       })
       .catch((e) => {
         if (!cancelled) setError(parseApiError(e).global || 'Could not load configuration item.');
@@ -107,6 +109,7 @@ export function CiForm({ id: idProp, match, onSaved }) {
     setError('');
     setFieldErrors({});
     const payload = toPayload(form);
+    if (isEdit && recordVersion != null) payload.expected_record_version = recordVersion;
     try {
       let response;
       if (isEdit) {

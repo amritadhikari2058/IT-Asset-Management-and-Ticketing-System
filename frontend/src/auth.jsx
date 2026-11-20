@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useCallback, useEffect, useRef, useState } from 'react';
 import api from './api';
 
 const AuthCtx = createContext(null);
@@ -6,24 +6,87 @@ export const useAuth = () => useContext(AuthCtx);
 
 const STAFF_ROLES = ['system_admin', 'it_manager', 'it_support'];
 
+// Upper bound on the best-effort backend blacklist call. The request has no
+// axios timeout, so without this a hung connection would keep the refresh
+// token in localStorage and block logout indefinitely.
+const LOGOUT_TIMEOUT_MS = 5000;
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Logout request timed out.')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 export function AuthProvider({ children }) {
   const [access, setAccess] = useState(localStorage.getItem('access'));
   const [user, setUser] = useState(null);
   const [profileLoading, setProfileLoading] = useState(!!localStorage.getItem('access'));
 
+  // Bumped on every session change (login/logout). Async work that started
+  // for an older session must not write state into the newer one.
+  const sessionGen = useRef(0);
+  // Whether this tab currently believes it has a session. localStorage is
+  // shared by all tabs of this origin, so by the time a "storage" event fires
+  // the token is already gone and cannot be used to detect that here.
+  const sessionActive = useRef(!!localStorage.getItem('access'));
+
   const fetchProfile = async () => {
+    const generation = sessionGen.current;
     try {
       const res = await api.get('/accounts/me/');
+      if (sessionGen.current !== generation) return;
       setUser(res.data);
     } catch {
+      if (sessionGen.current !== generation) return;
       localStorage.removeItem('access');
       localStorage.removeItem('refresh');
+      sessionActive.current = false;
       setAccess(null);
       setUser(null);
     } finally {
-      setProfileLoading(false);
+      if (sessionGen.current === generation) setProfileLoading(false);
     }
   };
+
+  const logout = useCallback(async () => {
+    const refresh = localStorage.getItem('refresh');
+    // Invalidate in-flight profile/auth work and drop the React session now:
+    // the UI must not stay authenticated while the network call runs.
+    sessionGen.current += 1;
+    sessionActive.current = false;
+    setAccess(null);
+    setUser(null);
+    setProfileLoading(false);
+    try {
+      if (refresh) {
+        // Best-effort: blacklist the refresh token on the backend so it can
+        // no longer mint new access tokens, in this tab or any other. The
+        // backend tolerates invalid / already-blacklisted tokens, so a
+        // failure here must not prevent local logout.
+        await withTimeout(api.post('/accounts/logout/', { refresh }), LOGOUT_TIMEOUT_MS);
+      }
+    } catch {
+      // Backend unreachable, timed out or token already invalid: still log
+      // out locally so the user cannot keep using a stale session.
+    } finally {
+      // Do not clobber tokens belonging to a session created while this call
+      // was in flight (logout -> login before the request settled).
+      if (localStorage.getItem('refresh') === refresh) {
+        localStorage.removeItem('access');
+        localStorage.removeItem('refresh');
+      }
+    }
+  }, []);
 
   useEffect(() => {
     if (access) fetchProfile();
@@ -39,21 +102,32 @@ export function AuthProvider({ children }) {
     return () => window.removeEventListener('auth-expired', onExpired);
   }, []);
 
+  // Cross-tab session sync: if another tab logs out (clears the access token
+  // in localStorage), mirror that logout here so this tab's React state does
+  // not stay authenticated. localStorage is shared, so the token is already
+  // gone by the time the event fires; `sessionActive` records whether this
+  // tab was still using it.
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key === 'access' && e.newValue === null && sessionActive.current) {
+        logout();
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [logout]);
+
   const login = async (email, password) => {
     // Backend USERNAME_FIELD is 'email', so SimpleJWT's token endpoint
     // requires {email, password} (not {username, password}).
     const res = await api.post('/token/', { email, password });
+    sessionGen.current += 1;
+    sessionActive.current = true;
     localStorage.setItem('access', res.data.access);
     localStorage.setItem('refresh', res.data.refresh);
     setAccess(res.data.access);
     setProfileLoading(true);
     await fetchProfile();
-  };
-  const logout = () => {
-    localStorage.removeItem('access');
-    localStorage.removeItem('refresh');
-    setAccess(null);
-    setUser(null);
   };
   const role = user?.role;
   const isSuperuser = !!user?.is_superuser;

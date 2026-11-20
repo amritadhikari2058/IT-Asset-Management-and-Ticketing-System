@@ -327,6 +327,28 @@ class SavedTicketViewViewSet(viewsets.ModelViewSet):
             return SavedTicketViewCreateSerializer
         return SavedTicketViewSerializer
 
+    def _assert_can_modify(self, view):
+        """Shared views are readable/duplicable, not writable by others.
+
+        ``is_shared`` is a sharing capability: any authenticated user may
+        retrieve and duplicate a shared view, but only the owner (or an admin
+        / IT manager, who can already see every view) may change or delete it.
+        This mirrors ``set_default``, which is owner-only.
+        """
+        user = self.request.user
+        if _is_admin_or_manager(user) or view.owner_id == user.pk:
+            return
+        raise PermissionDenied(
+            "You can only modify or delete your own saved views.")
+
+    def perform_update(self, serializer):
+        self._assert_can_modify(self.get_object())
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._assert_can_modify(instance)
+        instance.delete()
+
     def create(self, request, *args, **kwargs):
         ser = SavedTicketViewCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)

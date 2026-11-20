@@ -39,6 +39,31 @@ def _active_pause(ticket):
         ticket=ticket, ended_at__isnull=True, is_deleted=False).first()
 
 
+def create_sla_pause_with_lock(ticket, actor, reason, pause_type):
+    """Create an SLA pause with proper transaction locking to prevent race conditions.
+    
+    Uses select_for_update to ensure only one active pause can exist per ticket
+    at a time, and transaction.atomic to ensure atomicity.
+    """
+    with transaction.atomic():
+        # End any existing active pause before creating a new one
+        existing_pause = TicketSlaPause.objects.select_for_update().filter(
+            ticket=ticket, ended_at__isnull=True, is_deleted=False).first()
+        if existing_pause:
+            ended_at = timezone.now()
+            existing_pause.ended_at = ended_at
+            existing_pause.ended_by = actor
+            existing_pause.save(update_fields=['ended_at', 'ended_by'])
+        
+        # Create new pause
+        pause = TicketSlaPause.objects.create(
+            ticket=ticket, reason=reason,
+            started_by=actor, pause_type=pause_type,
+            started_at=timezone.now()
+        )
+        return pause
+
+
 class ConflictError(Exception):
     pass
 
@@ -75,10 +100,7 @@ def request_information(ticket, validated_data, actor):
 
         pause = None
         if _sla_pause_allowed(ticket):
-            pause = TicketSlaPause.objects.create(
-                ticket=ticket, reason="waiting_requester",
-                started_by=actor, pause_type="waiting_requester",
-                started_at=timezone.now())
+            pause = create_sla_pause_with_lock(ticket, actor, "waiting_requester", "waiting_requester")
 
         _write_history(ticket, actor, "request_information",
                        old=old, new={"status": "waiting_requester"},
@@ -101,18 +123,23 @@ def requester_replied(ticket, actor, note_body):
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket.pk)
         if ticket.status != "waiting_requester":
-            return ticket
+            raise ValidationError(
+                f"Requester reply only valid when status is 'waiting_requester', "
+                f"not '{ticket.status}'.")
         old = {"status": ticket.status}
+        # Capture active pause BEFORE saving ticket (model save() will end it via update())
+        pause = _active_pause(ticket)
         ticket.status = "in_progress"
         ticket.version = (ticket.version or 1) + 1
         ticket.save(update_fields=["status", "version", "updated_at"])
         TicketNote.objects.create(
             ticket=ticket, author=actor, body=note_body, is_internal=False)
-        pause = _active_pause(ticket)
+        # If there was an active pause, ensure ended_by is set (model save uses update() without ended_by)
         if pause:
-            pause.ended_at = timezone.now()
-            pause.ended_by = actor
-            pause.save(update_fields=["ended_at", "ended_by", "updated_at"])
+            pause.refresh_from_db()
+            if pause.ended_by is None:
+                pause.ended_by = actor
+                pause.save(update_fields=["ended_by"])
         _write_history(ticket, actor, "requester_replied",
                        old=old, new={"status": "in_progress"})
         log_action(actor=actor, action="update", instance=ticket,
@@ -121,7 +148,7 @@ def requester_replied(ticket, actor, note_body):
                      f"Ticket #{ticket.pk} requester replied",
                      f"The requester replied on ticket #{ticket.pk}.", ticket)
         _notify_watchers(ticket, actor, f"Ticket #{ticket.pk} requester replied",
-                         f"The requester replied on ticket #{ticket.pk}.", actor)
+                     f"The requester replied on ticket #{ticket.pk}.", actor)
     return ticket
 
 
@@ -138,7 +165,10 @@ def resolve_ticket(ticket, validated_data, actor):
     if ticket.status == "cancelled":
         raise ValidationError("Cannot resolve a cancelled ticket.")
 
-    resolution_code_id = validated_data.get("resolution_code")
+    resolution_code = validated_data.get("resolution_code")
+    if resolution_code is None:
+        raise ValidationError("Resolution code is required.")
+    resolution_code_id = resolution_code.pk if hasattr(resolution_code, "pk") else resolution_code
     resolution_summary = (validated_data.get("resolution_summary") or "").strip()
     requester_visible_note = (validated_data.get("requester_visible_note") or "").strip()
     expected_version = validated_data.get("expected_ticket_version")
@@ -169,21 +199,27 @@ def resolve_ticket(ticket, validated_data, actor):
                     "Open child tickets block resolution. Manager override required.")
         old = {"status": ticket.status, "resolution_code": ticket.resolution_code_id,
                "resolved_at": str(ticket.resolved_at)}
+        # Capture active pause BEFORE saving ticket (model save() will end it via update())
+        pause = _active_pause(ticket)
+        
         ticket.status = "resolved"
         ticket.resolution_code = code
         ticket.resolution_summary = resolution_summary
         ticket.resolved_by = actor
         ticket.resolved_at = timezone.now()
+        ticket.sla_breached = False
         ticket.version = (ticket.version or 1) + 1
         ticket.save(update_fields=["status", "resolution_code",
                                    "resolution_summary", "resolved_by",
-                                   "resolved_at", "version", "updated_at"])
+                                   "resolved_at", "sla_breached", "version",
+                                   "updated_at"])
 
-        pause = _active_pause(ticket)
+        # If there was an active pause, ensure ended_by is set (model save uses update() without ended_by)
         if pause:
-            pause.ended_at = timezone.now()
-            pause.ended_by = actor
-            pause.save(update_fields=["ended_at", "ended_by", "updated_at"])
+            pause.refresh_from_db()
+            if pause.ended_by is None:
+                pause.ended_by = actor
+                pause.save(update_fields=["ended_by"])
 
         if requester_visible_note:
             TicketNote.objects.create(
@@ -212,7 +248,7 @@ def options_manager_override(actor, validated_data):
     return bool(_is_it_staff(actor) and validated_data.get("manager_override"))
 
 
-def close_ticket(ticket, actor, reason=""):
+def close_ticket(ticket, actor, reason="", expected_ticket_version=None):
     if not _is_it_staff(actor):
         raise PermissionDenied("Only IT staff can close tickets.")
     if ticket.status != "resolved":
@@ -229,13 +265,16 @@ def close_ticket(ticket, actor, reason=""):
                 "Open child tickets block closure. Manager override required.")
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket.pk)
+        if expected_ticket_version is not None and ticket.version != expected_ticket_version:
+            raise ConflictError("Ticket was modified concurrently. Refresh and retry.")
         if ticket.status != "resolved":
             raise ValidationError("Ticket is no longer resolved.")
         old = {"status": ticket.status, "closed_at": str(ticket.closed_at)}
         ticket.status = "closed"
         ticket.closed_at = timezone.now()
+        ticket.sla_breached = False
         ticket.version = (ticket.version or 1) + 1
-        ticket.save(update_fields=["status", "closed_at", "version", "updated_at"])
+        ticket.save(update_fields=["status", "closed_at", "sla_breached", "version", "updated_at"])
         _write_history(ticket, actor, "closed",
                        old=old, new={"status": "closed",
                                      "closed_at": str(ticket.closed_at)},
@@ -263,8 +302,10 @@ def reopen_ticket(ticket, validated_data, actor):
 
     window_days = int(getattr(settings, "TICKET_REOPEN_WINDOW_DAYS", 14) or 14)
     now = timezone.now()
-    within_window = bool(ticket.closed_at and
-                         (now - ticket.closed_at) <= timedelta(days=window_days))
+    # Reopen window is based on closed_at if set, otherwise resolved_at
+    window_start = ticket.closed_at or ticket.resolved_at
+    within_window = bool(window_start and
+                         (now - window_start) <= timedelta(days=window_days))
     if not _is_it_staff(actor) and not within_window:
         raise ValidationError("Reopen window has expired for this ticket.")
     if not _is_it_staff(actor) and ticket.resolution_code and \
@@ -275,21 +316,34 @@ def reopen_ticket(ticket, validated_data, actor):
         ticket = Ticket.objects.select_for_update().get(pk=ticket.pk)
         if expected_version is not None and ticket.version != expected_version:
             raise ConflictError("Ticket was modified concurrently. Refresh and retry.")
+        if ticket.status not in ("resolved", "closed"):
+            raise ValidationError(
+                f"Cannot reopen a ticket in {ticket.status} status.")
         old = {"status": ticket.status, "reopen_count": ticket.reopen_count,
-               "resolved_at": str(ticket.resolved_at)}
+               "resolved_at": str(ticket.resolved_at), "closed_at": str(ticket.closed_at)}
         ticket.status = "in_progress"
         ticket.reopen_count = (ticket.reopen_count or 0) + 1
         ticket.reopened_at = now
+        ticket.reopened_by = actor
         ticket.resolved_at = None
         ticket.closed_at = None
         ticket.resolution_code = None
         ticket.resolution_summary = ""
         ticket.resolved_by = None
+        ticket.sla_breached = False
         ticket.version = (ticket.version or 1) + 1
         ticket.save(update_fields=["status", "reopen_count", "reopened_at",
-                                   "resolved_at", "closed_at", "resolution_code",
-                                   "resolution_summary", "resolved_by",
+                                   "reopened_by", "resolved_at", "closed_at",
+                                   "resolution_code", "resolution_summary",
+                                   "resolved_by", "sla_breached",
                                    "version", "updated_at"])
+        # End any active pause that might exist (should not normally occur,
+        # but defensively handle edge cases from direct status changes).
+        pause = _active_pause(ticket)
+        if pause:
+            pause.ended_at = now
+            pause.ended_by = actor
+            pause.save(update_fields=["ended_at", "ended_by"])
         _write_history(ticket, actor, "reopened",
                        old=old, new={"status": "in_progress",
                                      "reopen_count": ticket.reopen_count},

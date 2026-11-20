@@ -32,6 +32,8 @@ from changes.models import (
     ChangeReviewMeeting,
     ChangeReviewItem,
     MaintenanceWindow,
+    BlackoutPeriod,
+    ChangeSchedulingException,
     ChangeConflict,
     ChangeAttachment,
     ChangeStakeholder,
@@ -2151,3 +2153,72 @@ class ChangePIRTests(TestCase):
             ).exists()
         )
 
+
+
+class ChangeSchedulingExceptionTests(TestCase):
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.sup, self.emp = make_users()
+        self.tc = make_ticket_category()
+        self.item = make_service_item(self.tc)
+        self.change = make_change(self.emp, self.item, status="approved")
+        self.client = APIClient()
+
+    def _auth(self, user):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {_token(user)}")
+
+    def test_employee_can_create_exception(self):
+        self._auth(self.emp)
+        res = self.client.post(
+            "/api/changes/scheduling-exceptions/",
+            {"change": self.change.pk, "justification": "Needs blackout exception"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        ex = ChangeSchedulingException.objects.get(pk=res.data["id"])
+        self.assertEqual(ex.requesting_user, self.emp)
+        self.assertEqual(ex.status, "pending")
+
+    def test_create_requires_change_and_justification(self):
+        self._auth(self.emp)
+        res = self.client.post("/api/changes/scheduling-exceptions/", {}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_manager_can_approve_and_sets_timestamp(self):
+        ex = ChangeSchedulingException.objects.create(
+            change=self.change, justification="x", requesting_user=self.emp, status="pending"
+        )
+        self._auth(self.mgr)
+        res = self.client.patch(
+            f"/api/changes/scheduling-exceptions/{ex.pk}/", {"status": "approved"}, format="json"
+        )
+        self.assertEqual(res.status_code, 200)
+        ex.refresh_from_db()
+        self.assertEqual(ex.status, "approved")
+        self.assertEqual(ex.decided_by, self.mgr)
+        self.assertIsNotNone(ex.decision_timestamp)
+
+    def test_requester_manager_cannot_approve_own(self):
+        # A manager who requested the exception still cannot decide it.
+        ex = ChangeSchedulingException.objects.create(
+            change=self.change, justification="x", requesting_user=self.mgr, status="pending"
+        )
+        self._auth(self.mgr)
+        res = self.client.patch(
+            f"/api/changes/scheduling-exceptions/{ex.pk}/", {"status": "approved"}, format="json"
+        )
+        self.assertEqual(res.status_code, 403)
+        ex.refresh_from_db()
+        self.assertEqual(ex.status, "pending")
+
+    def test_requester_manager_cannot_reject_own(self):
+        # A manager who requested the exception still cannot decide it.
+        ex = ChangeSchedulingException.objects.create(
+            change=self.change, justification="x", requesting_user=self.mgr, status="pending"
+        )
+        self._auth(self.mgr)
+        res = self.client.patch(
+            f"/api/changes/scheduling-exceptions/{ex.pk}/", {"status": "rejected"}, format="json"
+        )
+        self.assertEqual(res.status_code, 403)
+        ex.refresh_from_db()
+        self.assertEqual(ex.status, "pending")

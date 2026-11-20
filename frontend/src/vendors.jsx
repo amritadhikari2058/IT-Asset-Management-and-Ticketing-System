@@ -8,6 +8,16 @@ import api from './api';
 /** Vendor list page with server-side data, search, filter, sorting, pagination. */
 function VendorsPage() {
   const { isStaff, isAdmin, canManageVendors } = useAuth();
+  // Page-size preference persisted in localStorage; fall back to DRF default 20.
+  const [pageSize, setPageSize] = useState(() => {
+    if (typeof window === 'undefined') return 20;
+    try {
+      const saved = window.localStorage.getItem('itdesk.pageSize');
+      return saved ? Number(saved) : 20;
+    } catch {
+      return 20;
+    }
+  });
   const [items, setItems] = useState([]);
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
@@ -23,7 +33,7 @@ function VendorsPage() {
   const [actionError, setActionError] = useState('');
   const [rowActionBusy, setRowActionBusy] = useState(false);
   const [sort, changeSort, orderingParam] = useSort();
-  const [lastUrl, setLastUrl] = useState('/api/assets/vendors/');
+  const [lastUrl, setLastUrl] = useState('/assets/vendors/');
   const [exportOpen, setExportOpen] = useState(false);
 
   // Column definitions
@@ -90,8 +100,8 @@ function VendorsPage() {
   };
 
   // Search and filter
-  const qsKey = JSON.stringify([f, orderingParam(sort)]);
-  const builtUrl = useMemo(() => buildVendorListUrl(f, orderingParam(sort)), [qsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const qsKey = JSON.stringify([f, orderingParam(sort), page]);
+  const builtUrl = useMemo(() => buildVendorListUrl(f, orderingParam(sort), page), [qsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     let cancelled = false;
     const t = setTimeout(async () => {
@@ -102,13 +112,17 @@ function VendorsPage() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [builtUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (pageSize !== 20) setPage(1);
+  }, [pageSize]);
+
   const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const handleDelete = async (id) => {
     setDeleteBusy(true);
     setActionError('');
     try {
-      await api.delete(`/api/assets/vendors/${id}/`);
+      await api.delete(`/assets/vendors/${id}/`);
       setSel(new Set());
       await loadUrl(lastUrl);
       setShowDeleteConfirm(false);
@@ -129,7 +143,7 @@ function VendorsPage() {
     setRowActionBusy(true);
     setActionError('');
     try {
-      await api.post(`/api/assets/vendors/${id}/activate/`);
+      await api.post(`/assets/vendors/${id}/activate/`);
       await loadUrl(lastUrl);
       setActionError('Vendor activated.');
     } catch (e) {
@@ -143,7 +157,7 @@ function VendorsPage() {
     setRowActionBusy(true);
     setActionError('');
     try {
-      await api.post(`/api/assets/vendors/${id}/deactivate/`);
+      await api.post(`/assets/vendors/${id}/deactivate/`);
       await loadUrl(lastUrl);
       setActionError('Vendor deactivated.');
     } catch (e) {
@@ -175,8 +189,15 @@ function VendorsPage() {
           label="Search"
           required={false}
           hint="Search by name, code, contact, email, or phone"
-          onChange={handleSearchChange}
-        />
+        >
+          <input
+            className="input"
+            type="search"
+            value={f.q}
+            onChange={handleSearchChange}
+            placeholder="Name, code, contact, email, phone"
+          />
+        </Field>
         <div className="form-field">
           <label className="form-label"><span>Active</span></label>
           <select className="input" name="is_active" value={f.is_active} onChange={handleFilterChange} disabled={!isStaff}>
@@ -213,23 +234,33 @@ function VendorsPage() {
 
       {/* Table */}
       <div style={{ marginTop: '24px' }}>
-        <DataTable
-          title="Vendors"
-          columns={vendorColumns}
-          rows={items}
-          keyOf="id"
-          emptyTitle="No vendors found"
-          emptyHint={isStaff
-            ? 'Create a new vendor to get started.'
-            : 'Vendors are displayed on assigned assets.'}
-          loading={loading}
-          pagination={count !== null ? { page, next, previous, count } : undefined}
-          onPageChange={async (newPage) => {
-            // Rebuild URL for the new page
-            const newUrl = buildVendorListUrl(f, orderingParam(sort), newPage);
-            await loadUrl(newUrl);
-          }}
-        />
+        {loading
+          ? <div className="panel-pad"><LoadingRows n={6} /></div>
+          : (
+            <DataTable
+              columns={vendorColumns}
+              rows={items}
+              keyOf={(r) => r.id}
+              emptyTitle="No vendors found"
+              emptyHint={isStaff
+                ? 'Create a new vendor to get started.'
+                : 'Vendors are displayed on assigned assets.'}
+            />
+          )}
+        {!loading && count !== null && (
+          <>
+            <PageSizeSelector value={pageSize} onChange={setPageSize} />
+            <Pager
+              count={count}
+              pageLabel={`Page ${page}`}
+              hasNext={!!next}
+              hasPrev={!!previous}
+              busy={loading}
+              onPrev={() => previous && loadUrl(previous)}
+              onNext={() => next && loadUrl(next)}
+            />
+          </>
+        )}
       </div>
 
       {/* Confirmation dialogs */}
@@ -274,13 +305,15 @@ function VendorForm({ onSave, onClose, vendorId }) {
     is_active: true,
   });
   const [vendor, setVendor] = useState(null);
+  const [loading, setLoading] = useState(!!vendorId);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
   // Load existing vendor for edit
   useEffect(() => {
      if (vendorId) {
-       api.get(`/api/assets/vendors/${vendorId}/`)
+       setLoading(true);
+       api.get(`/assets/vendors/${vendorId}/`)
          .then((r) => {
            const d = r.data;
            setVendor(d);
@@ -299,9 +332,11 @@ function VendorForm({ onSave, onClose, vendorId }) {
          })
          .catch((e) => {
            setFormError('Could not load vendor data. ' + (e.response?.data?.global || e.response?.data?.detail || String(e)));
-         });
+         })
+         .finally(() => setLoading(false));
      } else {
        setVendor(null);
+       setLoading(false);
      }
   }, [vendorId]);
 
@@ -321,13 +356,13 @@ function VendorForm({ onSave, onClose, vendorId }) {
     try {
       if (vendorId) {
         // Edit
-        await api.patch(`/api/assets/vendors/${vendorId}/`, form);
+        await api.patch(`/assets/vendors/${vendorId}/`, form);
       } else {
         // Create
-        await api.post(`/api/assets/vendors/`, form);
+        await api.post(`/assets/vendors/`, form);
       }
       setSaving(false);
-      onSave && onSave();
+      onSave?.();
     } catch (e) {
       setSaving(false);
       const apiErr = parseApiError(e);
@@ -350,42 +385,73 @@ function VendorForm({ onSave, onClose, vendorId }) {
     );
   }
 
-  return (
-    <form onSubmit={handleSubmit} noValidate>
-      <PageHeader title={vendorId ? 'Edit Vendor' : 'New Vendor'}>
+  if (loading) {
+    return (
+      <div className="form-wrap">
+        <PageHeader title="Edit Vendor" />
+        <div className="panel-pad"><LoadingRows n={6} /></div>
+      </div>
+    );
+  }
 
+  return (
+    <div className="form-wrap">
+      <PageHeader title={vendorId ? 'Edit Vendor' : 'New Vendor'} />
+      <form onSubmit={handleSubmit} noValidate>
         {formError && (
           <div className="alert alert-danger" role="alert">
             {formError}
           </div>
         )}
 
-        <Field label="Name*" name="name" component="input" required={true} onChange={handleChange} value={form.name} />
-        <Field label="Code*" name="code" component="input" required={true} onChange={handleChange} value={form.code} />
-        <Field label="Contact Person" name="contact_person" component="input" onChange={handleChange} value={form.contact_person} />
-        <Field label="Email*" name="email" component="input" required={true} type="email" onChange={handleChange} value={form.email} />
-        <Field label="Phone" name="phone" component="input" onChange={handleChange} value={form.phone} />
-        <Field label="Website" name="website" component="input" onChange={handleChange} value={form.website} />
-        <Field label="Address" name="address" component="textarea" onChange={handleChange} value={form.address} />
-        <Field label="Tax/Registration" name="tax_registration" component="input" onChange={handleChange} value={form.tax_registration} />
-        <Field label="Notes" name="notes" component="textarea" onChange={handleChange} value={form.notes} />
-        <Field
-          label="Active"
-          name="is_active"
-          component="switch"
-          type="checkbox"
-          checked={form.is_active}
-          onChange={handleChange}
-        />
+        <div className="form-section">
+          <h4>Vendor details</h4>
+          <div className="form-grid">
+            <Field label="Name" required>
+              <input className="input" name="name" value={form.name} onChange={handleChange} disabled={saving} />
+            </Field>
+            <Field label="Code" required>
+              <input className="input" name="code" value={form.code} onChange={handleChange} disabled={saving} />
+            </Field>
+          </div>
+          <div className="form-grid">
+            <Field label="Contact Person">
+              <input className="input" name="contact_person" value={form.contact_person} onChange={handleChange} disabled={saving} />
+            </Field>
+            <Field label="Email" required>
+              <input className="input" type="email" name="email" value={form.email} onChange={handleChange} disabled={saving} />
+            </Field>
+          </div>
+          <div className="form-grid">
+            <Field label="Phone">
+              <input className="input" name="phone" value={form.phone} onChange={handleChange} disabled={saving} />
+            </Field>
+            <Field label="Website">
+              <input className="input" name="website" value={form.website} onChange={handleChange} disabled={saving} />
+            </Field>
+          </div>
+          <Field label="Address">
+            <textarea className="input" name="address" rows={3} value={form.address} onChange={handleChange} disabled={saving} />
+          </Field>
+          <Field label="Tax/Registration">
+            <input className="input" name="tax_registration" value={form.tax_registration} onChange={handleChange} disabled={saving} />
+          </Field>
+          <Field label="Notes">
+            <textarea className="input" name="notes" rows={3} value={form.notes} onChange={handleChange} disabled={saving} />
+          </Field>
+          <Field label="Active">
+            <input type="checkbox" name="is_active" checked={form.is_active} onChange={handleChange} disabled={saving} />
+          </Field>
+        </div>
 
-        <div className="modal-foot" style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-          <button type="button" onClick={onClose} className="btn btn-outline">Cancel</button>
+        <div className="row-end" style={{ marginTop: 16 }}>
+          <button type="button" onClick={onClose} className="btn btn-outline" disabled={saving}>Cancel</button>
           <button type="submit" className="btn btn-primary" disabled={saving}>
             {saving ? 'Saving…' : vendorId ? 'Update' : 'Create'}
           </button>
         </div>
-      </PageHeader>
-    </form>
+      </form>
+    </div>
   );
 }
 
@@ -405,11 +471,11 @@ function VendorDetail({ id }) {
   // Load vendor detail
   useEffect(() => {
     if (id) {
-       api.get(`/api/assets/vendors/${id}/`)
+       api.get(`/assets/vendors/${id}/`)
         .then((r) => setVendor(r.data))
         .then(() => {
           // Load related assets
-          return api.get(`/api/assets/?vendor=${id}`);
+          return api.get(`/assets/?vendor=${id}`);
         })
         .then((r) => setAssets(r.data.results || r.data))
         .catch((e) => {
@@ -418,7 +484,7 @@ function VendorDetail({ id }) {
         .finally(() => setLoading(false));
 
       // Load related stock items
-      api.get(`/api/inventory/stock-items/?preferred_vendor=${id}`)
+      api.get(`/inventory/stock-items/?preferred_vendor=${id}`)
         .then((r) => setStockItems(r.data.results || r.data))
         .catch(() => { /* ignore */ });
     }
@@ -429,7 +495,7 @@ function VendorDetail({ id }) {
     setActivateBusy(true);
     setActionError('');
     try {
-      await api.post(`/api/assets/vendors/${vendor?.id}/activate/`);
+      await api.post(`/assets/vendors/${vendor?.id}/activate/`);
       setActionError('Vendor activated.');
       setActivateBusy(false);
       if (vendor) setVendor({ ...vendor, is_active: true });
@@ -444,7 +510,7 @@ function VendorDetail({ id }) {
     setDeactivateBusy(true);
     setActionError('');
     try {
-      await api.post(`/api/assets/vendors/${vendor?.id}/deactivate/`);
+      await api.post(`/assets/vendors/${vendor?.id}/deactivate/`);
       setActionError('Vendor deactivated.');
       setDeactivateBusy(false);
       if (vendor) setVendor({ ...vendor, is_active: false });
@@ -459,7 +525,7 @@ function VendorDetail({ id }) {
     setDeleteBusy(true);
     setActionError('');
     try {
-      await api.delete(`/api/assets/vendors/${vendor?.id}/`);
+      await api.delete(`/assets/vendors/${vendor?.id}/`);
       setActionError('Vendor soft-deleted.');
       setDeleteBusy(false);
       // Navigate back
@@ -483,8 +549,9 @@ function VendorDetail({ id }) {
 
   return (
     <div className="vendor-detail-page">
-      <PageHeader title={vendor.name}>
+      <PageHeader title={vendor.name} />
 
+      <div className="vendor-detail-body">
         {/* Vendor summary section */}
         <div className="vendor-summary">
           <div className="row">
@@ -619,7 +686,7 @@ function VendorDetail({ id }) {
                     { key: 'purchase_cost', label: 'Cost', render: (a) => a.purchase_cost != null ? `<span className="cell-wrap">$${a.purchase_cost}</span>` : '<span className="cell-muted">—</span>' },
                   ]}
                   rows={assets}
-                  keyOf="id"
+                  keyOf={(r) => r.id}
                   emptyHint="No assets found"
                 />
               ) : (
@@ -665,7 +732,7 @@ function VendorDetail({ id }) {
             ) : null}
           </div>
         )}
-      </PageHeader>
+      </div>
     </div>
   );
 }
@@ -678,13 +745,15 @@ function buildVendorListUrl(filters, ordering, page) {
   if (filters.is_deleted) params.append('is_deleted', filters.is_deleted);
   if (ordering) params.append('ordering', ordering);
   if (page && page > 1) params.append('page', page);
-  return `/api/assets/vendors/?${params.toString()}`;
+  params.append('page_size', pageSize);
+  return `/assets/vendors/?${params.toString()}`;
 }
 
 /** Page number from URL. */
 function pageFromUrl(url) {
   try {
-    const search = new URLSearchParams(new URL(url).searchParams);
+    // DRF returns absolute next/previous links; resolve relative ones too.
+    const search = new URL(url, window.location.origin).searchParams;
     return parseInt(search.get('page') || '1', 10);
   } catch {
     return 1;

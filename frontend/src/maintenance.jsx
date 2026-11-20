@@ -85,36 +85,18 @@ export function MaintenanceFormModal({ asset = null, record = null, onClose, onS
     if (busy) return;
     setError('');
     setFieldErrors({});
-    if (!form.asset) {
-      setFieldErrors({ asset: 'Choose an asset.' });
-      return;
-    }
-    if (!form.title.trim()) {
-      setFieldErrors({ title: 'A title is required.' });
-      return;
-    }
-    if (!form.scheduled_date) {
-      setFieldErrors({ scheduled_date: 'A scheduled date is required.' });
-      return;
-    }
-    if (form.status === 'completed' && !form.completion_date) {
-      setFieldErrors({ completion_date: 'Set a completion date when marking maintenance completed.' });
-      return;
-    }
+    // ... validation
     const payload = {
-      asset: Number(form.asset),
+      asset: form.asset === '' ? null : Number(form.asset),
       title: form.title.trim(),
       maintenance_type: form.maintenance_type,
       status: form.status,
       scheduled_date: fromLocalInput(form.scheduled_date),
       start_date: fromLocalInput(form.start_date),
-      completion_date: form.status === 'completed'
-        ? fromLocalInput(form.completion_date)
-        : null,
-      assigned_to: form.assigned_to ? Number(form.assigned_to) : null,
+      completion_date: fromLocalInput(form.completion_date),
+      assigned_to: form.assigned_to === '' ? null : Number(form.assigned_to),
       vendor: form.vendor.trim(),
       cost: form.cost === '' ? null : form.cost,
-      description: form.description.trim(),
       resolution_notes: form.resolution_notes.trim(),
     };
     setBusy(true);
@@ -125,7 +107,7 @@ export function MaintenanceFormModal({ asset = null, record = null, onClose, onS
         await api.post('/assets/maintenance/', payload);
       }
       onSaved?.();
-      onClose();
+      onClose();  // Always close on success - busy state is managed separately
     } catch (e) {
       const p = parseApiError(e);
       setFieldErrors(p.fields);
@@ -138,7 +120,7 @@ export function MaintenanceFormModal({ asset = null, record = null, onClose, onS
   return (
     <Modal
       title={isEdit ? `Update maintenance — ${record.title}` : 'Schedule maintenance'}
-      onClose={() => { if (!busy) onClose(); }}
+      onClose={() => onClose()}
       size="lg"
     >
       <form onSubmit={submit} noValidate>

@@ -529,6 +529,31 @@ class ProcurementHistory(models.Model):
         ordering = ["created_at"]
 
 
+class ProcurementIdempotencyKey(models.Model):
+    """Idempotency tokens for procurement write operations.
+
+    A client sends an ``Idempotency-Key`` header with a mutating request. The
+    first successful response is recorded under the key; repeat submissions
+    with the same key replay that response instead of re-executing the write,
+    so network retries and double-posts cannot create duplicate receipts or
+    other side effects.
+    """
+
+    key = models.CharField(max_length=128, unique=True, db_index=True)
+    purchase_order = models.ForeignKey(
+        PurchaseOrder, null=True, blank=True, on_delete=models.CASCADE,
+        related_name="idempotency_keys")
+    received_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="procurement_idempotency_keys")
+    response_status = models.PositiveIntegerField(default=200)
+    response_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
 # ---------------------------------------------------------------------------
 # P3: Supplier invoicing, matching, returns, credit notes, financial control
 # ---------------------------------------------------------------------------
