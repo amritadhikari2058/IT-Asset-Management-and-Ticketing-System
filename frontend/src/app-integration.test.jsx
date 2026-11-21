@@ -516,24 +516,24 @@ describe('Application sidebar navigation', () => {
 
     it('collapses an expanded section when its header is clicked again', () => {
       renderApp('system_admin');
-      // Service Operations starts expanded (contains #/tickets)
+      // All sections start collapsed now
       const svcHeader = getSectionHeader('Service Operations');
-      expect(svcHeader.getAttribute('aria-expanded')).toBe('true');
-      fireEvent.click(svcHeader);
       expect(svcHeader.getAttribute('aria-expanded')).toBe('false');
       fireEvent.click(svcHeader);
       expect(svcHeader.getAttribute('aria-expanded')).toBe('true');
+      fireEvent.click(svcHeader);
+      expect(svcHeader.getAttribute('aria-expanded')).toBe('false');
     });
 
     it('expanding one section does not affect other sections', () => {
       renderApp('system_admin');
       const overviewHeader = getSectionHeader('Overview');
       const svcHeader = getSectionHeader('Service Operations');
-      // Overview starts collapsed, Service Operations starts expanded
+      // Both start collapsed
       fireEvent.click(overviewHeader); // Overview → expanded
-      fireEvent.click(svcHeader); // Service Operations → collapsed
+      fireEvent.click(svcHeader); // Service Operations -> expanded
       expect(overviewHeader.getAttribute('aria-expanded')).toBe('true');
-      expect(svcHeader.getAttribute('aria-expanded')).toBe('false');
+      expect(svcHeader.getAttribute('aria-expanded')).toBe('true');
       // Each section maintains its own state
     });
 

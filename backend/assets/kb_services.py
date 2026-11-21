@@ -14,7 +14,7 @@ from django.db.models import Max
 from accounts import email_utils
 from assets.models import KnowledgeBaseArticle, KnowledgeBaseArticleRevision
 from common.audit import log_action
-from common.models import Notification
+from common.notifications import notify_user
 
 # Fields whose change creates a new content revision. Status-only workflow
 # transitions bump ``version`` but deliberately do not add revision noise.
@@ -284,19 +284,14 @@ def _kb_notify(recipient, actor, title, body, article):
 
     Never notifies the actor of their own action, never inactive/deleted
     recipients. Mirrors the ticket in-app notification convention.
+    Deduplicated via notify_user(): equivalent active notifications are
+    not created twice.
     """
-    if recipient is None or not getattr(recipient, "pk", None):
-        return None
-    actor_pk = getattr(actor, "pk", None)
-    if actor_pk is not None and recipient.pk == actor_pk:
-        return None
-    if not getattr(recipient, "is_active", True):
-        return None
-    if getattr(recipient, "is_deleted", False):
-        return None
-    return Notification.objects.create(
-        recipient=recipient, title=title[:255], body=body or "",
-        entity_type="assets.KnowledgeBaseArticle", object_id=str(article.pk))
+    notify_user(
+        recipient, "kb_article_event", title, body or "",
+        entity_type="assets.KnowledgeBaseArticle", object_id=str(article.pk),
+        actor=actor, post_commit=False,
+    )
 
 
 def notify_submitted_for_review(article, actor, note=""):

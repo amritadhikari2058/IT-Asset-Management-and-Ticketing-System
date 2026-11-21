@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../auth';
-import { Badge, Button, DataTable, Field, Input, Option, PageHeader, Pager, Select } from '../../components';
+import { Badge, Button, DataTable, Field, Input, Option, PageHeader, Pager, Select, PageSizeSelector } from '../../components';
 import { problemList } from '../../services/problem-management';
 import { PRIORITY_CHOICES, PROBLEM_STATUS_CHOICES, PROBLEM_TYPE_CHOICES } from '../../types/problem-management';
 
@@ -34,7 +34,8 @@ export function ProblemList() {
     if (typeof window === 'undefined') return 20;
     try {
       const saved = window.localStorage.getItem('itdesk.pageSize');
-      return saved ? Number(saved) : 20;
+      const n = Number(saved);
+      return saved && Number.isFinite(n) && n > 0 && n <= 100 ? n : 20;
     } catch {
       return 20;
     }
@@ -74,11 +75,23 @@ export function ProblemList() {
       .catch(() => { if (active) setError('Could not load problems.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [queryKey, page]);
+  }, [queryKey, page, pageSize]);
 
   // Reset to page 1 when page size changes
   useEffect(() => {
     setPage(1);
+  }, [pageSize]);
+
+  // Persist page-size preference without unnecessary writes
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (window.localStorage.getItem('itdesk.pageSize') !== String(pageSize)) {
+        window.localStorage.setItem('itdesk.pageSize', String(pageSize));
+      }
+    } catch {
+      // ignore storage failures
+    }
   }, [pageSize]);
 
   const update = (patch) => {

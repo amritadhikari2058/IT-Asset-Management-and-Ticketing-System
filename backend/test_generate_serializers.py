@@ -4,8 +4,13 @@ import ast
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
-from backend.generate_serializers import generate_serializers, path
+from generate_serializers import generate_serializers, path
+
+_BACKEND_DIR = Path(__file__).resolve().parent
+_ACTIVE_SERIALIZER = _BACKEND_DIR / "monitoring" / "serializers.py"
+_GENERATOR_SCRIPT = _BACKEND_DIR / "generate_serializers.py"
 
 
 class GenerateSerializersTestCase(unittest.TestCase):
@@ -13,12 +18,12 @@ class GenerateSerializersTestCase(unittest.TestCase):
 
     def test_module_imports_without_executing_generation(self):
         """Importing the module must not create or modify files."""
-        self.assertTrue(os.path.exists(path))
+        self.assertTrue(os.path.exists(_ACTIVE_SERIALIZER))
 
     def test_source_compiles(self):
         """The generator script itself must compile cleanly."""
         import py_compile
-        py_compile.compile("backend/generate_serializers.py", doraise=True)
+        py_compile.compile(str(_GENERATOR_SCRIPT), doraise=True)
 
     def test_generator_accepts_temporary_output_location(self):
         """The generator must write to a temp path, not the active source."""
@@ -47,8 +52,8 @@ class GenerateSerializersTestCase(unittest.TestCase):
             ast.parse(source)
 
     def test_active_serializer_file_not_modified(self):
-        """Generation to a temp path must not touch backend/monitoring/serializers.py."""
-        active = "backend/monitoring/serializers.py"
+        """Generation to a temp path must not touch the active serializers.py."""
+        active = str(_ACTIVE_SERIALIZER)
         mtime_before = os.path.getmtime(active)
         with tempfile.TemporaryDirectory() as tmpdir:
             out = os.path.join(tmpdir, "serializers.py")

@@ -8,14 +8,17 @@
   health visibility.
 """
 import logging
+from datetime import timedelta
 
 from celery import shared_task
 
 from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 
 from common import inbound
-from common.models import BackgroundTaskRun, DataRetentionPolicy, EmailProcessing
+from common.models import (BackgroundTaskRun, DataRetentionExecution,
+                           DataRetentionPolicy, EmailProcessing)
 from common.retention_service import execute_retention, preview_retention
 
 logger = logging.getLogger(__name__)
@@ -23,6 +26,19 @@ logger = logging.getLogger(__name__)
 TASK_NAME = "common.tasks.process_inbound_mailbox"
 RETENTION_EVAL_TASK = "common.tasks.evaluate_retention_policies"
 RETENTION_EXECUTE_TASK = "common.tasks.execute_retention_policy"
+
+# How far ahead a retention policy is claimed when it is dispatched. A policy
+# is evaluated at most once per interval, even if Celery Beat runs
+# ``evaluate_retention_policies`` more often (it currently runs hourly).
+RETENTION_EVALUATION_INTERVAL = timedelta(days=1)
+# Shorter back-off used when a policy could not be dispatched at all, so a
+# transient broker/worker problem does not delay retention for a full day.
+RETENTION_DISPATCH_RETRY_INTERVAL = timedelta(hours=1)
+
+
+def _retention_due_q(now):
+    """Policies that have never run or whose claimed run time has arrived."""
+    return Q(next_run_at__isnull=True) | Q(next_run_at__lte=now)
 
 
 def record_task_run(task_name, status, error_summary="", payload=None):
@@ -39,13 +55,15 @@ def record_task_run(task_name, status, error_summary="", payload=None):
     return run
 
 
-def _mark_run(task_name, run, status, error_summary=""):
+def _mark_run(task_name, run, status, error_summary="", payload=None):
     run.status = status
     run.success = status == "succeeded"
     run.error_summary = error_summary or ""
+    if payload is not None:
+        run.payload = payload
     run.finished_at = timezone.now()
     run.save(update_fields=["status", "success", "error_summary",
-                            "finished_at"])
+                            "finished_at", "payload"])
     return run
 
 
@@ -301,28 +319,63 @@ def evaluate_retention_policies(self):
     Finds enabled policies whose ``next_run_at`` is due and dispatches a
     per-policy execution task. Independent per-policy tasks isolate failures:
     one category's failure does not prevent another category's run.
-    """
-    from common.models import BackgroundTaskRun
-    now = timezone.now()
-    due = [p for p in DataRetentionPolicy.objects.filter(enabled=True)
-           if p.next_run_at is None or p.next_run_at <= now]
 
-    results = {"checked": 0, "dispatched": 0, "failed": 0}
-    for policy in due:
-        results["checked"] += 1
-        try:
-            execute_retention_policy.delay(policy.pk)
-            results["dispatched"] += 1
-        except Exception as exc:  # broker unavailable: run inline as fallback
-            logger.exception("Retention dispatch failed for %s", policy.pk)
+    Idempotency: each due policy is *claimed* with a conditional UPDATE of
+    ``next_run_at`` before dispatch, so two overlapping Beat runs (or two
+    Beat instances) cannot dispatch the same policy twice. A policy that can
+    only be claimed by one caller is dispatched exactly once per interval.
+    """
+    run = BackgroundTaskRun.objects.create(
+        task_name=RETENTION_EVAL_TASK, status="running", success=False,
+        payload={"action": "evaluate_retention_policies"})
+    results = {"checked": 0, "dispatched": 0, "failed": 0, "skipped": 0}
+    try:
+        now = timezone.now()
+        due = list(DataRetentionPolicy.objects
+                   .filter(enabled=True)
+                   .filter(_retention_due_q(now))
+                   .order_by("next_run_at"))
+
+        for policy in due:
+            results["checked"] += 1
+            claimed = (DataRetentionPolicy.objects
+                       .filter(pk=policy.pk, enabled=True)
+                       .filter(_retention_due_q(now))
+                       .update(
+                           next_run_at=now + RETENTION_EVALUATION_INTERVAL))
+            if not claimed:
+                # Another evaluation already claimed this policy.
+                results["skipped"] += 1
+                continue
             try:
-                execute_retention_policy(policy.pk)
+                execute_retention_policy.delay(policy.pk)
                 results["dispatched"] += 1
-            except Exception as exc2:
-                results["failed"] += 1
-                _record_retention_run(policy.pk, "failed",
-                                      type(exc2).__name__)
-    return results
+            except Exception:
+                # Broker unavailable: run inline as a fallback.
+                logger.exception("Retention dispatch failed for %s",
+                                 policy.pk)
+                try:
+                    execute_retention_policy(policy.pk)
+                    results["dispatched"] += 1
+                except Exception as exc2:
+                    results["failed"] += 1
+                    # Retry sooner than a normal cadence, but not on the next
+                    # Beat tick (which would hot-loop a failing policy).
+                    (DataRetentionPolicy.objects.filter(pk=policy.pk)
+                     .update(next_run_at=now
+                             + RETENTION_DISPATCH_RETRY_INTERVAL))
+                    _record_retention_failure(policy, type(exc2).__name__)
+
+        outcome = "succeeded" if results["failed"] == 0 else "failed"
+        _mark_run(RETENTION_EVAL_TASK, run, outcome,
+                  "" if outcome == "succeeded"
+                  else f"{results['failed']} policy dispatch(es) failed")
+        logger.info("Retention evaluation complete: %s", results)
+        return results
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Retention evaluation failed")
+        _mark_run(RETENTION_EVAL_TASK, run, "failed", type(exc).__name__)
+        raise self.retry(exc=exc) from exc
 
 
 @shared_task(bind=True, max_retries=2, retry_backoff=300)
@@ -331,30 +384,43 @@ def execute_retention_policy(self, policy_id):
 
     The task independently re-verifies that the policy is still enabled and
     due before mutating anything, so a queued task can never execute a
-    disabled or already-run policy outside its approval window.
+    disabled or already-run policy outside its approval window. Skipped and
+    failed attempts are recorded in ``DataRetentionExecution`` so the history
+    never silently omits a run.
     """
-    from common.models import DataRetentionPolicy
     policy = DataRetentionPolicy.objects.filter(pk=policy_id).first()
     if not policy:
         return {"policy_id": policy_id, "error": "policy_not_found"}
     if not policy.enabled:
+        _record_retention_failure(policy, "policy_disabled", status="skipped")
         return {"policy_id": policy_id, "status": "skipped",
                 "reason": "policy_disabled"}
     preview = preview_retention(policy)
     if not preview.get("can_execute"):
+        reason = (preview["notes"][0] if preview["notes"]
+                  else "not_executable")
+        _record_retention_failure(policy, reason, status="skipped")
         return {"policy_id": policy_id, "status": "skipped",
-                "reason": preview["notes"][0] if preview["notes"] else
-                "not_executable"}
+                "reason": reason}
+
     ok, error, summary = execute_retention(policy, None)
+    if not ok:
+        _record_retention_failure(policy, error or "execution_failed")
     return {"policy_id": policy_id, "ok": ok, "error": error,
             "summary": summary}
 
 
-def _record_retention_run(policy_id, status, error_summary=""):
-    run = DataRetentionExecution.objects.filter(pk=policy_id).first()
-    if run:
-        run.status = status
-        run.error_summary = error_summary or ""
-        run.finished_at = timezone.now()
-        run.save(update_fields=["status", "error_summary", "finished_at"])
+def _record_retention_failure(policy, error_summary, status="failed"):
+    """Persist a non-successful retention attempt (never a fake success)."""
+    try:
+        return DataRetentionExecution.objects.create(
+            policy=policy, status=status,
+            finished_at=timezone.now(),
+            error_summary=(error_summary or "")[:2000],
+            result={"category": policy.data_category,
+                    "policy_id": policy.pk})
+    except Exception:  # pragma: no cover - bookkeeping must not hide errors
+        logger.exception("Could not record retention attempt for %s",
+                         policy.pk)
+        return None
 

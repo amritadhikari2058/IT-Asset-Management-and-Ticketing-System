@@ -36,11 +36,7 @@ function writeHashParams(next) {
   window.location.hash = qs ? `#/cmdb/items?${qs}` : '#/cmdb/items';
 }
 
-export function CmdbItemsList() {
-  const routePath = window.location.hash.split('?')[0];
-  if (routePath === '#/cmdb/relationships') {
-    return <GlobalRelationshipsPage />;
-  }
+function CmdbItemsListInner() {
   const { role: authRole, user } = useAuth();
   const role = authRole ?? user?.role;
   const [items, setItems] = useState([]);
@@ -300,3 +296,11 @@ export function CmdbItemsList() {
     </div>
   );
 }
+export function CmdbItemsList() {
+  const routePath = window.location.hash.split('?')[0];
+  if (routePath === '#/cmdb/relationships') {
+    return <GlobalRelationshipsPage />;
+  }
+  return <CmdbItemsListInner />;
+}
+

@@ -41,7 +41,7 @@ def _write_history(ticket, actor, action, old=None, new=None, note=""):
 
 def _notify_user(recipient, actor, title, body, ticket):
     """In-app notification following the shared ticket-event rules."""
-    from common.models import Notification
+    from common.notifications import notify_user
     if recipient is None or getattr(recipient, "pk", None) is None:
         return None
     if actor is not None and recipient.pk == getattr(actor, "pk", None):
@@ -50,9 +50,11 @@ def _notify_user(recipient, actor, title, body, ticket):
         return None
     if getattr(recipient, "is_deleted", False):
         return None
-    return Notification.objects.create(
-        recipient=recipient, title=title[:255], body=body or "",
-        entity_type="tickets.Ticket", object_id=str(ticket.pk))
+    notify_user(
+        recipient, "workflow_notify", title, body or "",
+        entity_type="tickets.Ticket", object_id=str(ticket.pk),
+        actor=actor, post_commit=False,
+    )
 
 
 class AutomationRuleViewSet(viewsets.ModelViewSet):

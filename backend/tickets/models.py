@@ -462,10 +462,24 @@ class TicketNote(models.Model):
     )
     body = models.TextField()
     is_internal = models.BooleanField(default=True)
+    source_message_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Message-ID of the inbound email this note came from",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_message_id"],
+                condition=models.Q(source_message_id__gt=""),
+                name="uniq_ticketnote_source_message",
+            ),
+        ]
 
     def __str__(self):
         scope = "internal" if self.is_internal else "visible"
@@ -511,6 +525,17 @@ class TicketAttachment(SoftDeleteModel):
         max_length=64, blank=True, default="",
         help_text="SHA-256 hex digest of the attachment content for deduplication"
     )
+    # Stable inbound source identity for true idempotent retries. These are
+    # set for email-ingested attachments and left blank/null for manual uploads
+    # and legacy rows created before this field existed.
+    source_message_id = models.CharField(
+        max_length=255, blank=True, default="", db_index=True,
+        help_text="Message-ID of the inbound email this attachment came from"
+    )
+    source_part_index = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Deterministic MIME attachment ordinal within the source email"
+    )
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -522,6 +547,16 @@ class TicketAttachment(SoftDeleteModel):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_message_id", "source_part_index"],
+                condition=(
+                    models.Q(source_message_id__gt="")
+                    & models.Q(source_part_index__isnull=False)
+                ),
+                name="uniq_ticketattach_source_part",
+            ),
+        ]
 
     def __str__(self):
         return f"Attachment {self.original_filename or self.pk} on #{self.ticket_id}"
@@ -1183,3 +1218,133 @@ class SavedTicketView(SoftDeleteModel):
 
     def __str__(self):
         return self.name
+
+
+class TicketBulkImportOperation(models.Model):
+    """Tracks a ticket bulk-import operation for idempotent preview/confirm.
+
+    Scoped to (user, token) so a client can safely retry the same operation
+    (e.g. lost response) without duplicating tickets, while different users and
+    intentionally separate imports remain isolated.
+    """
+
+    STATUS_PREVIEWED = "previewed"
+    STATUS_PROCESSING = "processing"
+    STATUS_COMPLETED = "completed"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_PREVIEWED, "Previewed"),
+        (STATUS_PROCESSING, "Processing"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="ticket_bulk_import_operations",
+    )
+    token = models.CharField(max_length=64)
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default=STATUS_PREVIEWED)
+    request_fingerprint = models.CharField(max_length=128, blank=True, default="")
+    preview_payload = models.JSONField(default=dict, blank=True)
+    result_format = models.CharField(max_length=10, blank=True, default="")
+    result_json = models.JSONField(null=True, blank=True)
+    result_csv = models.TextField(blank=True, default="")
+    result_status_code = models.PositiveSmallIntegerField(default=200)
+    error_detail = models.TextField(blank=True, default="")
+    total_rows = models.PositiveIntegerField(default=0)
+    processed_count = models.PositiveIntegerField(default=0)
+    successful_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "token"],
+                name="uniq_tbi_user_token",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["user", "created_at"],
+                         name="tbi_user_created_idx"),
+            models.Index(fields=["expires_at"],
+                         name="tbi_expires_idx"),
+        ]
+
+    def __str__(self):
+        return f"Ticket bulk import {self.token} ({self.user_id}, {self.status})"
+
+    @property
+    def is_expired(self):
+        return bool(self.expires_at and timezone.now() >= self.expires_at)
+
+
+class TicketBulkImportRowOutcome(models.Model):
+    """Durable per-row outcome for a tokenized ticket bulk import.
+
+    For operations using this tracking mechanism, a successful outcome and its
+    committed ticket/required transactional writes are recorded atomically in
+    the same per-row transaction. Legacy operations created before row-level
+    tracking may have no outcomes and cannot be fully reconstructed.
+    """
+
+    OUTCOME_SUCCEEDED = "succeeded"
+    OUTCOME_FAILED = "failed"
+    OUTCOME_CHOICES = [
+        (OUTCOME_SUCCEEDED, "Succeeded"),
+        (OUTCOME_FAILED, "Failed"),
+    ]
+
+    operation = models.ForeignKey(
+        TicketBulkImportOperation,
+        on_delete=models.CASCADE,
+        related_name="row_outcomes",
+    )
+    row_index = models.PositiveIntegerField(
+        help_text="0-based index in the normalized import row sequence.")
+    row_number = models.PositiveIntegerField(
+        help_text="1-based row number reported by the import API.")
+    row_fingerprint = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="SHA-256 of the canonical normalized row payload (evidence only).")
+    outcome = models.CharField(max_length=20, choices=OUTCOME_CHOICES)
+    ticket = models.ForeignKey(
+        "tickets.Ticket",
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="bulk_import_row_outcomes",
+    )
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["operation", "row_index"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["operation", "row_index"],
+                name="uniq_tbi_row_outcome_op_idx",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(row_number__gte=1),
+                name="tbi_row_outcome_row_number_gte_1",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["operation", "outcome"],
+                         name="tbi_row_outcome_op_out_idx"),
+            models.Index(fields=["ticket"],
+                         name="tbi_row_outcome_ticket_idx"),
+        ]
+
+    def __str__(self):
+        return (f"Ticket bulk import row {self.operation_id}:{self.row_index} "
+                f"({self.outcome})")

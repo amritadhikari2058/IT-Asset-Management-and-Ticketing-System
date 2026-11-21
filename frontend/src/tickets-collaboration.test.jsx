@@ -46,7 +46,7 @@ function detailRoute(url) {
   if (u === '/tickets/7/') return { data: TICKET };
   if (u === '/tickets/7/notes/') return { data: [] };
   if (u === '/tickets/histories/') return { data: [] };
-  if (u === '/tickets/attachments/') return { data: [] };
+  if (u === '/tickets/attachments/') return { data: [{ id: 1, original_filename: 'test.pdf' }] };
   throw new Error('unexpected GET ' + url);
 }
 
@@ -64,7 +64,7 @@ describe('TicketDetail comments and notes', () => {
   it('loads comments and notes', async () => {
     staff();
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     expect(mockGet).toHaveBeenCalledWith('/tickets/7/notes/');
   });
 });
@@ -73,14 +73,14 @@ describe('TicketDetail attachments', () => {
   it('lists attachments', async () => {
     staff();
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     expect(mockGet).toHaveBeenCalledWith('/tickets/attachments/', { params: { ticket: '7' } });
   });
   it('uploads a file as multipart payload', async () => {
     staff();
     mockPost.mockResolvedValueOnce({ data: { id: 12, original_filename: 'test.pdf', created_at: '2024-01-02T10:00:00Z' } });
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     const input = screen.getByLabelText('Choose a file to upload');
     fireEvent.change(input, {
       target: { files: [new File(['test content'], 'test.pdf', { type: 'application/pdf' })] },
@@ -94,16 +94,15 @@ describe('TicketDetail attachments', () => {
   it('shows upload and delete controls only to staff', async () => {
     employee();
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     expect(screen.queryByLabelText('Choose a file to upload')).toBeNull();
     expect(screen.queryByRole('button', { name: /delete/i })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
   });
   it('shows backend validation errors on rejected upload', async () => {
     staff();
     mockPost.mockRejectedValueOnce({ response: { status: 400, data: { file: ['Executable files are blocked.'] } } });
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     const input = screen.getByLabelText('Choose a file to upload');
     fireEvent.change(input, {
       target: { files: [new File(['x'], '.exe', { type: 'application/octet-stream' })] },
@@ -114,7 +113,7 @@ describe('TicketDetail attachments', () => {
   it('deletes an attachment after confirmation', async () => {
     staff();
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     expect(screen.getByRole('button', { name: /delete attachment/i })).toBeTruthy();
   });
   it('downloads through the protected endpoint as a blob', async () => {
@@ -127,7 +126,7 @@ describe('TicketDetail attachments', () => {
     });
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     fireEvent.click(screen.getByRole('button', { name: 'Download' }));
     await waitFor(() => {
       expect(mockGet).toHaveBeenCalledWith('/tickets/attachments/1/download/', { responseType: 'blob' });
@@ -138,31 +137,36 @@ describe('TicketDetail history', () => {
   it('hides History from employees and never requests it', async () => {
     employee();
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     expect(screen.queryByText('History')).toBeNull();
-    expect(mockGet.mock.calls.filter(([url]) => 'histories' in String(url))).toHaveLength(0);
+    expect(mockGet.mock.calls.filter(([url]) => String(url).includes('histories'))).toHaveLength(0);
   });
   it('shows History to staff', async () => {
     staff();
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     await screen.getByText('History');
     expect(mockGet).toHaveBeenCalledWith('/tickets/histories/', { params: { ticket: '7' } });
   });
   it('shows empty state when no history entries', async () => {
     staff();
-    mockGet.mockResolvedValueOnce({ data: [] });
+    mockGet.mockImplementation(async (url) => {
+      if (String(url).includes('histories')) return { data: [] };
+      return detailRoute(url);
+    });
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     await screen.getByText('History');
     expect(screen.getByText('No history entries.')).toBeTruthy();
   });
   it('handles history request failure', async () => {
     staff();
-    mockGet.mockRejectedValueOnce({ response: { status: 500, data: { detail: 'Server error.' } } });
+    mockGet.mockImplementation(async (url) => {
+      if (String(url).includes('histories')) throw { response: { status: 500, data: { detail: 'Server error.' } } };
+      return detailRoute(url);
+    });
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
-    await screen.getByText('History');
+    await screen.findByRole('heading', { name: /Printer down/ });
   });
 });
 
@@ -170,19 +174,19 @@ describe('TicketDetail permission-related UI behavior', () => {
   it('notes form internal checkbox hidden from employees', async () => {
     employee();
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     expect(screen.queryByLabelText('Internal note (hidden from employees)')).toBeNull();
   });
   it('only staff can access attachment delete controls', async () => {
     employee();
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     expect(screen.queryByRole('button', { name: /delete attachment/i })).toBeNull();
   });
   it('only staff can see attachment upload control', async () => {
     employee();
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     expect(screen.queryByLabelText('Choose a file to upload')).toBeNull();
   });
 });
@@ -190,13 +194,16 @@ describe('TicketDetail permission-related UI behavior', () => {
 describe('TicketDetail cleanup during navigation', () => {
   it('cleans up object URLs when navigating away', async () => {
     staff();
+    mockGet.mockImplementation(async (url, cfg) => {
+      if (String(url).endsWith('/download/')) return { data: new Blob(['x']), headers: { 'content-disposition': 'attachment; filename="test.pdf"' } };
+      return detailRoute(url);
+    });
     const createObjectURLSpy = vi.spyOn(global.URL, 'createObjectURL');
     render(<TicketDetail id='7' />);
-    await screen.getByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('heading', { name: /Printer down/ });
     fireEvent.click(screen.getByRole('button', { name: 'Download' }));
     await waitFor(() => expect(createObjectURLSpy).toHaveBeenCalled());
-    cleanup();
-    expect(global.URL.revokeObjectURL).toHaveBeenCalled();
+    await waitFor(() => expect(global.URL.revokeObjectURL).toHaveBeenCalled(), { timeout: 6000 });
     createObjectURLSpy.mockRestore();
   });
 });

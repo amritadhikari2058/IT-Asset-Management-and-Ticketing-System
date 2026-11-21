@@ -417,23 +417,29 @@ def approve_change(change, user, decision_reason="", approval=None):
     if not approval:
         raise ValidationError("No pending approval to decide.")
 
-    # Separation of duties: requester cannot approve their own change.
-    if change.requester_id == user.pk:
-        raise ValidationError("Requester cannot approve their own change.")
-
-    # Stale approval: change version must match.
-    if change.version != approval.change_version:
-        raise ValidationError(
-            "Approval is stale: the change has been modified since approval was requested."
-        )
-
     with transaction.atomic():
+        locked_change = ChangeRequest.objects.select_for_update().get(pk=change.pk)
         # Row-lock the exact approval to prevent concurrent decisions.
         approval = ChangeApproval.objects.select_for_update().get(pk=approval.pk)
         if approval.status != "pending":
             raise ValidationError("Only pending approvals can be decided.")
-        if approval.change_id != change.pk:
+        if approval.change_id != locked_change.pk:
             raise ValidationError("Approval does not belong to the supplied change.")
+
+        # Separation of duties: requester cannot approve their own change.
+        if locked_change.requester_id == user.pk:
+            raise ValidationError("Requester cannot approve their own change.")
+
+        # Stale approval: change version must match.
+        if locked_change.version != approval.change_version:
+            raise ValidationError(
+                "Approval is stale: the change has been modified since approval was requested."
+            )
+
+        if locked_change.status not in ("pending_approval", "approved"):
+            raise ValidationError(
+                f"Cannot approve a {locked_change.status} change."
+            )
 
         approval.status = "approved"
         approval.decided_by = user
@@ -441,13 +447,13 @@ def approve_change(change, user, decision_reason="", approval=None):
         approval.decision_reason = decision_reason
         approval.save()
 
-        change.status = "approved"
-        change.current_approver = user
-        change.approved_at = timezone.now()
-        change.save(update_fields=["status", "current_approver", "approved_at", "updated_at"])
+        locked_change.status = "approved"
+        locked_change.current_approver = user
+        locked_change.approved_at = timezone.now()
+        locked_change.save(update_fields=["status", "current_approver", "approved_at", "updated_at"])
 
         ChangeHistory.objects.create(
-            change=change,
+            change=locked_change,
             actor=user,
             event_type="approved",
             detail=f"Change approved ({approval.approval_level}). {decision_reason}".strip(),
@@ -455,14 +461,20 @@ def approve_change(change, user, decision_reason="", approval=None):
         log_action(
             actor=user,
             action="update",
-            instance=change,
+            instance=locked_change,
             reason="Change approved",
             details={
-                "change_number": change.change_number,
+                "change_number": locked_change.change_number,
                 "approval_id": str(approval.pk),
                 "level": approval.approval_level,
             },
         )
+        # Keep caller-visible instance in sync.
+        change.status = locked_change.status
+        change.current_approver = locked_change.current_approver
+        change.approved_at = locked_change.approved_at
+        change.version = locked_change.version
+        change.updated_at = locked_change.updated_at
         return approval
 
 
@@ -487,19 +499,27 @@ def reject_change(change, user, decision_reason, approval=None):
         if approval.status != "pending":
             raise ValidationError("Only pending approvals can be decided.")
 
-    if not approval:
-        raise ValidationError("No pending approval to decide.")
-
-    if change.requester_id == user.pk:
-        raise ValidationError("Requester cannot reject their own change.")
-
     with transaction.atomic():
+        locked_change = ChangeRequest.objects.select_for_update().get(pk=change.pk)
         # Row-lock the exact approval to prevent concurrent decisions.
         approval = ChangeApproval.objects.select_for_update().get(pk=approval.pk)
         if approval.status != "pending":
             raise ValidationError("Only pending approvals can be decided.")
-        if approval.change_id != change.pk:
+        if approval.change_id != locked_change.pk:
             raise ValidationError("Approval does not belong to the supplied change.")
+
+        if locked_change.requester_id == user.pk:
+            raise ValidationError("Requester cannot reject their own change.")
+
+        if locked_change.version != approval.change_version:
+            raise ValidationError(
+                "Approval is stale: the change has been modified since approval was requested."
+            )
+
+        if locked_change.status not in ("pending_approval", "approved"):
+            raise ValidationError(
+                f"Cannot reject a {locked_change.status} change."
+            )
 
         approval.status = "rejected"
         approval.decided_by = user
@@ -507,12 +527,12 @@ def reject_change(change, user, decision_reason, approval=None):
         approval.decision_reason = decision_reason
         approval.save()
 
-        change.status = "rejected"
-        change.approved_at = timezone.now()
-        change.save(update_fields=["status", "approved_at", "updated_at"])
+        locked_change.status = "rejected"
+        locked_change.approved_at = timezone.now()
+        locked_change.save(update_fields=["status", "approved_at", "updated_at"])
 
         ChangeHistory.objects.create(
-            change=change,
+            change=locked_change,
             actor=user,
             event_type="rejected",
             detail=f"Change rejected: {decision_reason}",
@@ -520,13 +540,17 @@ def reject_change(change, user, decision_reason, approval=None):
         log_action(
             actor=user,
             action="update",
-            instance=change,
+            instance=locked_change,
             reason="Change rejected",
             details={
-                "change_number": change.change_number,
+                "change_number": locked_change.change_number,
                 "approval_id": str(approval.pk),
             },
         )
+        change.status = locked_change.status
+        change.approved_at = locked_change.approved_at
+        change.version = locked_change.version
+        change.updated_at = locked_change.updated_at
         return approval
 
 
@@ -695,153 +719,187 @@ def complete_implementation(change, user, validation_passed=True, notes=""):
 
     Requires validation to pass unless validation is not applicable.
     """
-    if change.status != "in_progress":
-        raise ValidationError("Only in-progress changes can be completed.")
-
     if not notes:
         raise ValidationError(
             "Implementation notes are required to complete an implementation."
         )
 
-    if validation_passed is False:
-        change.status = "validation"
-        change.actual_end = timezone.now()
-        change.implementation_notes = notes
-        change.save(update_fields=["status", "actual_end", "implementation_notes", "updated_at"])
-        ChangeHistory.objects.create(
-            change=change,
-            actor=user,
-            event_type="validation_failed",
-            detail="Implementation validation failed.",
-        )
-        return change
+    with transaction.atomic():
+        locked_change = ChangeRequest.objects.select_for_update().get(pk=change.pk)
+        if locked_change.status != "in_progress":
+            raise ValidationError("Only in-progress changes can be completed.")
 
-    change.status = "completed"
-    change.actual_end = timezone.now()
-    change.implementation_notes = notes
-    change.save(
-        update_fields=["status", "actual_end", "implementation_notes", "updated_at"]
-    )
+        if validation_passed is False:
+            locked_change.status = "validation"
+            locked_change.actual_end = timezone.now()
+            locked_change.implementation_notes = notes
+            locked_change.save(update_fields=["status", "actual_end", "implementation_notes", "updated_at"])
+            ChangeHistory.objects.create(
+                change=locked_change,
+                actor=user,
+                event_type="validation_failed",
+                detail="Implementation validation failed.",
+            )
+        else:
+            locked_change.status = "completed"
+            locked_change.actual_end = timezone.now()
+            locked_change.implementation_notes = notes
+            locked_change.save(
+                update_fields=["status", "actual_end", "implementation_notes", "updated_at"]
+            )
 
-    ChangeHistory.objects.create(
-        change=change,
-        actor=user,
-        event_type="completed",
-        detail="Implementation completed successfully.",
-    )
-    log_action(
-        actor=user,
-        action="update",
-        instance=change,
-        reason="Implementation completed",
-        details={"change_number": change.change_number},
-    )
+            ChangeHistory.objects.create(
+                change=locked_change,
+                actor=user,
+                event_type="completed",
+                detail="Implementation completed successfully.",
+            )
+            log_action(
+                actor=user,
+                action="update",
+                instance=locked_change,
+                reason="Implementation completed",
+                details={"change_number": locked_change.change_number},
+            )
+
+    change.status = locked_change.status
+    change.actual_end = locked_change.actual_end
+    change.implementation_notes = locked_change.implementation_notes
+    change.version = locked_change.version
+    change.updated_at = locked_change.updated_at
     return change
 
 
 def fail_implementation(change, user, failure_reason):
     """Mark an implementation as failed."""
-    if change.status != "in_progress":
-        raise ValidationError("Only in-progress changes can fail.")
-
     if not failure_reason:
         raise ValidationError(
             "A failure reason is required to mark an implementation as failed."
         )
 
-    change.status = "failed"
-    change.failure_reason = failure_reason
-    change.save(update_fields=["status", "failure_reason", "updated_at"])
+    with transaction.atomic():
+        locked_change = ChangeRequest.objects.select_for_update().get(pk=change.pk)
+        if locked_change.status != "in_progress":
+            raise ValidationError("Only in-progress changes can fail.")
 
-    ChangeHistory.objects.create(
-        change=change,
-        actor=user,
-        event_type="failed",
-        detail=f"Implementation failed: {failure_reason}",
-    )
-    log_action(
-        actor=user,
-        action="update",
-        instance=change,
-        reason="Implementation failed",
-        details={"change_number": change.change_number, "reason": failure_reason},
-    )
+        locked_change.status = "failed"
+        locked_change.failure_reason = failure_reason
+        locked_change.save(update_fields=["status", "failure_reason", "updated_at"])
+
+        ChangeHistory.objects.create(
+            change=locked_change,
+            actor=user,
+            event_type="failed",
+            detail=f"Implementation failed: {failure_reason}",
+        )
+        log_action(
+            actor=user,
+            action="update",
+            instance=locked_change,
+            reason="Implementation failed",
+            details={"change_number": locked_change.change_number, "reason": failure_reason},
+        )
+
+    change.status = locked_change.status
+    change.failure_reason = locked_change.failure_reason
+    change.version = locked_change.version
+    change.updated_at = locked_change.updated_at
     return change
 
 
 def start_rollback(change, user):
     """Start rolling back a failed change."""
-    if change.status != "failed":
-        raise ValidationError("Only failed changes can be rolled back.")
+    with transaction.atomic():
+        locked_change = ChangeRequest.objects.select_for_update().get(pk=change.pk)
+        if locked_change.status != "failed":
+            raise ValidationError("Only failed changes can be rolled back.")
 
-    if not change.rollback_plan:
-        raise ValidationError("A rollback plan is required before rollback.")
+        if not locked_change.rollback_plan:
+            raise ValidationError("A rollback plan is required before rollback.")
 
-    change.status = "rolled_back"
-    change.rollback_started_at = timezone.now()
-    change.save(update_fields=["status", "rollback_started_at", "updated_at"])
+        locked_change.status = "rolled_back"
+        locked_change.rollback_started_at = timezone.now()
+        locked_change.save(update_fields=["status", "rollback_started_at", "updated_at"])
 
-    ChangeHistory.objects.create(
-        change=change,
-        actor=user,
-        event_type="rollback_started",
-        detail=f"Rollback started by {user.employee_id}.",
-    )
-    log_action(
-        actor=user,
-        action="update",
-        instance=change,
-        reason="Rollback started",
-        details={
-            "change_number": change.change_number,
-            "rollback_started_at": str(change.rollback_started_at),
-        },
-    )
+        ChangeHistory.objects.create(
+            change=locked_change,
+            actor=user,
+            event_type="rollback_started",
+            detail=f"Rollback started by {user.employee_id}.",
+        )
+        log_action(
+            actor=user,
+            action="update",
+            instance=locked_change,
+            reason="Rollback started",
+            details={
+                "change_number": locked_change.change_number,
+                "rollback_started_at": str(locked_change.rollback_started_at),
+            },
+        )
+
+    change.status = locked_change.status
+    change.rollback_started_at = locked_change.rollback_started_at
+    change.version = locked_change.version
+    change.updated_at = locked_change.updated_at
     return change
 
 
 def complete_rollback(change, user):
     """Complete a rollback."""
-    if change.status != "rolled_back":
-        raise ValidationError("Only rolled-back changes can complete rollback.")
+    with transaction.atomic():
+        locked_change = ChangeRequest.objects.select_for_update().get(pk=change.pk)
+        if locked_change.status != "rolled_back":
+            raise ValidationError("Only rolled-back changes can complete rollback.")
 
-    change.rollback_completed_at = timezone.now()
-    change.rollback_completed_by = user
-    change.save(update_fields=["rollback_completed_at", "rollback_completed_by", "updated_at"])
+        locked_change.rollback_completed_at = timezone.now()
+        locked_change.rollback_completed_by = user
+        locked_change.save(update_fields=["rollback_completed_at", "rollback_completed_by", "updated_at"])
 
-    ChangeHistory.objects.create(
-        change=change,
-        actor=user,
-        event_type="rollback_completed",
-        detail=f"Rollback completed by {user.employee_id}.",
-    )
-    log_action(
-        actor=user,
-        action="update",
-        instance=change,
-        reason="Rollback completed",
-        details={
-            "change_number": change.change_number,
-            "rollback_completed_at": str(change.rollback_completed_at),
-        },
-    )
+        ChangeHistory.objects.create(
+            change=locked_change,
+            actor=user,
+            event_type="rollback_completed",
+            detail=f"Rollback completed by {user.employee_id}.",
+        )
+        log_action(
+            actor=user,
+            action="update",
+            instance=locked_change,
+            reason="Rollback completed",
+            details={
+                "change_number": locked_change.change_number,
+                "rollback_completed_at": str(locked_change.rollback_completed_at),
+            },
+        )
+
+    change.rollback_completed_at = locked_change.rollback_completed_at
+    change.rollback_completed_by = locked_change.rollback_completed_by
+    change.version = locked_change.version
+    change.updated_at = locked_change.updated_at
     return change
 
 
 def request_pir(change, user):
     """Request a post-implementation review."""
-    if change.status not in ("completed", "failed", "rolled_back"):
-        raise ValidationError("PIR can only be requested for terminal changes.")
+    with transaction.atomic():
+        locked_change = ChangeRequest.objects.select_for_update().get(pk=change.pk)
+        if locked_change.status not in ("completed", "failed", "rolled_back"):
+            raise ValidationError("PIR can only be requested for terminal changes.")
 
-    change.status = "pir_required"
-    change.save(update_fields=["status", "updated_at"])
+        locked_change.status = "pir_required"
+        locked_change.save(update_fields=["status", "updated_at"])
 
-    ChangeHistory.objects.create(
-        change=change,
-        actor=user,
-        event_type="pir_requested",
-        detail="Post-implementation review requested.",
-    )
+        ChangeHistory.objects.create(
+            change=locked_change,
+            actor=user,
+            event_type="pir_requested",
+            detail="Post-implementation review requested.",
+        )
+
+    change.status = locked_change.status
+    change.version = locked_change.version
+    change.updated_at = locked_change.updated_at
     return change
 
 

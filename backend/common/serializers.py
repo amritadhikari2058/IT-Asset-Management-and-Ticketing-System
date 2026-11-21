@@ -25,7 +25,8 @@ class NotificationSerializer(serializers.ModelSerializer):
         model = Notification
         fields = ["id", "title", "body", "is_read", "entity_type",
                   "object_id", "created_at", "is_deleted"]
-        read_only_fields = ["id", "created_at", "is_deleted"]
+        read_only_fields = ["id", "title", "body", "entity_type",
+                            "object_id", "created_at", "is_deleted"]
 
 
 class RecycleBinEntrySerializer(serializers.Serializer):

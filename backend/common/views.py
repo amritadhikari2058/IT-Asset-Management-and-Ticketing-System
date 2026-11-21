@@ -141,8 +141,9 @@ class NotificationViewSet(viewsets.ModelViewSet):
             qs = qs.filter(Q(title__icontains=q) | Q(body__icontains=q))
         return qs
 
-    def perform_create(self, serializer):
-        serializer.save(recipient=self.request.user)
+    def create(self, request, *args, **kwargs):
+        from rest_framework.exceptions import MethodNotAllowed
+        raise MethodNotAllowed("POST")
 
     @action(detail=False, methods=["get"])
     def unread_count(self, request):
@@ -761,8 +762,31 @@ class ScheduledReportViewSet(viewsets.ModelViewSet):
         _compute_next_run(obj)
 
     def perform_update(self, serializer):
+        obj = self.get_object()
+        user = self.request.user
+        if (not _is_ticket_staff(user) and
+                obj.saved_report.user_id != user.pk):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied(
+                "Cannot edit a schedule for another user's saved report.")
+        saved_report = serializer.validated_data.get(
+            "saved_report", obj.saved_report)
+        if (not _is_ticket_staff(user) and
+                saved_report.user_id != user.pk):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied(
+                "Cannot assign a schedule to another user's saved report.")
         obj = serializer.save()
         _compute_next_run(obj)
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        if (not _is_ticket_staff(user) and
+                instance.saved_report.user_id != user.pk):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied(
+                "Cannot delete a schedule for another user's saved report.")
+        instance.delete()
 
 
 class ScheduledReportRunViewSet(viewsets.ReadOnlyModelViewSet):
@@ -924,8 +948,7 @@ class UserNotificationPreferenceViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         obj = self.get_object()
-        if obj.user_id != self.request.user.pk and not _is_ticket_staff(
-                self.request.user):
+        if obj.user_id != self.request.user.pk:
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied(
                 "Cannot edit another user's preferences.")

@@ -34,15 +34,27 @@ app.conf.worker_concurrency = int(os.getenv('CELERY_CONCURRENCY', '4'))
 #   should have a `CELERY_` prefix.
 app.config_from_object('django.conf:settings', namespace='CELERY')
 
-# Autodiscover tasks from all installed Django apps.
+# Registration strategy: autodiscovery is the single source of truth for
+# every installed app's ``tasks.py`` (tickets, assets, changes, common,
+# licensing, cmdb, ...). Do not add per-app imports here - they drift and
+# imply dependencies that do not exist.
 app.autodiscover_tasks()
 
-# Import apps tasks so they are registered.
+# The one module autodiscovery cannot find is ``common.monitoring_tasks``:
+# it is not called ``tasks.py``. Its Beat entries must resolve to a registered
+# task, so it is imported explicitly.
+import common.monitoring_tasks  # noqa: F401,E402
+
+# Explicit imports are required because ``app.autodiscover_tasks()`` only
+# discovers ``<app_label>.tasks`` modules. The following app task modules
+# are not reached by autodiscovery and must be imported directly.
 import tickets.tasks  # noqa: F401
 import assets.tasks  # noqa: F401
 import common.tasks  # noqa: F401
-import common.monitoring_tasks  # noqa: F401
+import changes.tasks  # noqa: F401
 import backup.tasks  # noqa: F401
+import licensing.tasks  # noqa: F401
+import cmdb.tasks  # noqa: F401
 
 
 @app.task(bind=True)

@@ -12,6 +12,7 @@ Policy enforced here (code-level):
 """
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 
@@ -182,10 +183,26 @@ class Notification(SoftDeleteModel):
     is_read = models.BooleanField(default=False)
     entity_type = models.CharField(max_length=100, blank=True, default="")
     object_id = models.CharField(max_length=100, blank=True, default="")
+    dedupe_key = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        help_text="Deterministic fingerprint for active-notification deduplication. "
+                  "NULL for rows created outside the dedup-aware path. "
+                  "Uniqueness for active rows is enforced by the conditional "
+                  "unique constraint in Meta (db_index is therefore redundant).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["dedupe_key"],
+                condition=Q(is_deleted=False),
+                name="unique_active_dedupe_key",
+            ),
+        ]
 
     def __str__(self):
         return f"To {self.recipient_id}: {self.title[:60]}"

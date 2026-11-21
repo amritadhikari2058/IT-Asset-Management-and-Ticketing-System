@@ -1,19 +1,7 @@
-"""Regression test: partial-failure retry for inbound email attachments.
+"""Regression tests: partial-failure retry for inbound email attachments.
 
-Test the retry lifecycle when an email with multiple attachments has a
-partial failure on the first attempt.
-
-Design note: The inbound email processing has message-level idempotency
-(via EmailProcessing status="processed" with ticket_id), but partial-failure
-retries can create duplicate attachment rows because:
-1. On partial failure, EmailProcessing is marked "failed"
-2. On retry, a new ticket is created (since status is "failed", not "processed")
-3. Attachments are re-processed from scratch; deduplication by
-   (ticket_id, original_filename) may not match if ticket_id changed.
-
-The smallest reliable correction would require adding a message_id field
-to TicketAttachment or preserving the original ticket_id through the
-retry reset logic.
+Covers true idempotent retry: ticket reuse across retryable states, stable
+MIME-part identity, exact dedup/recovery, and preservation of storage.
 """
 import os
 import shutil
@@ -21,7 +9,6 @@ import tempfile
 
 from email.message import EmailMessage
 
-from django.core.files.storage import FileSystemStorage
 from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from unittest.mock import patch
@@ -29,7 +16,6 @@ from unittest.mock import patch
 from common import inbound
 from common.models import EmailProcessing
 from tickets.models import Ticket, TicketAttachment
-from tickets.attachment_storage import store_upload, delete_stored_file
 
 
 _SETTINGS = {
@@ -64,7 +50,7 @@ def _ingest(attachments, message_id="<inbound-attach@example.com>",
 
 
 class PartialFailureRetryTests(TestCase):
-    """Test partial-failure retry scenario for inbound email attachments."""
+    """Partial-failure retry scenario for inbound email attachments."""
 
     def setUp(self):
         self.media_root = tempfile.mkdtemp(prefix="inbound-retry-")
@@ -75,21 +61,26 @@ class PartialFailureRetryTests(TestCase):
         self.override.enable()
         self.addCleanup(self.override.disable)
 
+    def _stored(self):
+        base = os.path.join(self.media_root, "ticket_attachments")
+        if not os.path.isdir(base):
+            return {}
+        stored = {}
+        for name in os.listdir(base):
+            with open(os.path.join(base, name), "rb") as fh:
+                stored[name] = fh.read()
+        return stored
+
     def _is_integrity_error(self, error):
-        """Check if error string starts with 'IntegrityError'."""
-        return (isinstance(error, str) and 
-                error.startswith("IntegrityError:"))
+        return isinstance(error, str) and error.startswith("IntegrityError:")
 
     def test_partial_failure_retry_workflow(self):
-        """Verify partial-failure retry completes without crashes.
+        """Failure on 3rd attachment, retry reuses ticket and completes exactly once.
 
-        Scenario: Email with 3 attachments; 3rd attachment fails on first attempt.
-        Retry should complete successfully, re-ingesting the missing attachment.
-
-        Note: Due to the current design, retry creates a new ticket and may
-        result in duplicate attachment rows. This test verifies the workflow
-        works without crashes and that the processing status is correctly
-        updated.
+        First attempt: one email creates one ticket, processing stores ticket
+        relationship, 3 parts extracted, first two saved, third DB persist fails
+        and its stored file is cleaned up. Retry reuses original ticket, saves
+        only the missing third part, and finishes with exactly 3 attachments.
         """
         attachments = [
             ("att1.txt", b"content1", "text/plain"),
@@ -97,7 +88,6 @@ class PartialFailureRetryTests(TestCase):
             ("att3.txt", b"content3", "text/plain"),
         ]
 
-        # First attempt: patch TicketAttachment.create so 3rd call fails
         call_count = [0]
         original_create = TicketAttachment.objects.create
 
@@ -108,56 +98,66 @@ class PartialFailureRetryTests(TestCase):
             return original_create(*args, **kwargs)
 
         with patch.object(TicketAttachment.objects, "create", failing_create):
-            ticket, created, error = _ingest(attachments)
-        
-        # Error should be the IntegrityError string (not None)
+            _ticket, _created, error = _ingest(attachments)
+
         self.assertIsNotNone(error)
         self.assertTrue(self._is_integrity_error(error))
 
-        # After first attempt: 2 attachments should exist (1 and 2 succeeded)
-        self.assertEqual(TicketAttachment.objects.count(), 2,
-                         f"Expected 2 attachments after first attempt, got {TicketAttachment.objects.count()}")
-        attached_filenames = {att.original_filename for att in TicketAttachment.objects.all()}
-        self.assertIn("att1.txt", attached_filenames)
-        self.assertIn("att2.txt", attached_filenames)
-        self.assertNotIn("att3.txt", attached_filenames)
-
-        # EmailProcessing should be marked as failed
         proc = EmailProcessing.objects.get(
             message_id="<inbound-attach@example.com>")
         self.assertEqual(proc.status, "failed")
+        self.assertIsNotNone(proc.ticket_id)
+        ticket_id = proc.ticket_id
 
-        # Retry the same email
+        self.assertEqual(TicketAttachment.objects.count(), 2)
+        self.assertEqual(Ticket.objects.count(), 1)
+        self.assertEqual(
+            {a.original_filename for a in TicketAttachment.objects.all()},
+            {"att1.txt", "att2.txt"})
+        self.assertEqual(
+            sorted(self._stored().values()), [b"content1", b"content2"])
+
         ticket2, created2, error2 = _ingest(attachments)
-        
-        # On retry, error should be None (successful processing)
-        self.assertIsNone(error2)
 
-        # After retry: processing should be complete
-        self.assertEqual(TicketAttachment.objects.count(), 5,
-                         f"Expected 5 attachments after retry (2 original + 3 re-processed), "
-                         f"got {TicketAttachment.objects.count()}")
-        
-        # Processing status should reflect successful completion
+        self.assertIsNone(error2)
+        self.assertFalse(created2)
+        self.assertEqual(ticket2.pk, ticket_id)
+
+        self.assertEqual(Ticket.objects.count(), 1)
+        self.assertEqual(TicketAttachment.objects.count(), 3)
+        self.assertEqual(
+            {a.original_filename for a in TicketAttachment.objects.all()},
+            {"att1.txt", "att2.txt", "att3.txt"})
+        self.assertEqual(
+            sorted(self._stored().values()),
+            [b"content1", b"content2", b"content3"])
+
         proc = EmailProcessing.objects.get(
             message_id="<inbound-attach@example.com>")
         self.assertEqual(proc.status, "processed")
         self.assertIsNotNone(proc.processed_at)
+        self.assertEqual(proc.ticket_id, ticket_id)
+
+        # Repeated successful replay: no additional tickets/rows/files.
+        for _ in range(3):
+            t3, c3, e3 = _ingest(attachments)
+            self.assertIsNone(e3)
+            self.assertFalse(c3)
+            self.assertEqual(t3.pk, ticket_id)
+        self.assertEqual(Ticket.objects.count(), 1)
+        self.assertEqual(TicketAttachment.objects.count(), 3)
+        self.assertEqual(
+            sorted(self._stored().values()),
+            [b"content1", b"content2", b"content3"])
 
     def test_partial_failure_retry_no_crash(self):
-        """Verify that retry does not crash the processing pipeline.
-
-        This is the minimum viable verification: the retry mechanism should
-        not raise unhandled exceptions, even when the first attempt had a
-        partial failure.
-        """
+        """Retry after partial failure completes successfully without duplicates."""
         attachments = [
             ("att1.txt", b"content1", "text/plain"),
             ("att2.txt", b"content2", "text/plain"),
             ("att3.txt", b"content3", "text/plain"),
         ]
 
-        # First attempt with failure on 3rd attachment
         call_count = [0]
         original_create = TicketAttachment.objects.create
 
@@ -168,12 +168,16 @@ class PartialFailureRetryTests(TestCase):
             return original_create(*args, **kwargs)
 
         with patch.object(TicketAttachment.objects, "create", failing_create):
-            ticket, created, error = _ingest(attachments)
-        
+            _ticket, _created, error = _ingest(attachments)
         self.assertIsNotNone(error)
+        ticket_id = EmailProcessing.objects.get(
+            message_id="<inbound-attach@example.com>").ticket_id
+        self.assertIsNotNone(ticket_id)
 
-        # Retry should not crash
         ticket2, created2, error2 = _ingest(attachments)
         self.assertIsNone(error2)
-        # Should have processed successfully
         self.assertIsNotNone(ticket2)
+        self.assertEqual(ticket2.pk, ticket_id)
+        self.assertFalse(created2)
+        self.assertEqual(Ticket.objects.count(), 1)
+        self.assertEqual(TicketAttachment.objects.count(), 3)

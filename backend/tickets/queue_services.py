@@ -10,6 +10,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 
 from common.audit import log_action
+from common.models import Notification
 from common.permissions import is_system_admin
 from tickets.models import (
     Ticket, TicketQueue, TicketQueueMembership, TicketWatcher,
@@ -403,31 +404,41 @@ def _write_history(ticket, actor, action, old=None, new=None, note=""):
 
 
 def _notify_user(recipient, actor, title, body, ticket):
-    if recipient is None or getattr(recipient, "pk", None) is None:
-        return None
-    if getattr(recipient, "pk", None) == getattr(actor, "pk", None):
-        return None
-    if not getattr(recipient, "is_active", True):
-        return None
-    if getattr(recipient, "is_deleted", False):
-        return None
-    from common.models import Notification
-    return Notification.objects.create(
-        recipient=recipient, title=title[:255], body=body or "",
-        entity_type="tickets.Ticket", object_id=str(ticket.pk))
+    from common.notifications import notify_user as _central_notify_user
+
+    return _central_notify_user(
+        recipient,
+        category="ticket_event",
+        title=title,
+        message=body,
+        entity_type="tickets.Ticket",
+        object_id=str(getattr(ticket, "pk", "") or ""),
+        actor=actor,
+        dedupe=True,
+        post_commit=True,
+    )
 
 
 def _notify_watchers(ticket, actor, title, body, exclude=None):
-    from common.models import Notification
+    from common.notifications import notify_user as _central_notify_user
+
     exclude_pk = getattr(exclude, "pk", None) if exclude else None
     for w in ticket.watchers.filter(is_active=True, is_deleted=False):
-        if w.user_id == actor.pk or w.user_id == exclude_pk:
+        if w.user_id == getattr(actor, "pk", None) or w.user_id == exclude_pk:
             continue
         if w.is_muted():
             continue
-        Notification.objects.create(
-            recipient=w.user, title=title[:255], body=body or "",
-            entity_type="tickets.Ticket", object_id=str(ticket.pk))
+        _central_notify_user(
+            w.user,
+            category="ticket_event",
+            title=title,
+            message=body,
+            entity_type="tickets.Ticket",
+            object_id=str(getattr(ticket, "pk", "") or ""),
+            actor=actor,
+            dedupe=True,
+            post_commit=True,
+        )
 
 
 class PermissionDenied(Exception):

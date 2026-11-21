@@ -210,7 +210,7 @@ describe('Vendors page - pagination', () => {
     fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'acme' } });
 
     await waitFor(() => {
-      expect(mockGet).toHaveBeenCalledWith('/assets/vendors/?q=acme');
+      expect(mockGet).toHaveBeenCalledWith('/assets/vendors/?q=acme&page_size=20');
     }, { timeout: 2000 });
     await screen.findByText('Acme Corp');
     expect(document.body.textContent).toContain('Page 1');

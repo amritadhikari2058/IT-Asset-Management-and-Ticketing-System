@@ -13,6 +13,7 @@ from rest_framework.exceptions import APIException, PermissionDenied, Validation
 
 from common.audit import log_action
 from common.models import Notification
+from common.notifications import notify_user
 from problem_management.permissions import is_it_support
 
 from .models import (
@@ -104,17 +105,11 @@ def notify_staff(user, title, body, entity_type, object_id):
     """Role-aware in-app notification on commit; never to employees."""
     if not (user and user.is_active and _role(user) in STAFF_ROLES):
         return
-
-    def _create():
-        Notification.objects.create(
-            recipient=user,
-            title=str(title)[:255],
-            body=body or "",
-            entity_type=entity_type or "",
-            object_id=str(object_id or ""),
-        )
-
-    transaction.on_commit(_create)
+    notify_user(
+        user, "problem_staff_notify", str(title)[:255], body or "",
+        entity_type=entity_type or "", object_id=str(object_id or ""),
+        post_commit=True,
+    )
 
 
 def check_version(problem, expected):

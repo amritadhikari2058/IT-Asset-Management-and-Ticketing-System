@@ -14,6 +14,7 @@ import logging
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import EmailMessage, send_mail
+from django.db import transaction
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from django.utils import timezone
@@ -32,16 +33,19 @@ def _send(subject, body, to):
     """Send a single email, logging failures without exposing secrets.
 
     Only the domain, exception type and a generic message are logged.
+    Returns True when the backend accepted the message, False otherwise.
     """
     try:
         send_mail(subject, body, settings.DEFAULT_FROM_EMAIL, [to],
                   fail_silently=False)
+        return True
     except Exception as exc:
         domain = (to or "").split("@")[-1]
         logger.warning(
             "Email delivery failed to @%s via %s: %s",
             domain, settings.EMAIL_HOST or "(local)",
             type(exc).__name__)
+        return False
 
 
 def _dedup_key(ticket_id, subject, to_email):
@@ -92,17 +96,13 @@ def send_ticket_notification(to_email, subject, body, ticket_id=None, user=None,
             return False
     except Exception:
         pass  # cache unavailable -> fail open and send anyway
-    ok = False
-    try:
-        _send(subject, body, to_email)
-        ok = True
-    except Exception as exc:
-        logger.warning("Ticket email send failed: %s", type(exc).__name__)
-    try:
-        cache.set(key, True, int(getattr(
-            settings, "EMAIL_DEDUP_TTL_SECONDS", 3600)))
-    except Exception:
-        pass
+    ok = _send(subject, body, to_email)
+    if ok:
+        try:
+            cache.set(key, True, int(getattr(
+                settings, "EMAIL_DEDUP_TTL_SECONDS", 3600)))
+        except Exception:
+            pass
     return ok
 
 
@@ -127,17 +127,13 @@ def send_kb_notification(to_email, subject, body, article=None, user=None):
             return False
     except Exception:
         pass  # cache unavailable -> fail open and send anyway
-    ok = False
-    try:
-        _send(subject, body, to_email)
-        ok = True
-    except Exception as exc:
-        logger.warning("KB email send failed: %s", type(exc).__name__)
-    try:
-        cache.set(key, True, int(getattr(
-            settings, "EMAIL_DEDUP_TTL_SECONDS", 3600)))
-    except Exception:
-        pass
+    ok = _send(subject, body, to_email)
+    if ok:
+        try:
+            cache.set(key, True, int(getattr(
+                settings, "EMAIL_DEDUP_TTL_SECONDS", 3600)))
+        except Exception:
+            pass
     return ok
 
 
@@ -151,19 +147,27 @@ def ticket_links(ticket_id):
 def _notify_user(recipient, actor, title, body, ticket):
     """Create an in-app notification; never notify the actor of their own
     action, never for inactive/deleted users, never leak internal content.
+
+    The record is persisted via ``transaction.on_commit`` so a notification
+    is never created for a ticket that ends up rolled back (for example a
+    rolled-back ticket creation or state transition).
+
+    Delegates to ``common.notifications.notify_user`` for recipient
+    validation, sanitization, dedupe, and savepoint-safe creation.
     """
-    if recipient is None or getattr(recipient, "pk", None) is None:
-        return None
-    actor_pk = getattr(actor, "pk", None)
-    if actor_pk is not None and recipient.pk == actor_pk:
-        return None
-    if not getattr(recipient, "is_active", True):
-        return None
-    if getattr(recipient, "is_deleted", False):
-        return None
-    return Notification.objects.create(
-        recipient=recipient, title=title[:255], body=body or "",
-        entity_type="tickets.Ticket", object_id=str(ticket.pk))
+    from common.notifications import notify_user as _central_notify_user
+
+    return _central_notify_user(
+        recipient,
+        category="ticket_event",
+        title=title,
+        message=body,
+        entity_type="tickets.Ticket",
+        object_id=str(getattr(ticket, "pk", "") or ""),
+        actor=actor,
+        dedupe=True,
+        post_commit=True,
+    )
 
 
 def _notify_sla_approaching(ticket):
@@ -219,15 +223,25 @@ def _notify_maintenance_reminder(maintenance):
         if recipient is None and maintenance.created_by_id:
             recipient = maintenance.created_by
         if recipient is not None and getattr(recipient, "pk", None):
-            Notification.objects.create(
-                recipient=recipient,
-                title=f"Maintenance due soon ({maintenance.title})",
-                body=f"Maintenance for asset {maintenance.asset.asset_tag} – "
-                     f"{maintenance.title} is scheduled for "
-                     f"{maintenance.scheduled_date:%Y-%m-%d %H:%M}. "
-                     "Please prepare.",
+            from common.notifications import notify_user as _central_notify_user
+
+            title = f"Maintenance due soon ({maintenance.title})"[:255]
+            body = (
+                f"Maintenance for asset {maintenance.asset.asset_tag} - "
+                f"{maintenance.title} is scheduled for "
+                f"{maintenance.scheduled_date:%Y-%m-%d %H:%M}. "
+                "Please prepare."
+            )
+            _central_notify_user(
+                recipient,
+                category="maintenance_reminder",
+                title=title,
+                message=body,
                 entity_type="assets.Maintenance",
-                object_id=str(maintenance.pk))
+                object_id=str(maintenance.pk),
+                dedupe=True,
+                post_commit=True,
+            )
         return send_maintenance_reminder(maintenance)
     except Exception as exc:
         logger.warning("Maintenance reminder notification failed: %s",

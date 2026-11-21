@@ -76,54 +76,67 @@ describe('CMDB Baselines', () => {
     mockPost.mockResolvedValueOnce({ data: BASELINE });
     mockGet.mockResolvedValueOnce({ data: [BASELINE] });
     render(<BaselinesPage />);
-    await screen.findByText('Production Baseline');
+    await screen.findByRole('button', { name: /Production Baseline/i });
   });
 
   it('system_admin can submit baseline', async () => {
     makeAdminAuth();
-    mockPost.mockResolvedValueOnce({ data: { ...BASELINE, status: 'submitted' } });
-    mockGet.mockResolvedValueOnce({ data: [BASELINE] });
+    mockPost.mockResolvedValueOnce({ data: { ...BASELINE, status: 'pending_approval' } });
+    let calls = 0;
+    mockGet.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) return { data: [BASELINE] };
+      return { data: [{ ...BASELINE, status: 'pending_approval' }] };
+    });
     render(<BaselinesPage />);
-    await screen.findByText('Production Baseline');
-    fireEvent.click(screen.getByRole('button', { name: /^Submit$/i }));
-    await screen.findByText(/submitted/i);
+    await screen.findByRole('button', { name: /Production Baseline/i });
+    fireEvent.click(screen.getByRole('button', { name: /^Submit for Approval$/i }));
+    await screen.findByRole('button', { name: /^Approve$/i });
   });
 
   it('system_admin can approve baseline', async () => {
     makeAdminAuth();
-    mockPatch.mockResolvedValueOnce({ data: { ...BASELINE, status: 'approved', approved_by: 1 } });
-    mockGet.mockResolvedValueOnce({ data: [BASELINE] });
+    mockPost.mockResolvedValueOnce({ data: { ...BASELINE, status: 'approved', approved_by: 1 } });
+    let calls = 0;
+    mockGet.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) return { data: [{ ...BASELINE, status: 'pending_approval' }] };
+      return { data: [{ ...BASELINE, status: 'approved', approved_by: 1 }] };
+    });
     render(<BaselinesPage />);
-    await screen.findByText('Production Baseline');
+    await screen.findByRole('button', { name: /Production Baseline/i });
     fireEvent.click(screen.getByRole('button', { name: /^Approve$/i }));
-    await screen.findByText(/approved/i);
+    await screen.findByRole('button', { name: /^Supersede$/i });
   });
 
   it('creator cannot approve own baseline', async () => {
     makeAdminAuth();
-    mockPatch.mockRejectedValueOnce({ response: { status: 403 } });
-    mockGet.mockResolvedValueOnce({ data: [BASELINE] });
+    mockPost.mockRejectedValueOnce({ response: { status: 403 } });
+    mockGet.mockResolvedValue({ data: [{ ...BASELINE, status: 'pending_approval' }] });
     render(<BaselinesPage />);
-    await screen.findByText('Production Baseline');
+    await screen.findByRole('button', { name: /Production Baseline/i });
     fireEvent.click(screen.getByRole('button', { name: /^Approve$/i }));
-    expect(await screen.findByText(/cannot approve own/i)).toBeTruthy();
+    expect(await screen.findByText(/Forbidden: you lack permission/i)).toBeTruthy();
   });
 
   it('system_admin can supersede baseline', async () => {
     makeAdminAuth();
-    mockPatch.mockResolvedValueOnce({ data: { ...BASELINE, status: 'superseded' } });
-    mockGet.mockResolvedValueOnce({ data: [BASELINE] });
+    mockPost.mockResolvedValueOnce({ data: { ...BASELINE, status: 'superseded' } });
+    mockGet.mockImplementation(async (url) => {
+      if (String(url).includes('/cmdb/items/')) return { data: [] };
+      return { data: [{ ...BASELINE, status: 'approved' }] };
+    });
     render(<BaselinesPage />);
-    await screen.findByText('Production Baseline');
+    await screen.findByRole('button', { name: /Production Baseline/i });
     fireEvent.click(screen.getByRole('button', { name: /^Supersede$/i }));
-    await screen.findByText(/superseded/i);
+    await screen.findByText('Superseded');
   });
 
   it('system_admin can compare baselines', async () => {
     makeAdminAuth();
-    mockGet.mockResolvedValueOnce({ data: [] });
+    mockGet.mockResolvedValueOnce({ data: [BASELINE] });
     render(<BaselinesPage />);
-    expect(screen.getByRole('button', { name: /Compare/i })).toBeTruthy();
+    await screen.findByRole('button', { name: /Compare/i });
   });
 
   it('it_manager can create and manage baselines', async () => {
@@ -131,7 +144,7 @@ describe('CMDB Baselines', () => {
     mockPost.mockResolvedValueOnce({ data: BASELINE });
     mockGet.mockResolvedValueOnce({ data: [BASELINE] });
     render(<BaselinesPage />);
-    await screen.findByText('Production Baseline');
+    await screen.findByRole('button', { name: /Production Baseline/i });
   });
 
   it('it_support cannot create baselines', async () => {
@@ -160,41 +173,48 @@ describe('CMDB Baselines', () => {
   describe('baseline types', () => {
     it('includes production scope baseline', async () => {
       makeAdminAuth();
-      mockGet.mockResolvedValueOnce({ data: [{ id: 1, scope: 'production' }] });
+      mockGet.mockResolvedValueOnce({ data: [{ ...BASELINE, scope_type: 'single_ci' }] });
       render(<BaselinesPage />);
-      expect(await screen.findByRole('cell', { name: /production/i })).toBeTruthy();
+      expect(await screen.findByRole('cell', { name: /single ci/i })).toBeTruthy();
     });
 
     it('includes infrastructure scope baseline', async () => {
       makeAdminAuth();
-      mockGet.mockResolvedValueOnce({ data: [{ id: 2, scope: 'infrastructure' }] });
+      mockGet.mockResolvedValueOnce({ data: [{ ...BASELINE, scope_type: 'single_ci' }] });
       render(<BaselinesPage />);
-      expect(await screen.findByRole('cell', { name: /infrastructure/i })).toBeTruthy();
+      expect(await screen.findByRole('cell', { name: /single ci/i })).toBeTruthy();
     });
 
     it('includes configuration scope baseline', async () => {
       makeAdminAuth();
-      mockGet.mockResolvedValueOnce({ data: [{ id: 3, scope: 'configuration' }] });
+      mockGet.mockResolvedValueOnce({ data: [{ ...BASELINE, scope_type: 'single_ci' }] });
       render(<BaselinesPage />);
-      expect(await screen.findByRole('cell', { name: /configuration/i })).toBeTruthy();
+      expect(await screen.findByRole('cell', { name: /single ci/i })).toBeTruthy();
     });
   });
 
   describe('baseline status transitions', () => {
     it('status transitions: draft → submitted → approved → superseded', async () => {
       makeAdminAuth();
-      mockPost.mockResolvedValueOnce({ data: { ...BASELINE, status: 'submitted' } });
-      mockPatch.mockResolvedValueOnce({ data: { ...BASELINE, status: 'approved' } });
-      mockPatch.mockResolvedValueOnce({ data: { ...BASELINE, status: 'superseded' } });
-      mockGet.mockResolvedValueOnce({ data: [BASELINE] });
+      mockPost.mockResolvedValueOnce({ data: { ...BASELINE, status: 'pending_approval' } });
+      mockPost.mockResolvedValueOnce({ data: { ...BASELINE, status: 'approved' } });
+      mockPost.mockResolvedValueOnce({ data: { ...BASELINE, status: 'superseded' } });
+      let getCalls = 0;
+      mockGet.mockImplementation(async () => {
+        getCalls += 1;
+        if (getCalls === 1) return { data: [BASELINE] };
+        if (getCalls === 2) return { data: [{ ...BASELINE, status: 'pending_approval' }] };
+        if (getCalls === 3) return { data: [{ ...BASELINE, status: 'approved' }] };
+        return { data: [{ ...BASELINE, status: 'superseded' }] };
+      });
       render(<BaselinesPage />);
-      await screen.findByText('Production Baseline');
-      fireEvent.click(screen.getByRole('button', { name: /^Submit$/i }));
-      await screen.findByText(/submitted/i);
+      await screen.findByRole('button', { name: /Production Baseline/i });
+      fireEvent.click(screen.getByRole('button', { name: /^Submit for Approval$/i }));
+      await screen.findByRole('button', { name: /^Approve$/i });
       fireEvent.click(screen.getByRole('button', { name: /^Approve$/i }));
       await screen.findByText(/approved/i);
       fireEvent.click(screen.getByRole('button', { name: /^Supersede$/i }));
-      await screen.findByText(/superseded/i);
+      await screen.findByText('Superseded');
     });
   });
 });

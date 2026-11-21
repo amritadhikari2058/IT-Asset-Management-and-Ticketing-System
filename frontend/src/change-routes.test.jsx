@@ -236,7 +236,7 @@ describe('Change Management page components render directly', () => {
     const approveBtn = screen.getByText('Approve');
     approveBtn.click();
     await waitFor(() => {
-      expect(mockPatch).toHaveBeenCalledWith('/scheduling-exceptions/1/', { status: 'approved' });
+      expect(mockPatch).toHaveBeenCalledWith('/changes/scheduling-exceptions/1/', { status: 'approved' });
     });
   });
 
@@ -258,7 +258,7 @@ describe('Change Management page components render directly', () => {
       fireEvent.submit(form);
     });
     await waitFor(() => {
-      expect(mockPost).toHaveBeenCalledWith('/scheduling-exceptions/', expect.objectContaining({
+      expect(mockPost).toHaveBeenCalledWith('/changes/scheduling-exceptions/', expect.objectContaining({
         change: 1,
         justification: 'Emergency security patch',
       }));

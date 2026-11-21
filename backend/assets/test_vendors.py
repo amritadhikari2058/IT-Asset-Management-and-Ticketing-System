@@ -1,4 +1,4 @@
-"""Vendor module regression tests.
+﻿"""Vendor module regression tests.
 
 Covers: create/update validation, uniqueness, authorization, soft-delete
 lifecycle, restore, related-record scoping, search/pagination, and
@@ -8,6 +8,7 @@ concurrency hardening.
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
 from django.db import IntegrityError, transaction, connection
+from unittest import SkipTest
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -479,6 +480,9 @@ class VendorSearchPaginationTests(TestCase):
 
 class VendorConcurrencyTests(TransactionTestCase):
     def setUp(self):
+        from django.db import connections
+        if connections['default'].vendor == 'sqlite':
+            raise SkipTest('SQLite does not support concurrent writes via ThreadPoolExecutor; requires PostgreSQL for reliable verification.')
         self.dep, self.admin, self.mgr, self.support, self.emp = _make_roles()
         self.c = APIClient()
         self.c.force_authenticate(user=self.mgr)

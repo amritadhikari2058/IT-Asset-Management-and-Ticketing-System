@@ -15,23 +15,46 @@ const ALL_ROLES = [
 
 /** Bulk ticket creation: CSV/XLSX import, preview, confirm, report. */
 export function TicketBulkCreateModal({ onClose, onCreated }) {
-  const [file, setFile, pick] = useCsvFile();
+  const [file, setFile, pickFile] = useCsvFile();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [preview, setPreview] = useState(null);
   const [report, setReport] = useState(null);
   const [reportBlob, setReportBlob] = useState(null);
+  const [importToken, setImportToken] = useState('');
+
+  const newImportToken = () => {
+    try {
+      if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    } catch {
+      // ignore
+    }
+    return `bulk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  };
+
+  const pick = (e) => {
+    pickFile(e);
+    setPreview(null);
+    setReport(null);
+    setReportBlob(null);
+    setError('');
+    setImportToken('');
+  };
 
   const doPreview = async () => {
     if (!file || busy) return;
+    const token = importToken || newImportToken();
+    if (!importToken) setImportToken(token);
     setBusy(true);
     setError('');
     setPreview(null);
     setReport(null);
+    setReportBlob(null);
     try {
       const fd = new FormData();
       fd.append('file', file);
       fd.append('preview', 'true');
+      fd.append('import_token', token);
       const r = await api.post('/tickets/bulk_create/', fd);
       setPreview(r.data);
     } catch (e) {
@@ -44,6 +67,8 @@ export function TicketBulkCreateModal({ onClose, onCreated }) {
   const doConfirm = async () => {
     if (!file || busy) return;
     if (!confirm(`Create ${preview?.affected ?? 0} ticket(s)? Invalid rows will be skipped.`)) return;
+    const token = importToken || newImportToken();
+    if (!importToken) setImportToken(token);
     setBusy(true);
     setError('');
     try {
@@ -51,6 +76,7 @@ export function TicketBulkCreateModal({ onClose, onCreated }) {
       fd.append('file', file);
       fd.append('preview', 'false');
       fd.append('confirm', 'true');
+      fd.append('import_token', token);
       const r = await api.post('/tickets/bulk_create/?download=csv', fd, { responseType: 'blob' });
       const text = await r.data.text();
       const rows = parseCSV(text);
@@ -408,7 +434,14 @@ export function EmployeeImportModal({ onClose, onImported }) {
 
 /** Bulk asset creation: template → upload → preview → confirm → report. */
 export function AssetBulkCreateModal({ onClose, onImported }) {
-  const [file, setFile, pick] = useCsvFile();
+  const [file, setFile] = useState(null);
+  const pick = (e) => {
+    setFile(e.target.files?.[0] ?? null);
+    setPreview(null);
+    setReport(null);
+    setReportBlob(null);
+    setError('');
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [preview, setPreview] = useState(null);

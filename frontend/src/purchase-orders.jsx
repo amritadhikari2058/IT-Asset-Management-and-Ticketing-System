@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
@@ -28,6 +28,12 @@ function StatusPill({ status }) {
 export function PurchaseOrdersPage() {
   const auth = useAuth();
   const caps = procurementCapabilities(auth);
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const [orders, setOrders] = useState([]);
   const [count, setCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -47,13 +53,15 @@ export function PurchaseOrdersPage() {
     if (typeof window === 'undefined') return 20;
     try {
       const saved = window.localStorage.getItem('itdesk.pageSize');
-      return saved ? Number(saved) : 20;
+      const n = Number(saved);
+      return saved && Number.isFinite(n) && n > 0 ? n : 20;
     } catch {
       return 20;
     }
   });
 
   const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError('');
     try {
@@ -67,20 +75,34 @@ export function PurchaseOrdersPage() {
         receipt_status: filters.receiptStatus,
         ordering: filters.ordering,
       }));
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
       setOrders(safeResults(response.data));
       setCount(Number(response.data?.count ?? safeResults(response.data).length));
     } catch (e) {
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
       setError(parseFieldErrors(e).global || 'Could not load purchase orders.');
     } finally {
-      setLoading(false);
+      if (mountedRef.current && requestId === requestIdRef.current) setLoading(false);
     }
-  }, [page, filters]);
+  }, [page, filters, pageSize]);
 
   useEffect(() => { load(); }, [load]);
 
   // Reset to page 1 when page size changes
   useEffect(() => {
     setPage(1);
+  }, [pageSize]);
+
+  // Persist page-size preference without unnecessary writes
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (window.localStorage.getItem('itdesk.pageSize') !== String(pageSize)) {
+        window.localStorage.setItem('itdesk.pageSize', String(pageSize));
+      }
+    } catch {
+      // ignore storage failures
+    }
   }, [pageSize]);
 
   const pageCount = Math.max(1, Math.ceil(count / pageSize));

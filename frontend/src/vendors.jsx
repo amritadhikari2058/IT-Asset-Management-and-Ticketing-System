@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './auth';
 import { useTableColumns, useSort } from './components';
-import { Badge, Field, ErrorSummary, LoadingRows, EmptyState, DataTable, Pager, PageHeader, ConfirmDialog, Modal, AccessDenied } from './components';
+import { Badge, Field, ErrorSummary, LoadingRows, EmptyState, DataTable, Pager, PageHeader, ConfirmDialog, Modal, AccessDenied, PageSizeSelector } from './components';
 import { parseApiError, fieldMsg, fetchPage } from './api-utils';
 import api from './api';
 
@@ -13,7 +13,8 @@ function VendorsPage() {
     if (typeof window === 'undefined') return 20;
     try {
       const saved = window.localStorage.getItem('itdesk.pageSize');
-      return saved ? Number(saved) : 20;
+      const n = Number(saved);
+      return saved && Number.isFinite(n) && n > 0 && n <= 100 ? n : 20;
     } catch {
       return 20;
     }
@@ -34,6 +35,12 @@ function VendorsPage() {
   const [rowActionBusy, setRowActionBusy] = useState(false);
   const [sort, changeSort, orderingParam] = useSort();
   const [lastUrl, setLastUrl] = useState('/assets/vendors/');
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const [exportOpen, setExportOpen] = useState(false);
 
   // Column definitions
@@ -82,26 +89,29 @@ function VendorsPage() {
   const vendorColumns = VENDOR_COLUMNS.filter((c) => visibleVendorColumns.has(c.key));
 
   const loadUrl = async (url) => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setListError('');
     try {
       const pg = await fetchPage(url);
-      setItems(pg.items);
-      setCount(pg.count);
-      setNext(pg.next);
-      setPrevious(pg.previous);
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
+      setItems(pg.items ?? []);
+      setCount(Number(pg.count ?? (Array.isArray(pg.items) ? pg.items.length : 0)));
+      setNext(pg.next ?? null);
+      setPrevious(pg.previous ?? null);
       setLastUrl(url);
       setPage(pageFromUrl(url));
     } catch {
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
       setListError('Could not load vendors.');
     } finally {
-      setLoading(false);
+      if (mountedRef.current && requestId === requestIdRef.current) setLoading(false);
     }
   };
 
   // Search and filter
-  const qsKey = JSON.stringify([f, orderingParam(sort), page]);
-  const builtUrl = useMemo(() => buildVendorListUrl(f, orderingParam(sort), page), [qsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const qsKey = JSON.stringify([f, orderingParam(sort), page, pageSize]);
+  const builtUrl = useMemo(() => buildVendorListUrl(f, orderingParam(sort), page, pageSize), [qsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     let cancelled = false;
     const t = setTimeout(async () => {
@@ -113,7 +123,19 @@ function VendorsPage() {
   }, [builtUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (pageSize !== 20) setPage(1);
+    setPage(1);
+  }, [pageSize]);
+
+  // Persist page-size preference without unnecessary writes
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (window.localStorage.getItem('itdesk.pageSize') !== String(pageSize)) {
+        window.localStorage.setItem('itdesk.pageSize', String(pageSize));
+      }
+    } catch {
+      // ignore storage failures
+    }
   }, [pageSize]);
 
   const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -168,11 +190,13 @@ function VendorsPage() {
   };
 
   const handleSearchChange = (e) => {
+    setPage(1);
     setF({ ...f, q: e.target.value });
   };
 
   const handleFilterChange = (e) => {
     const { name, value } = e.target;
+    setPage(1);
     setF({ ...f, [name]: value });
   };
 
@@ -738,7 +762,7 @@ function VendorDetail({ id }) {
 }
 
 /** Build vendor list URL with filters, ordering, and pagination. */
-function buildVendorListUrl(filters, ordering, page) {
+function buildVendorListUrl(filters, ordering, page, pageSize = 20) {
   const params = new URLSearchParams();
   if (filters.q) params.append('q', filters.q);
   if (filters.is_active) params.append('is_active', filters.is_active);

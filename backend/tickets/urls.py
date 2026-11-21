@@ -2,9 +2,9 @@ from django.urls import path
 from rest_framework import routers
 
 from tickets.views import (
-    TicketAttachmentViewSet, TicketCategoryViewSet, TicketHistoryViewSet,
-    TicketKbArticleViewSet, TicketSLAViewSet, TicketViewSet,
-    category_report, sla_report,
+    TicketAttachmentViewSet, TicketBulkImportOperationViewSet,
+    TicketCategoryViewSet, TicketHistoryViewSet, TicketKbArticleViewSet,
+    TicketSLAViewSet, TicketViewSet, category_report, sla_report,
 )
 from tickets.advanced_views import (
     TicketQueueViewSet, TicketQueueMembershipViewSet,
@@ -34,6 +34,8 @@ router.register("saved-views", SavedTicketViewViewSet,
                 basename="savedticketview")
 router.register("merge-records", TicketMergeRecordViewSet,
                 basename="ticketmergerecord")
+router.register("bulk-imports", TicketBulkImportOperationViewSet,
+                basename="ticketbulkimport")
 router.register("", TicketViewSet, basename="ticket")
 
 urlpatterns = router.urls + [

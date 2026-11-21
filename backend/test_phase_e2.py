@@ -110,9 +110,10 @@ class PhaseE2Tests(TestCase):
         self.assertEqual(len(self._stored()), 2)
 
     def test_attachment_same_filename_identical_content(self):
-        """Two attachments with the same filename and identical contents.
+        """Two separate MIME parts with same filename and identical contents.
 
-        Should be deduplicated to a single row (same content_hash).
+        Distinct MIME attachment parts must remain separate records even when
+        filename and bytes are identical.
         """
         attachments = [
             ("report.pdf", b"same data", "application/pdf"),
@@ -123,30 +124,23 @@ class PhaseE2Tests(TestCase):
         self.assertIsNone(error)
         self.assertIsNotNone(ticket)
 
-        # Should be deduplicated to 1 attachment (same content_hash)
-        self.assertEqual(TicketAttachment.objects.count(), 1,
-                         f"Expected 1 attachment (deduplicated), got {TicketAttachment.objects.count()}")
+        self.assertEqual(TicketAttachment.objects.count(), 2,
+                         f"Expected 2 distinct parts, got {TicketAttachment.objects.count()}")
 
-        att = TicketAttachment.objects.get()
-        self.assertEqual(att.original_filename, "report.pdf")
+        atts = list(TicketAttachment.objects.filter(ticket=ticket).order_by("pk"))
+        self.assertEqual({a.original_filename for a in atts}, {"report.pdf"})
+        self.assertEqual(atts[0].content_hash, atts[1].content_hash)
+        self.assertNotEqual(atts[0].source_part_index, atts[1].source_part_index)
+        self.assertEqual(len(self._stored()), 2)
 
     def test_partial_failure_retry_workflow(self):
-        """Verify partial-failure retry completes without crashes.
-
-        Scenario: Email with 3 attachments; 3rd attachment fails on first attempt.
-        Retry should complete successfully, re-ingesting the missing attachment.
-
-        Note: Due to the current design, retry creates a new ticket and may
-        result in duplicate attachment rows. This test verifies the workflow
-        works without crashes and that the processing status is correctly updated.
-        """
+        """Partial failure on 3rd attachment recovers to exactly 3 parts on one ticket."""
         attachments = [
             ("att1.txt", b"content1", "text/plain"),
             ("att2.txt", b"content2", "text/plain"),
             ("att3.txt", b"content3", "text/plain"),
         ]
 
-        # First attempt: patch TicketAttachment.create so 3rd call fails
         call_count = [0]
         original_create = TicketAttachment.objects.create
 
@@ -157,51 +151,43 @@ class PhaseE2Tests(TestCase):
             return original_create(*args, **kwargs)
 
         with patch.object(TicketAttachment.objects, "create", failing_create):
-            ticket, created, error = _ingest(attachments)
+            _ticket, _created, error = _ingest(attachments)
 
-        # Error should be the IntegrityError string (not None)
         self.assertIsNotNone(error)
         self.assertTrue(self._is_integrity_error(error))
-
-        # After first attempt: 2 attachments should exist (1 and 2 succeeded)
-        self.assertEqual(TicketAttachment.objects.count(), 2,
-                         f"Expected 2 attachments after first attempt, got {TicketAttachment.objects.count()}")
-        attached_filenames = {att.original_filename for att in TicketAttachment.objects.all()}
-        self.assertIn("att1.txt", attached_filenames)
-        self.assertIn("att2.txt", attached_filenames)
-        self.assertNotIn("att3.txt", attached_filenames)
-
-        # EmailProcessing should be marked as failed
+        self.assertEqual(TicketAttachment.objects.count(), 2)
+        self.assertEqual(Ticket.objects.count(), 1)
         proc = EmailProcessing.objects.get(
             message_id="<inbound-attach@example.com>")
+        ticket_id = proc.ticket_id
         self.assertEqual(proc.status, "failed")
+        self.assertIsNotNone(ticket_id)
+        self.assertEqual(
+            sorted(self._stored().values()), [b"content1", b"content2"])
 
-        # Retry the same email
         ticket2, created2, error2 = _ingest(attachments)
 
-        # On retry, error should be None (successful processing)
         self.assertIsNone(error2)
-
-        # After retry: processing should be complete
+        self.assertFalse(created2)
+        self.assertEqual(ticket2.pk, ticket_id)
+        self.assertEqual(Ticket.objects.count(), 1)
+        self.assertEqual(TicketAttachment.objects.count(), 3)
+        self.assertEqual(
+            sorted(self._stored().values()),
+            [b"content1", b"content2", b"content3"])
         proc = EmailProcessing.objects.get(
             message_id="<inbound-attach@example.com>")
         self.assertEqual(proc.status, "processed")
         self.assertIsNotNone(proc.processed_at)
 
     def test_partial_failure_retry_no_crash(self):
-        """Verify that retry does not crash the processing pipeline.
-
-        This is the minimum viable verification: the retry mechanism should
-        not raise unhandled exceptions, even when the first attempt had a
-        partial failure.
-        """
+        """Retry after partial failure completes successfully without duplicates."""
         attachments = [
             ("att1.txt", b"content1", "text/plain"),
             ("att2.txt", b"content2", "text/plain"),
             ("att3.txt", b"content3", "text/plain"),
         ]
 
-        # First attempt with failure on 3rd attachment
         call_count = [0]
         original_create = TicketAttachment.objects.create
 
@@ -212,15 +198,20 @@ class PhaseE2Tests(TestCase):
             return original_create(*args, **kwargs)
 
         with patch.object(TicketAttachment.objects, "create", failing_create):
-            ticket, created, error = _ingest(attachments)
+            _ticket, _created, error = _ingest(attachments)
 
         self.assertIsNotNone(error)
+        ticket_id = EmailProcessing.objects.get(
+            message_id="<inbound-attach@example.com>").ticket_id
+        self.assertIsNotNone(ticket_id)
 
-        # Retry should not crash
         ticket2, created2, error2 = _ingest(attachments)
         self.assertIsNone(error2)
-        # Should have processed successfully
         self.assertIsNotNone(ticket2)
+        self.assertEqual(ticket2.pk, ticket_id)
+        self.assertFalse(created2)
+        self.assertEqual(Ticket.objects.count(), 1)
+        self.assertEqual(TicketAttachment.objects.count(), 3)
 
     def test_ticket_reuse_no_duplicate_tickets(self):
         """Multiple retries should not create duplicate tickets.
