@@ -1,0 +1,864 @@
+diff --git a/backend/accounts/views.py b/backend/accounts/views.py
+index 8efca44..e932e2a 100644
+--- a/backend/accounts/views.py
++++ b/backend/accounts/views.py
+@@ -6,11 +6,10 @@
+   hard-delete (bulk delete = soft delete only, blocked when history exists).
+ """
+ import csv
+-import io
+ 
++from django.conf import settings
+ from django.db import transaction
+ from django.db.models import Count, Q
+-from openpyxl import load_workbook
+ from rest_framework import status, viewsets
+ from rest_framework.decorators import action, api_view, permission_classes
+ from rest_framework.exceptions import ValidationError
+@@ -24,6 +23,9 @@ from accounts.serializers import (
+     UserSerializer,
+ )
+ from common.audit import log_action
++from common.import_stream import (
++    batches, count_uploaded_rows, iter_uploaded_rows,
++)
+ from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
+ from tickets.serializers import validate_attachment_file
+ 
+@@ -148,68 +150,153 @@ class DepartmentViewSet(viewsets.ModelViewSet):
+ 
+ 
+ def _parse_upload(file_obj, allowed=None):
+-    """Return list of dict rows from CSV or Excel.
+-
+-    When ``allowed`` is given, every header must be in that set; an
+-    unknown column is rejected instead of being silently ignored.
+-    """
+-    name = (file_obj.name or "").lower()
+-    if name.endswith((".xlsx", ".xlsm", ".xltx")):
+-        wb = load_workbook(file_obj, read_only=True, data_only=True)
+-        ws = wb.active
+-        rows = list(ws.iter_rows(values_only=True))
+-        if not rows:
+-            raise ValueError("spreadsheet is empty; header row missing")
+-        header = [str(h or "").strip() for h in rows[0]]
+-        if allowed is not None:
+-            unknown = [h for h in header if h and h not in allowed]
+-            if unknown:
+-                raise ValueError(
+-                    "unknown columns: " + ", ".join(unknown))
+-            if not any(h in allowed for h in header):
+-                raise ValueError("header row missing")
+-        return [dict(zip(header, r)) for r in rows[1:] if any(r)]
+-    text = file_obj.read().decode("utf-8-sig")
+-    reader = csv.DictReader(io.StringIO(text))
+-    if reader.fieldnames is None:
+-        raise ValueError("CSV is empty; header row missing")
+-    header = [str(h or "").strip() for h in reader.fieldnames]
+-    if allowed is not None:
+-        unknown = [h for h in header if h and h not in allowed]
+-        if unknown:
+-            raise ValueError("unknown columns: " + ", ".join(unknown))
+-        if not any(h in allowed for h in header):
+-            raise ValueError("header row missing")
+-    return list(reader)
++    """Return an incremental CSV or Excel row iterator."""
++    max_bytes = int(settings.EMPLOYEE_BULK_IMPORT_MAX_FILE_SIZE_MB
++                    * 1024 * 1024)
++    return iter_uploaded_rows(
++        file_obj, allowed, max_bytes,
++        settings.EMPLOYEE_BULK_IMPORT_MAX_ROWS,
++        xlsx_extensions=(".xlsx", ".xlsm", ".xltx"),
++    )
+ 
+ 
+ def _employee_preview(rows):
+     preview, errors = [], []
+     seen = set()
+-    for i, raw in enumerate(rows, start=2):
+-        data = {k.strip(): (v.strip() if isinstance(v, str) else v)
+-                for k, v in raw.items() if k}
+-        ser = BulkEmployeeRowSerializer(data=data)
+-        if not ser.is_valid():
+-            errors.append({"row": i, "errors": ser.errors, "data": raw})
+-            continue
+-        eid = ser.validated_data["employee_id"]
+-        if eid in seen:
+-            errors.append({"row": i, "errors": {"employee_id": ["duplicate in file"]},
+-                           "data": raw})
+-            continue
+-        seen.add(eid)
+-        exists = User.objects.with_deleted().filter(employee_id=eid).first()
+-        preview.append({
+-            "row": i, "employee_id": eid,
+-            "exists": bool(exists),
+-            "is_deleted": bool(exists and exists.is_deleted),
+-            "would_create": not bool(exists),
+-            "data": ser.validated_data,
+-        })
++    for row_batch in batches(enumerate(rows, start=2)):
++        valid_rows = []
++        employee_ids = set()
++        for i, raw in row_batch:
++            if not isinstance(raw, dict):
++                errors.append({"row": i,
++                               "errors": {"file": ["row must be an object"]},
++                               "data": raw})
++                continue
++            data = {k.strip(): (v.strip() if isinstance(v, str) else v)
++                    for k, v in raw.items() if k}
++            serializer = BulkEmployeeRowSerializer(data=data)
++            if not serializer.is_valid():
++                errors.append({"row": i, "errors": serializer.errors,
++                               "data": raw})
++                continue
++            employee_id = serializer.validated_data["employee_id"]
++            if employee_id in seen:
++                errors.append({
++                    "row": i,
++                    "errors": {"employee_id": ["duplicate in file"]},
++                    "data": raw})
++                continue
++            seen.add(employee_id)
++            employee_ids.add(employee_id)
++            valid_rows.append((i, employee_id, serializer.validated_data))
++
++        existing_by_id = dict(
++            User.objects.with_deleted().filter(
++                employee_id__in=employee_ids
++            ).values_list("employee_id", "is_deleted")
++        ) if employee_ids else {}
++        for i, employee_id, validated_data in valid_rows:
++            exists = employee_id in existing_by_id
++            preview.append({
++                "row": i, "employee_id": employee_id,
++                "exists": exists,
++                "is_deleted": existing_by_id.get(employee_id, False),
++                "would_create": not exists,
++                "data": validated_data,
++            })
+     return preview, errors
+ 
+ 
++def _confirm_employee_rows(rows, actor):
++    successful, failed, skipped = [], [], []
++    employee_id_by_row = {}
++    seen = set()
++    for row_batch in batches(enumerate(rows, start=2)):
++        valid_rows = []
++        employee_ids = set()
++        department_refs = set()
++        for row_number, raw in row_batch:
++            if not isinstance(raw, dict):
++                failed.append({
++                    "row": row_number,
++                    "errors": {"file": ["row must be an object"]},
++                    "data": raw})
++                continue
++            data = {key.strip(): (value.strip()
++                                  if isinstance(value, str) else value)
++                    for key, value in raw.items() if key}
++            serializer = BulkEmployeeRowSerializer(data=data)
++            if not serializer.is_valid():
++                failed.append({
++                    "row": row_number, "errors": serializer.errors,
++                    "data": raw})
++                continue
++            employee_id = serializer.validated_data["employee_id"]
++            if employee_id in seen:
++                failed.append({
++                    "row": row_number,
++                    "errors": {"employee_id": ["duplicate in file"]},
++                    "data": raw})
++                continue
++            seen.add(employee_id)
++            employee_ids.add(employee_id)
++            department_ref = serializer.validated_data.get(
++                "home_department")
++            if department_ref:
++                department_refs.add(department_ref)
++            valid_rows.append((
++                row_number, employee_id, serializer.validated_data))
++
++        existing_ids = set(User.objects.with_deleted().filter(
++            employee_id__in=employee_ids
++        ).values_list("employee_id", flat=True)) if employee_ids else set()
++        departments_by_code, departments_by_name = {}, {}
++        if department_refs:
++            for department in Department.objects.filter(
++                    Q(code__in=department_refs)
++                    | Q(name__in=department_refs)):
++                departments_by_code[department.code] = department
++                departments_by_name[department.name] = department
++
++        for row_number, employee_id, data in valid_rows:
++            employee_id_by_row[row_number] = employee_id
++            if employee_id in existing_ids:
++                skipped.append({
++                    "row": row_number,
++                    "reason": "exists; use bulk_update"})
++                continue
++            try:
++                department_ref = data.get("home_department")
++                department = (departments_by_code.get(department_ref)
++                              or departments_by_name.get(department_ref))
++                with transaction.atomic():
++                    user = User(
++                        employee_id=employee_id,
++                        username=(data.get("username") or data.get("email")
++                                  or employee_id),
++                        email=data.get("email") or f"{employee_id}@local",
++                        first_name=data.get("first_name", ""),
++                        last_name=data.get("last_name", ""),
++                        phone=data.get("phone", ""),
++                        job_title=data.get("job_title", ""),
++                        home_department=department,
++                        is_active=data.get("is_active", True),
++                        receive_ticket_emails=(
++                            data.get("receive_ticket_emails")
++                            if data.get("receive_ticket_emails") is not None
++                            else True),
++                    )
++                    user.set_unusable_password()
++                    user.save()
++                    log_action(actor=actor, action="bulk_create",
++                               instance=user)
++                    successful.append(employee_id)
++            except Exception as exc:  # per-row partial failure
++                failed.append({
++                    "row": row_number, "errors": str(exc)})
++    return successful, failed, skipped, employee_id_by_row
++
++
+ def _flatten_message(value, limit=500):
+     """Flatten serializer errors / reason strings to one short CSV-safe line.
+ 
+@@ -244,15 +331,15 @@ def _csv_report_response(filename, rows):
+     return resp
+ 
+ 
+-def _employee_report_rows(preview, ok, skipped, failed):
++def _employee_report_rows(employee_id_by_row, ok, skipped, failed):
+     """Build CSV rows from a bulk_import confirmation result.
+ 
+-    Keys for skipped/exception rows are recovered from the preview items
+-    (same execution, no re-query); validation failures read the key from
+-    the rejected row's employee_id field only — never the full payload.
++    Keys are recovered from the bounded row-number map; validation failures
++    read only the rejected row's employee_id field from its error record.
+     """
+-    row_of_key = {item["employee_id"]: item["row"] for item in preview}
+-    key_of_row = {item["row"]: item["employee_id"] for item in preview}
++    row_of_key = {employee_id: row_number
++                  for row_number, employee_id in employee_id_by_row.items()}
++    key_of_row = employee_id_by_row
+     rows = []
+     for eid in ok:
+         rows.append({"row": row_of_key.get(eid, ""), "key": eid,
+@@ -642,15 +729,31 @@ class UserViewSet(viewsets.ModelViewSet):
+             })
+         upload = request.FILES.get("file")
+         rows_data = request.data.get("rows")
++        preview_requested = request.data.get(
++            "preview", True) in (True, "true", "1", 1)
++        confirmed = request.data.get("confirm")
+         if upload:
+             allowed = {"employee_id", "username", "email", "first_name",
+                        "last_name", "phone", "job_title",
+                        "home_department", "is_active",
+                        "receive_ticket_emails"}
++            if not preview_requested and confirmed:
++                count_uploaded_rows(
++                    upload, allowed,
++                    int(settings.EMPLOYEE_BULK_IMPORT_MAX_FILE_SIZE_MB
++                        * 1024 * 1024),
++                    settings.EMPLOYEE_BULK_IMPORT_MAX_ROWS,
++                    xlsx_extensions=(".xlsx", ".xlsm", ".xltx"),
++                )
+             rows = _parse_upload(upload, allowed=allowed)
+         elif rows_data:
+             rows = rows_data if isinstance(rows_data, list) else []
+             if rows:
++                if len(rows) > settings.EMPLOYEE_BULK_IMPORT_MAX_ROWS:
++                    return Response({
++                        "file": "Too many rows in request body. Maximum is "
++                                f"{settings.EMPLOYEE_BULK_IMPORT_MAX_ROWS}."},
++                        status=400)
+                 allowed = {"employee_id", "username", "email", "first_name",
+                            "last_name", "phone", "job_title",
+                            "home_department", "is_active",
+@@ -666,61 +769,25 @@ class UserViewSet(viewsets.ModelViewSet):
+         else:
+             return Response({"detail": "Provide 'file' or 'rows'."},
+                             status=400)
+-        preview, errors = _employee_preview(rows)
+-        if request.data.get("preview", True) in (True, "true", "1", 1):
++        if preview_requested or not confirmed:
++            preview, errors = _employee_preview(rows)
++        if preview_requested:
+             return Response({"preview": preview, "errors": errors,
+                              "counts": {"ok": len(preview),
+                                         "failed": len(errors)}})
+-        if not request.data.get("confirm"):
++        if not confirmed:
+             return Response({"detail": "Confirmation required.",
+                              "preview": preview, "errors": errors},
+                             status=400)
+-        ok, failed, skipped = [], list(errors), []
+-        for item in preview:
+-            d = item["data"]
+-            try:
+-                with transaction.atomic():
+-                    dept = None
+-                    if d.get("home_department"):
+-                        dept = Department.objects.filter(
+-                            code=d["home_department"]).first() or \
+-                            Department.objects.filter(
+-                                name=d["home_department"]).first()
+-                    existing = User.objects.with_deleted().filter(
+-                        employee_id=item["employee_id"]).first()
+-                    if existing:
+-                        skipped.append({"row": item["row"], "reason":
+-                                                 "exists; use bulk_update"})
+-                        continue
+-                    user = User(
+-                        employee_id=item["employee_id"],
+-                        username=(d.get("username") or d.get("email")
+-                                  or item["employee_id"]),
+-                        email=d.get("email") or f"{item['employee_id']}@local",
+-                        first_name=d.get("first_name", ""),
+-                        last_name=d.get("last_name", ""),
+-                        phone=d.get("phone", ""),
+-                        job_title=d.get("job_title", ""),
+-                        home_department=dept,
+-                        is_active=d.get("is_active", True),
+-                        receive_ticket_emails=(
+-                            d.get("receive_ticket_emails")
+-                            if d.get("receive_ticket_emails") is not None
+-                            else True),
+-                    )
+-                    user.set_unusable_password()
+-                    user.save()
+-                    log_action(actor=request.user, action="bulk_create",
+-                               instance=user)
+-                    ok.append(item["employee_id"])
+-            except Exception as exc:  # per-row partial failure
+-                failed.append({"row": item["row"], "errors": str(exc)})
++        ok, failed, skipped, employee_id_by_row = _confirm_employee_rows(
++            rows, request.user)
+         if request.query_params.get("download") == "csv":
+             # Same executed import, CSV representation of the per-row
+             # outcomes. JSON remains the default when absent.
+             return _csv_report_response(
+                 "employee_import_report.csv",
+-                _employee_report_rows(preview, ok, skipped, failed))
++                _employee_report_rows(
++                    employee_id_by_row, ok, skipped, failed))
+         return Response({"successful": ok, "skipped": skipped,
+                          "failed": failed,
+                          "summary": {"ok": len(ok),
+diff --git a/backend/assets/views.py b/backend/assets/views.py
+index b9efa13..f84e240 100644
+--- a/backend/assets/views.py
++++ b/backend/assets/views.py
+@@ -216,23 +216,13 @@ def _csv_report_response(filename, rows):
+     return resp
+ 
+ 
+-def _asset_report_rows(source_rows, ok, skipped, failed):
+-    """Build CSV rows from a bulk_create confirmation result.
+-
+-    Success row numbers are recovered from the source rows (first
+-    occurrence of each created tag); skips/failures already carry their
+-    source row number. Keys are asset tags only — never full row data.
+-    """
+-    first_row = {}
+-    for i, r in enumerate(source_rows, start=2):
+-        t = str(r.get("asset_tag", "")).strip() if isinstance(r, dict) \
+-            else ""
+-        if t and t not in first_row:
+-            first_row[t] = i
+-    rows = []
+-    for tag in ok:
+-        rows.append({"row": first_row.get(tag, ""), "key": tag,
+-                     "outcome": "successful", "message": "created"})
++def _asset_report_rows(ok, skipped, failed):
++    """Build CSV rows from per-row confirmation results."""
++    rows = [
++        {"row": item["row"], "key": item["asset_tag"],
++         "outcome": "successful", "message": "created"}
++        for item in ok
++    ]
+     for entry in skipped:
+         entry = entry if isinstance(entry, dict) else {}
+         rows.append({"row": entry.get("row", ""),
+@@ -258,6 +248,86 @@ def _asset_report_rows(source_rows, ok, skipped, failed):
+     return rows
+ 
+ 
++ASSET_IMPORT_FIELDS = {
++    "asset_tag", "name", "category", "serial_number", "status",
++    "department", "location", "description", "purchase_date",
++    "warranty_expiry", "purchase_cost",
++}
++
++
++def _asset_import_batch_lookup(row_batch):
++    from accounts.models import Department
++
++    asset_tags, serials, category_names = set(), set(), set()
++    department_refs, department_ids = set(), set()
++    for _, row in row_batch:
++        if not isinstance(row, dict):
++            continue
++        tag = str(row.get("asset_tag", "")).strip()
++        serial = str(row.get("serial_number") or "").strip()
++        category = str(row.get("category") or "").strip()
++        if tag:
++            asset_tags.add(tag)
++        if serial:
++            serials.add(serial)
++        if category:
++            category_names.add(category)
++        department = row.get("department")
++        if department not in (None, ""):
++            department_refs.add(str(department))
++            try:
++                department_ids.add(int(department))
++            except (TypeError, ValueError):
++                pass
++
++    existing_tags, existing_serials = set(), set()
++    if asset_tags or serials:
++        query = Q()
++        if asset_tags:
++            query |= Q(asset_tag__in=asset_tags)
++        if serials:
++            query |= Q(serial_number__in=serials)
++        for tag, serial in Asset.all_objects.filter(query).values_list(
++                "asset_tag", "serial_number"):
++            if tag in asset_tags:
++                existing_tags.add(tag)
++            if serial in serials:
++                existing_serials.add(serial)
++
++    categories = {}
++    if category_names:
++        categories = {
++            category.name: category
++            for category in AssetCategory.objects.filter(
++                name__in=category_names)
++        }
++
++    departments_by_code, departments_by_name, departments_by_id = {}, {}, {}
++    department_query = Q()
++    if department_refs:
++        department_query |= Q(code__in=department_refs)
++        department_query |= Q(name__in=department_refs)
++    if department_ids:
++        department_query |= Q(pk__in=department_ids)
++    if department_refs or department_ids:
++        for department in Department.objects.filter(department_query):
++            departments_by_code[department.code] = department
++            departments_by_name[department.name] = department
++            departments_by_id[department.pk] = department
++
++    return (existing_tags, existing_serials, categories,
++            departments_by_code, departments_by_name, departments_by_id)
++
++
++def _iter_asset_import_rows(rows):
++    from common.import_stream import batches
++
++    for row_batch in batches(enumerate(rows, start=2)):
++        lookups = _asset_import_batch_lookup(row_batch)
++        for row_number, row in row_batch:
++            yield row_number, row, lookups
++
++
+ class AssetCategoryViewSet(viewsets.ModelViewSet):
+     queryset = AssetCategory.objects.annotate(
+         asset_count=Count("assets")).all()
+@@ -799,72 +869,37 @@ class AssetViewSet(viewsets.ModelViewSet):
+ 
+     # ---------- bulk ----------
+     def _parse(self, request):
+-        """Parse an uploaded CSV/XLSX or fall back to JSON rows.
+-
+-        Every unreadable-file failure (bad encoding, corrupt/not-a-zip
+-        workbook, empty file) is converted into a 400 with a clear field
+-        error instead of a raw Django 500 page; the full exception goes
+-        to the server log only.
+-        """
++        """Return JSON rows or a bounded-memory iterator for CSV/XLSX."""
+         upload = request.FILES.get("file")
++        from django.conf import settings
++        from common.import_stream import iter_uploaded_rows
++        max_rows = settings.ASSET_BULK_IMPORT_MAX_ROWS
+         if not upload:
+             rows = request.data.get("rows", [])
+             if isinstance(rows, list) and rows:
+-                allowed = {"asset_tag", "name", "description", "category",
+-                           "serial_number", "status", "department", "location",
+-                           "purchase_date", "warranty_expiry", "purchase_cost"}
+                 unknown = set()
+                 for r in rows:
+                     if isinstance(r, dict):
+-                        unknown |= set(r) - allowed
++                        unknown |= set(r) - ASSET_IMPORT_FIELDS
+                 if unknown:
+                     raise ValidationError(
+                         {"file": "unknown columns: "
+                                  + ", ".join(sorted(unknown))})
++                if len(rows) > max_rows:
++                    raise ValidationError({
++                        "file": f"Too many rows in request body. Maximum is "
++                                f"{max_rows}."})
+             return rows
+-        name = (upload.name or "").lower()
+-        allowed = {"asset_tag", "name", "description", "category",
+-                   "serial_number", "status", "department", "location",
+-                   "purchase_date", "warranty_expiry", "purchase_cost"}
+-        try:
+-            if name.endswith((".xlsx", ".xlsm")):
+-                wb = load_workbook(upload, read_only=True, data_only=True)
+-                ws = wb.active
+-                if ws is None:
+-                    raise ValueError("workbook has no worksheets")
+-                rows = list(ws.iter_rows(values_only=True))
+-                if not rows:
+-                    raise ValueError("spreadsheet is empty; header row missing")
+-                header = [str(h or "").strip() for h in rows[0]]
+-                unknown = [h for h in header if h and h not in allowed]
+-                if unknown:
+-                    raise ValidationError(
+-                        {"file": "unknown columns: "
+-                                 + ", ".join(unknown)})
+-                if not any(h in allowed for h in header):
+-                    raise ValueError("header row missing")
+-                return [dict(zip(header, r)) for r in rows[1:] if any(r)]
+-            text = upload.read().decode("utf-8-sig")
+-            reader = csv.DictReader(io.StringIO(text))
+-            if not reader.fieldnames:
+-                raise ValueError("CSV is empty; header row missing")
+-            header = [str(h or "").strip() for h in reader.fieldnames]
+-            unknown = [h for h in header if h and h not in allowed]
+-            if unknown:
+-                raise ValidationError(
+-                    {"file": "unknown columns: "
+-                             + ", ".join(unknown)})
+-            if not any(h in allowed for h in header):
+-                raise ValueError("header row missing")
+-            return [{k.strip(): v for k, v in r.items()} for r in reader]
+-        except ValidationError:
+-            raise
+-        except Exception:
+-            logger.exception("Could not parse bulk asset upload %r", name)
+-            raise ValidationError(
+-                {"file": f"Could not read the uploaded file '{name}'. "
+-                         "Expected a UTF-8 CSV or a valid XLSX workbook "
+-                         "with a header row."})
++        max_file_bytes = int(
++            settings.ASSET_BULK_IMPORT_MAX_FILE_SIZE_MB * 1024 * 1024)
++        name = upload.name or ""
++        return iter_uploaded_rows(
++            upload, ASSET_IMPORT_FIELDS, max_file_bytes, max_rows,
++            reject_extra_csv_values=True,
++            error_message=f"Could not read the uploaded file '{name}'. "
++                          "Expected a UTF-8 CSV or a valid XLSX workbook "
++                          "with a header row.",
++        )
+ 
+     @action(detail=False, methods=["get"])
+     def find_all(self, request):
+@@ -905,80 +940,107 @@ class AssetViewSet(viewsets.ModelViewSet):
+             return Response({
+                 "template_columns": columns,
+                 "matching_key": "asset_tag"})
++        from django.conf import settings
++        from common.import_stream import batches, count_uploaded_rows
++        upload = request.FILES.get("file")
++        max_rows = settings.ASSET_BULK_IMPORT_MAX_ROWS
++        max_file_bytes = int(
++            settings.ASSET_BULK_IMPORT_MAX_FILE_SIZE_MB * 1024 * 1024)
+         rows = self._parse(request)
+-        if request.data.get("preview", True) in (True, "true", "1", 1):
++        preview_requested = request.data.get(
++            "preview", True) in (True, "true", "1", 1)
++        if upload and not preview_requested and request.data.get("confirm"):
++            count_uploaded_rows(
++                upload, ASSET_IMPORT_FIELDS, max_file_bytes, max_rows,
++                reject_extra_csv_values=True)
++            rows = self._parse(request)
++        if preview_requested:
+             ok, errors = [], []
+             seen = set()
+             seen_serials = set()
+-            for i, r in enumerate(rows, start=2):
+-                tag = str(r.get("asset_tag", "")).strip()
+-                serial = str(r.get("serial_number") or "").strip()
+-                if not tag:
+-                    errors.append({"row": i, "errors": "asset_tag required"})
+-                elif tag in seen or Asset.all_objects.filter(
+-                        asset_tag=tag).exists():
+-                    errors.append({"row": i, "errors": f"duplicate tag {tag}"})
+-                elif (serial and (serial in seen_serials
+-                                  or Asset.all_objects.filter(
+-                                      serial_number=serial).exists())):
+-                    errors.append(
+-                        {"row": i,
+-                         "errors": f"duplicate serial number {serial}"})
+-                elif not str(r.get("category") or "").strip():
+-                    errors.append({"row": i, "errors": "category required"})
+-                elif not AssetCategory.objects.filter(
+-                        name=str(r.get("category") or "").strip()).exists():
+-                    errors.append({"row": i, "errors": "unknown category"})
+-                elif str(r.get("status") or "available").strip().lower() not in (
+-                        "available", "assigned", "in_repair", "retired",
+-                        "lost", "disposed"):
+-                    errors.append({"row": i, "errors": "unknown status"})
+-                else:
+-                    seen.add(tag)
+-                    if serial:
+-                        seen_serials.add(serial)
+-                    if str(r.get("status") or "available") == "assigned":
+-                        errors.append(
+-                            {"row": i,
+-                             "errors": "status 'assigned' cannot be imported; "
+-                                      "use the assign workflow"})
++            for row_batch in batches(enumerate(rows, start=2)):
++                lookups = _asset_import_batch_lookup(row_batch)
++                existing_tags, existing_serials, categories = lookups[:3]
++                for i, r in row_batch:
++                    if not isinstance(r, dict):
++                        errors.append({"row": i,
++                                       "errors": "row must be an object"})
++                        continue
++                    tag = str(r.get("asset_tag", "")).strip()
++                    serial = str(r.get("serial_number") or "").strip()
++                    category = str(r.get("category") or "").strip()
++                    if not tag:
++                        errors.append({"row": i,
++                                       "errors": "asset_tag required"})
++                    elif tag in seen or tag in existing_tags:
++                        errors.append({"row": i,
++                                       "errors": f"duplicate tag {tag}"})
++                    elif (serial and (serial in seen_serials
++                                      or serial in existing_serials)):
++                        errors.append({
++                            "row": i,
++                            "errors": f"duplicate serial number {serial}"})
++                    elif not category:
++                        errors.append({"row": i,
++                                       "errors": "category required"})
++                    elif category not in categories:
++                        errors.append({"row": i,
++                                       "errors": "unknown category"})
++                    elif str(r.get("status") or "available").strip().lower() not in (
++                            "available", "assigned", "in_repair", "retired",
++                            "lost", "disposed"):
++                        errors.append({"row": i, "errors": "unknown status"})
+                     else:
+-                        ok.append({"row": i, "asset_tag": tag})
++                        seen.add(tag)
++                        if serial:
++                            seen_serials.add(serial)
++                        if str(r.get("status") or "available") == "assigned":
++                            errors.append({
++                                "row": i,
++                                "errors": "status 'assigned' cannot be imported; "
++                                          "use the assign workflow"})
++                        else:
++                            ok.append({"row": i, "asset_tag": tag})
+             return Response({"preview": ok, "errors": errors})
+         if not request.data.get("confirm"):
+             return Response({"detail": "Confirmation required."}, status=400)
+         ok, failed, skipped = [], [], []
+-        for i, r in enumerate(rows, start=2):
++        for i, r, lookups in _iter_asset_import_rows(rows):
++            (existing_tags, existing_serials, categories,
++             departments_by_code, departments_by_name,
++             departments_by_id) = lookups
+             tag = ""
+             try:
+                 with transaction.atomic():
+                     tag = str(r.get("asset_tag", "")).strip()
+-                    if Asset.all_objects.filter(asset_tag=tag).exists():
++                    if tag in existing_tags:
+                         skipped.append({"row": i, "asset_tag": tag,
+                                         "reason": "exists; use bulk_update"})
+                         continue
+-                    cat = AssetCategory.objects.filter(
+-                        name=str(r.get("category") or "").strip()).first()
++                    cat = categories.get(
++                        str(r.get("category") or "").strip())
+                     if not cat:
+                         failed.append({"row": i, "asset_tag": tag,
+                                        "errors": "unknown category"})
+                         continue
+                     serial = str(r.get("serial_number") or "").strip()
+-                    if serial and Asset.all_objects.filter(
+-                            serial_number=serial).exists():
++                    if serial and serial in existing_serials:
+                         failed.append(
+                             {"row": i, "asset_tag": tag,
+                              "errors": f"duplicate serial number {serial}"})
+                         continue
+-                    from accounts.models import Department as Dept
+                     dept = None
+                     raw_dept = r.get("department")
+                     if raw_dept not in (None, ""):
+-                        dept = (Dept.objects.filter(code=raw_dept).first()
+-                                or Dept.objects.filter(name=raw_dept).first())
+-                        if raw_dept not in ("", None) and dept is None:
++                        if isinstance(raw_dept, int):
++                            dept = departments_by_id.get(raw_dept)
++                        else:
++                            dept = (departments_by_code.get(str(raw_dept))
++                                    or departments_by_name.get(
++                                        str(raw_dept).strip()))
++                        if dept is None:
+                             try:
+-                                dept = Dept.objects.filter(pk=int(raw_dept)).first()
++                                dept = departments_by_id.get(int(raw_dept))
+                             except (TypeError, ValueError):
+                                 dept = None
+                     cost = r.get("purchase_cost")
+@@ -1009,12 +1071,15 @@ class AssetViewSet(viewsets.ModelViewSet):
+                                 purchase_date=r.get("purchase_date") or None,
+                                 warranty_expiry=r.get("warranty_expiry") or None,
+                                 purchase_cost=cost)
+-                    obj.save()
++                    obj.save_from_import()
+                     _history(obj, request.user, "created",
+                              new={"asset_tag": tag, "bulk": True})
+                     log_action(actor=request.user, action="bulk_create",
+                                instance=obj)
+-                    ok.append(tag)
++                    ok.append({"row": i, "asset_tag": tag})
++                    existing_tags.add(tag)
++                    if serial:
++                        existing_serials.add(serial)
+             except IntegrityError:
+                 # DB backstop (unique tag / serial trigger) hit despite
+                 # the pre-checks - i.e. a concurrent write. Row-level,
+@@ -1032,8 +1097,9 @@ class AssetViewSet(viewsets.ModelViewSet):
+             # outcomes. JSON remains the default when absent.
+             return _csv_report_response(
+                 "asset_import_report.csv",
+-                _asset_report_rows(rows, ok, skipped, failed))
+-        return Response({"successful": ok, "skipped": skipped,
++                _asset_report_rows(ok, skipped, failed))
++        return Response({"successful": [item["asset_tag"] for item in ok],
++                         "skipped": skipped,
+                          "failed": failed})
+ 
+     @action(detail=False, methods=["post"])
+@@ -1952,12 +2018,14 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
+                        details={"action": "approve",
+                                 "to": article.status,
+                                 "comment": article.review_comment})
+-            # Notify the author after commit; self-approval is already
+-            # rejected above, so reviewer != author here.
+-            transaction.on_commit(
+-                lambda a=article, u=request.user, r=request.user,
+-                c=article.review_comment:
+-                kb_services.notify_article_approved(a, u, r, c))
++            # Notify the author: in-app + outbox. The outbox event is
++            # registered inside this atomic block, so it commits or rolls
++            # back with the business change.  The on_commit wake-up is
++            # kept only as a best-effort low-latency hint; correctness
++            # does not depend on it (the periodic scanner re-discovers).
++            kb_services.notify_article_approved(
++                article, request.user, request.user,
++                article.review_comment)
+         article.refresh_from_db()
+         return Response(KnowledgeBaseArticleSerializer(article).data)
+ 
+@@ -1991,11 +2059,12 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
+                        details={"action": "reject",
+                                 "to": article.status,
+                                 "comment": article.review_comment})
+-            # Notify the author (with the rejection reason) after commit.
+-            comment = article.review_comment
+-            transaction.on_commit(
+-                lambda a=article, u=request.user, r=request.user, c=comment:
+-                kb_services.notify_article_rejected(a, u, r, c))
++            # Notify the author (with the rejection reason): in-app + outbox.
++            # The outbox event is registered inside this atomic block, so it
++            # commits or rolls back with the business change.
++            kb_services.notify_article_rejected(
++                article, request.user, request.user,
++                article.review_comment)
+         article.refresh_from_db()
+         return Response(KnowledgeBaseArticleSerializer(article).data)
+ 
+@@ -2019,11 +2088,11 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
+                        details={"action": "publish", "from": previous,
+                                 "to": article.status})
+             # Notify the author on a real transition to published (not on the
+-            # idempotent already-published case), after commit.
++            # idempotent already-published case): in-app + outbox.
++            # The outbox event is registered inside this atomic block, so it
++            # commits or rolls back with the business change.
+             if previous != "published":
+-                transaction.on_commit(
+-                    lambda a=article, u=request.user:
+-                    kb_services.notify_article_published(a, u))
++                kb_services.notify_article_published(article, request.user)
+         article.refresh_from_db()
+         return Response(KnowledgeBaseArticleSerializer(article).data)
+ 
+diff --git a/backend/tickets/views.py b/backend/tickets/views.py
+index be03d87..1aa0500 100644
+--- a/backend/tickets/views.py
++++ b/backend/tickets/views.py
+@@ -897,21 +897,25 @@ class TicketViewSet(viewsets.ModelViewSet):
+                     ws = wb.active
+                     if ws is None:
+                         raise ValueError("workbook has no worksheets")
+-                    rows_raw = list(ws.iter_rows(values_only=True))
+-                    if not rows_raw:
+-                        raise ValueError("spreadsheet is empty; header row missing")
+-                    header = [str(h or "").strip() for h in rows_raw[0]]
++                    # Streaming row iteration — do NOT materialise the full list
++                    # with list(). Instead, read the header and iterate rows
++                    # one at a time, building the rows list incrementally.
++                    raw_rows = ws.iter_rows(values_only=True)
++                    header = next(raw_rows)
++                    header = [str(h or "").strip() for h in header]
+                     if any(header.count(h) > 1 for h in header if h):
+                         raise ValidationError(
+                             {"file": "Duplicate column headers are not allowed."})
+-                    rows = [dict(zip(header, r)) for r in rows_raw[1:]
+-                            if any(v is not None and str(v).strip() != ""
+-                                   for v in r)]
++                    rows = []
++                    for r in raw_rows:
++                        if any(v is not None and str(v).strip() != ""
++                               for v in r):
++                            rows.append(dict(zip(header, r)))
+                     row_offset = 2
+                 else:
+                     text = upload.read().decode("utf-8-sig")
+                     reader = csv.DictReader(io.StringIO(text))
+-                    if not reader.fieldnames:
++                    if reader.fieldnames is None:
+                         raise ValueError("CSV is empty; header row missing")
+                     fieldnames = [str(h or "").strip()
+                                   for h in reader.fieldnames]
+@@ -919,9 +923,11 @@ class TicketViewSet(viewsets.ModelViewSet):
+                         raise ValidationError(
+                             {"file": "Duplicate column headers are not allowed."})
+                     reader.fieldnames = fieldnames
+-                    rows = [dict(row) for row in reader
+-                            if any(v is not None and str(v).strip() != ""
+-                                   for v in row.values())]
++                    rows = []
++                    for row in reader:
++                        if any(v is not None and str(v).strip() != ""
++                               for v in row.values()):
++                            rows.append(dict(row))
+                     row_offset = 2
+                 if len(rows) > max_rows:
+                     return Response(

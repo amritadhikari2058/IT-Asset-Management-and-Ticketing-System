@@ -2253,7 +2253,7 @@ class InvoiceExceptionViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
         ser = InvoiceExceptionActionSerializer(data=request.data); ser.is_valid(raise_exception=True)
         with transaction.atomic():
-            exc = InvoiceException.objects.select_for_update().select_related("invoice").get(pk=pk)
+            exc = InvoiceException.objects.select_for_update(of=("self",)).select_related("invoice").get(pk=pk)
             if exc.status != "open":
                 return Response({"detail": "Only open exceptions can be acknowledged."}, status=status.HTTP_409_CONFLICT)
             exc.status = "acknowledged"
@@ -2268,7 +2268,7 @@ class InvoiceExceptionViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
         ser = InvoiceExceptionAcceptSerializer(data=request.data); ser.is_valid(raise_exception=True)
         with transaction.atomic():
-            exc = InvoiceException.objects.select_for_update().select_related("invoice").get(pk=pk)
+            exc = InvoiceException.objects.select_for_update(of=("self",)).select_related("invoice").get(pk=pk)
             inv = exc.invoice
             if inv.created_by_id == request.user.id:
                 return Response({"detail": "Creator cannot accept exceptions on their own invoice."}, status=status.HTTP_403_FORBIDDEN)
@@ -2300,7 +2300,7 @@ class InvoiceExceptionViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
         ser = InvoiceExceptionResolveSerializer(data=request.data); ser.is_valid(raise_exception=True)
         with transaction.atomic():
-            exc = InvoiceException.objects.select_for_update().select_related("invoice").get(pk=pk)
+            exc = InvoiceException.objects.select_for_update(of=("self",)).select_related("invoice").get(pk=pk)
             if exc.status in ("resolved", "rejected", "superseded"):
                 return Response({"detail": "Exception already closed."}, status=status.HTTP_409_CONFLICT)
             exc.status = "resolved"

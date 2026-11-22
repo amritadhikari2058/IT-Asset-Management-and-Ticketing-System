@@ -2,8 +2,8 @@
 
 These require real PostgreSQL row locking / constraints and independent
 connections. They are skipped on SQLite, so the PostgreSQL CI job must run
-them (see ``.github/workflows/postgres-reconciliation.yml``) for the
-concurrency guarantees to be verified.
+them (``.github/workflows/backend.yml``) for the concurrency guarantees to be
+verified.
 """
 import threading
 from unittest import skipUnless

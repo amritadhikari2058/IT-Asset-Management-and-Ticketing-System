@@ -1,0 +1,11 @@
+usage: __main__.py test [-h] [--noinput] [--testrunner TESTRUNNER]
+                        [--failfast] [-t TOP_LEVEL] [-p PATTERN] [--keepdb]
+                        [--shuffle [SEED]] [-r] [--debug-mode] [-d]
+                        [--parallel [N]] [--tag TAGS]
+                        [--exclude-tag EXCLUDE_TAGS] [--pdb] [-b]
+                        [--no-faulthandler] [--timing] [-k TEST_NAME_PATTERNS]
+                        [--durations N] [--version] [-v {0,1,2,3}]
+                        [--settings SETTINGS] [--pythonpath PYTHONPATH]
+                        [--traceback] [--no-color] [--force-color]
+                        [test_label ...]
+__main__.py test: error: unrecognized arguments: ; echo EXIT_CODE=True

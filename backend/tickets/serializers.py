@@ -5,7 +5,6 @@ from tickets.models import (
     TicketHistory, TicketKbArticle, TicketNote, TicketSLA,
 )
 
-
 class TicketCategorySerializer(serializers.ModelSerializer):
     ticket_count = serializers.IntegerField(read_only=True)
 
@@ -34,7 +33,12 @@ class TicketSerializer(serializers.ModelSerializer):
     def get_source_service_request(self, obj):
         """Safe, minimal linked Service Request reference (no PII/answers)."""
         request = self.context.get("request")
-        sr = obj.service_requests.filter(is_deleted=False).first()
+        prefetched = getattr(obj, "_ticket_source_service_requests", None)
+        if prefetched is None:
+            sr = obj.service_requests.filter(is_deleted=False).select_related(
+                "catalogue_item").first()
+        else:
+            sr = prefetched[0] if prefetched else None
         if sr is None:
             return None
         return {
@@ -83,6 +87,39 @@ class TicketSerializer(serializers.ModelSerializer):
                 "Selected user is inactive and cannot be assigned tickets."
             )
         return user
+
+
+class CachedPrimaryKeyRelatedField(serializers.PrimaryKeyRelatedField):
+    def to_internal_value(self, data):
+        caches = self.context.get("bulk_related_objects", {})
+        related_objects = caches.get(self.field_name)
+        if related_objects is None:
+            return super().to_internal_value(data)
+        try:
+            pk = (self.pk_field.to_internal_value(data)
+                  if self.pk_field is not None else data)
+            return related_objects[pk]
+        except (KeyError, TypeError):
+            self.fail("does_not_exist", pk_value=data)
+
+
+def _ticket_related_queryset(field_name):
+    relation = Ticket._meta.get_field(field_name).remote_field
+    return relation.model._default_manager.all()
+
+
+class TicketBulkImportSerializer(TicketSerializer):
+    category = CachedPrimaryKeyRelatedField(
+        queryset=_ticket_related_queryset("category"))
+    assignee = CachedPrimaryKeyRelatedField(
+        queryset=_ticket_related_queryset("assignee"),
+        required=False, allow_null=True)
+    department = CachedPrimaryKeyRelatedField(
+        queryset=_ticket_related_queryset("department"),
+        required=False, allow_null=True)
+    asset = CachedPrimaryKeyRelatedField(
+        queryset=_ticket_related_queryset("asset"),
+        required=False, allow_null=True)
 
 
 class TicketSLASerializer(serializers.ModelSerializer):

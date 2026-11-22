@@ -1,0 +1,52 @@
+Creating test database for alias 'default' ('file:memorydb_default?mode=memory&cache=shared')...
+test_anonymous_cannot_list_retrieve_or_search (assets.test_knowledge_base_authorization_security.KnowledgeBaseAuthorizationSecurityTests.test_anonymous_cannot_list_retrieve_or_search) ... 2026-11-22 10:58:21 WARNING common.security middleware: auth_failure status=401 method=GET path=/api/assets/knowledge-base/ user_id=None role=None client=127.0.0.1
+2026-11-22 10:58:21 WARNING django.request log: Unauthorized: /api/assets/knowledge-base/
+2026-11-22 10:58:21 WARNING common.security middleware: auth_failure status=401 method=GET path=/api/assets/knowledge-base/1/ user_id=None role=None client=127.0.0.1
+2026-11-22 10:58:21 WARNING django.request log: Unauthorized: /api/assets/knowledge-base/1/
+2026-11-22 10:58:21 WARNING common.security middleware: auth_failure status=401 method=GET path=/api/common/knowledge-base/ user_id=None role=None client=127.0.0.1
+2026-11-22 10:58:21 WARNING django.request log: Unauthorized: /api/common/knowledge-base/
+ok
+test_create_cannot_mass_assign_review_fields_or_initial_publication (assets.test_knowledge_base_authorization_security.KnowledgeBaseAuthorizationSecurityTests.test_create_cannot_mass_assign_review_fields_or_initial_publication) ... 2026-11-22 10:58:27 WARNING django.request log: Bad Request: /api/assets/knowledge-base/
+ok
+test_employee_cannot_create_or_change_articles (assets.test_knowledge_base_authorization_security.KnowledgeBaseAuthorizationSecurityTests.test_employee_cannot_create_or_change_articles) ... 2026-11-22 10:58:33 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/assets/knowledge-base/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:58:33 WARNING django.request log: Forbidden: /api/assets/knowledge-base/
+2026-11-22 10:58:33 WARNING common.security middleware: auth_failure status=403 method=PATCH path=/api/assets/knowledge-base/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:58:33 WARNING django.request log: Forbidden: /api/assets/knowledge-base/1/
+2026-11-22 10:58:33 WARNING common.security middleware: auth_failure status=403 method=DELETE path=/api/assets/knowledge-base/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:58:33 WARNING django.request log: Forbidden: /api/assets/knowledge-base/1/
+ok
+test_employee_cannot_read_revision_or_workflow_endpoints_by_id (assets.test_knowledge_base_authorization_security.KnowledgeBaseAuthorizationSecurityTests.test_employee_cannot_read_revision_or_workflow_endpoints_by_id) ... 2026-11-22 10:58:39 WARNING common.security middleware: auth_failure status=403 method=GET path=/api/assets/knowledge-base/1/revisions/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:58:39 WARNING django.request log: Forbidden: /api/assets/knowledge-base/1/revisions/
+2026-11-22 10:58:39 WARNING common.security middleware: auth_failure status=403 method=GET path=/api/assets/knowledge-base/1/revisions/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:58:39 WARNING django.request log: Forbidden: /api/assets/knowledge-base/1/revisions/1/
+2026-11-22 10:58:39 WARNING common.security middleware: auth_failure status=403 method=GET path=/api/assets/knowledge-base/1/compare/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:58:39 WARNING django.request log: Forbidden: /api/assets/knowledge-base/1/compare/
+2026-11-22 10:58:39 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/assets/knowledge-base/2/restore/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:58:39 WARNING django.request log: Forbidden: /api/assets/knowledge-base/2/restore/
+2026-11-22 10:58:39 WARNING common.security middleware: auth_failure status=403 method=GET path=/api/assets/knowledge-base/pending_review/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:58:39 WARNING django.request log: Forbidden: /api/assets/knowledge-base/pending_review/
+ok
+test_employee_direct_ids_hide_all_unpublished_states (assets.test_knowledge_base_authorization_security.KnowledgeBaseAuthorizationSecurityTests.test_employee_direct_ids_hide_all_unpublished_states) ... 2026-11-22 10:58:46 WARNING django.request log: Not Found: /api/assets/knowledge-base/2/
+2026-11-22 10:58:46 WARNING django.request log: Not Found: /api/assets/knowledge-base/3/
+2026-11-22 10:58:46 WARNING django.request log: Not Found: /api/assets/knowledge-base/5/
+ok
+test_employee_lists_only_published_before_search_and_pagination (assets.test_knowledge_base_authorization_security.KnowledgeBaseAuthorizationSecurityTests.test_employee_lists_only_published_before_search_and_pagination) ... ok
+test_it_staff_can_access_governance_metadata_and_unpublished_articles (assets.test_knowledge_base_authorization_security.KnowledgeBaseAuthorizationSecurityTests.test_it_staff_can_access_governance_metadata_and_unpublished_articles) ... ok
+test_published_article_hides_review_and_rejection_metadata_from_employee (assets.test_knowledge_base_authorization_security.KnowledgeBaseAuthorizationSecurityTests.test_published_article_hides_review_and_rejection_metadata_from_employee) ... ok
+test_unauthorized_review_actions_do_not_mutate_records (assets.test_knowledge_base_authorization_security.KnowledgeBaseAuthorizationSecurityTests.test_unauthorized_review_actions_do_not_mutate_records) ... 2026-11-22 10:59:17 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/assets/knowledge-base/3/submit_review/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:59:17 WARNING django.request log: Forbidden: /api/assets/knowledge-base/3/submit_review/
+2026-11-22 10:59:17 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/assets/knowledge-base/3/approve/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:59:17 WARNING django.request log: Forbidden: /api/assets/knowledge-base/3/approve/
+2026-11-22 10:59:17 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/assets/knowledge-base/3/reject/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:59:17 WARNING django.request log: Forbidden: /api/assets/knowledge-base/3/reject/
+2026-11-22 10:59:17 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/assets/knowledge-base/3/publish/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:59:17 WARNING django.request log: Forbidden: /api/assets/knowledge-base/3/publish/
+2026-11-22 10:59:17 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/assets/knowledge-base/3/archive/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 10:59:17 WARNING django.request log: Forbidden: /api/assets/knowledge-base/3/archive/
+ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 62.547s
+
+OK
+Destroying test database for alias 'default' ('file:memorydb_default?mode=memory&cache=shared')...

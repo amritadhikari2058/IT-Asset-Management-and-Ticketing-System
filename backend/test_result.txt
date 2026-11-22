@@ -1,0 +1,520 @@
+Creating test database for alias 'default'...
+EEEEE......2026-11-22 11:32:26 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/assets/categories/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:32:26 WARNING django.request log: Forbidden: /api/assets/categories/
+2026-11-22 11:32:26 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/tickets/categories/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:32:26 WARNING django.request log: Forbidden: /api/tickets/categories/
+......2026-11-22 11:33:06 WARNING django.request log: Bad Request: /api/tickets/1/
+.2026-11-22 11:33:16 WARNING django.request log: Bad Request: /api/tickets/1/
+.2026-11-22 11:33:25 WARNING django.request log: Bad Request: /api/tickets/1/
+........2026-11-22 11:34:47 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/tickets/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:34:47 WARNING django.request log: Forbidden: /api/tickets/
+.....2026-11-22 11:35:40 WARNING django.request log: Bad Request: /api/tickets/
+.2026-11-22 11:35:47 WARNING common.security middleware: auth_failure status=401 method=GET path=/api/tickets/attachments/1/download/ user_id=None role=None client=127.0.0.1
+2026-11-22 11:35:47 WARNING django.request log: Unauthorized: /api/tickets/attachments/1/download/
+.2026-11-22 11:35:53 WARNING django.request log: Not Found: /api/tickets/attachments/1/download/
+...2026-11-22 11:36:16 WARNING django.request log: Not Found: /api/tickets/attachments/1/download/
+...2026-11-22 11:36:36 ERROR django.request log: Internal Server Error: /api/tickets/bulk_create/
+Traceback (most recent call last):
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 55, in inner
+    response = get_response(request)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 198, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\viewsets.py", line 125, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 515, in dispatch
+    response = self.handle_exception(exc)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 475, in handle_exception
+    self.raise_uncaught_exception(exc)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 486, in raise_uncaught_exception
+    raise exc
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 512, in dispatch
+    response = handler(request, *args, **kwargs)
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\views.py", line 1542, in bulk_create
+    writer.writerow(["row", "key", "outcome", "message"])
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1241, in _execute_mock_call
+    raise effect
+RuntimeError: boom
+2026-11-22 11:36:36 WARNING django.request log: Conflict: /api/tickets/bulk_create/
+...2026-11-22 11:36:54 WARNING django.request log: Gone: /api/tickets/bulk_create/
+...2026-11-22 11:37:13 WARNING django.request log: Conflict: /api/tickets/bulk_create/
+.2026-11-22 11:37:20 WARNING django.request log: Conflict: /api/tickets/bulk_create/
+2026-11-22 11:37:20 WARNING django.request log: Conflict: /api/tickets/bulk_create/
+....2026-11-22 11:37:45 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+.2026-11-22 11:37:52 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+.2026-11-22 11:37:58 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+..2026-11-22 11:38:12 WARNING common.security middleware: auth_failure status=403 method=GET path=/api/tickets/bulk-imports/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:38:12 WARNING django.request log: Forbidden: /api/tickets/bulk-imports/
+2026-11-22 11:38:12 WARNING common.security middleware: auth_failure status=403 method=GET path=/api/tickets/bulk-imports/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:38:12 WARNING django.request log: Forbidden: /api/tickets/bulk-imports/1/
+.2026-11-22 11:38:19 ERROR django.request log: Internal Server Error: /api/tickets/bulk_create/
+Traceback (most recent call last):
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 55, in inner
+    response = get_response(request)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 198, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\viewsets.py", line 125, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 515, in dispatch
+    response = self.handle_exception(exc)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 475, in handle_exception
+    self.raise_uncaught_exception(exc)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 486, in raise_uncaught_exception
+    raise exc
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 512, in dispatch
+    response = handler(request, *args, **kwargs)
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\views.py", line 1577, in bulk_create
+                result_json=payload,
+    
+    ...<11 lines>...
+    @action(detail=False, methods=["post"])
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\tests.py", line 2240, in update
+    raise RuntimeError("persist boom")
+RuntimeError: persist boom
+2026-11-22 11:38:19 WARNING django.request log: Conflict: /api/tickets/bulk_create/
+.2026-11-22 11:38:26 ERROR django.request log: Internal Server Error: /api/tickets/bulk_create/
+Traceback (most recent call last):
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 55, in inner
+    response = get_response(request)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 198, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\viewsets.py", line 125, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 515, in dispatch
+    response = self.handle_exception(exc)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 475, in handle_exception
+    self.raise_uncaught_exception(exc)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 486, in raise_uncaught_exception
+    raise exc
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 512, in dispatch
+    response = handler(request, *args, **kwargs)
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\views.py", line 1542, in bulk_create
+    writer.writerow(["row", "key", "outcome", "message"])
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1241, in _execute_mock_call
+    raise effect
+RuntimeError: csv boom
+2026-11-22 11:38:26 WARNING django.request log: Conflict: /api/tickets/bulk_create/
+.2026-11-22 11:38:33 WARNING django.request log: Conflict: /api/tickets/bulk_create/
+.2026-11-22 11:38:40 WARNING django.request log: Conflict: /api/tickets/bulk_create/
+...2026-11-22 11:39:04 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+2026-11-22 11:39:04 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+2026-11-22 11:39:04 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+2026-11-22 11:39:04 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+2026-11-22 11:39:04 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+2026-11-22 11:39:04 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+....2026-11-22 11:39:37 ERROR common.import_stream import_stream: Could not parse uploaded import file 'empty.csv'
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\common\import_stream.py", line 95, in iter_uploaded_rows
+    raise ValueError("CSV is empty; header row missing")
+ValueError: CSV is empty; header row missing
+2026-11-22 11:39:37 ERROR common.import_stream import_stream: Could not parse uploaded import file 'empty.csv'
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\common\import_stream.py", line 95, in iter_uploaded_rows
+    raise ValueError("CSV is empty; header row missing")
+ValueError: CSV is empty; header row missing
+2026-11-22 11:39:37 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+..2026-11-22 11:39:51 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+.2026-11-22 11:39:58 WARNING kombu.connection connection: No hostname was supplied. Reverting to default 'localhost'
+2026-11-22 11:40:03 INFO common.outbox outbox: Outbox wake-up deferred to scanner for 57ead9ed-4262-422e-aeaf-e3266922279f
+2026-11-22 11:40:03 INFO common.outbox outbox: Outbox wake-up deferred to scanner for 57ead9ed-4262-422e-aeaf-e3266922279f
+F......2026-11-22 11:40:58 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+.....2026-11-22 11:41:40 ERROR common.import_stream import_stream: Could not parse uploaded import file 'bad.xlsx'
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\common\import_stream.py", line 62, in iter_uploaded_rows
+    workbook = load_workbook(upload, read_only=True, data_only=True)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\openpyxl\reader\excel.py", line 346, in load_workbook
+    reader = ExcelReader(filename, read_only, keep_vba,
+                         data_only, keep_links, rich_text)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\openpyxl\reader\excel.py", line 123, in __init__
+    self.archive = _validate_archive(fn)
+                   ~~~~~~~~~~~~~~~~~^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\openpyxl\reader\excel.py", line 95, in _validate_archive
+    archive = ZipFile(filename, 'r')
+  File "C:\Python314\Lib\zipfile\__init__.py", line 1480, in __init__
+    self._RealGetContents()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Python314\Lib\zipfile\__init__.py", line 1547, in _RealGetContents
+    raise BadZipFile("File is not a zip file")
+zipfile.BadZipFile: File is not a zip file
+2026-11-22 11:41:40 ERROR common.import_stream import_stream: Could not parse uploaded import file 'bad.xlsx'
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\common\import_stream.py", line 62, in iter_uploaded_rows
+    workbook = load_workbook(upload, read_only=True, data_only=True)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\openpyxl\reader\excel.py", line 346, in load_workbook
+    reader = ExcelReader(filename, read_only, keep_vba,
+                         data_only, keep_links, rich_text)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\openpyxl\reader\excel.py", line 123, in __init__
+    self.archive = _validate_archive(fn)
+                   ~~~~~~~~~~~~~~~~~^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\openpyxl\reader\excel.py", line 95, in _validate_archive
+    archive = ZipFile(filename, 'r')
+  File "C:\Python314\Lib\zipfile\__init__.py", line 1480, in __init__
+    self._RealGetContents()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Python314\Lib\zipfile\__init__.py", line 1547, in _RealGetContents
+    raise BadZipFile("File is not a zip file")
+zipfile.BadZipFile: File is not a zip file
+2026-11-22 11:41:40 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+.2026-11-22 11:41:49 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/tickets/bulk_create/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:41:49 WARNING django.request log: Forbidden: /api/tickets/bulk_create/
+.2026-11-22 11:41:56 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+2026-11-22 11:41:56 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+...2026-11-22 11:42:20 INFO common.outbox outbox: Outbox wake-up deferred to scanner for bc94b2ae-1fbe-4ef7-85fc-fb247b41f80d
+2026-11-22 11:42:20 INFO common.outbox outbox: Outbox wake-up deferred to scanner for bc94b2ae-1fbe-4ef7-85fc-fb247b41f80d
+2026-11-22 11:42:25 INFO common.outbox outbox: Outbox wake-up deferred to scanner for fef95876-70de-44a4-9eff-26704bfb84e1
+2026-11-22 11:42:25 INFO common.outbox outbox: Outbox wake-up deferred to scanner for fef95876-70de-44a4-9eff-26704bfb84e1
+2026-11-22 11:42:29 INFO common.outbox outbox: Outbox wake-up deferred to scanner for eddf9f33-2d5d-40a0-879f-c89348dabc4e
+2026-11-22 11:42:29 INFO common.outbox outbox: Outbox wake-up deferred to scanner for eddf9f33-2d5d-40a0-879f-c89348dabc4e
+F.2026-11-22 11:42:44 WARNING django.request log: Bad Request: /api/tickets/bulk_create/
+..2026-11-22 11:42:56 ERROR django.request log: Internal Server Error: /api/tickets/bulk_create/
+Traceback (most recent call last):
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 55, in inner
+    response = get_response(request)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 198, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\viewsets.py", line 125, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 515, in dispatch
+    response = self.handle_exception(exc)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 475, in handle_exception
+    self.raise_uncaught_exception(exc)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 486, in raise_uncaught_exception
+    raise exc
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 512, in dispatch
+    response = handler(request, *args, **kwargs)
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\views.py", line 1542, in bulk_create
+    writer.writerow(["row", "key", "outcome", "message"])
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1241, in _execute_mock_call
+    raise effect
+RuntimeError: csv boom
+...2026-11-22 11:43:15 WARNING common.security middleware: auth_failure status=403 method=GET path=/api/tickets/bulk-imports/1/reconciliation/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:43:15 WARNING django.request log: Forbidden: /api/tickets/bulk-imports/1/reconciliation/
+.....2026-11-22 11:43:47 WARNING django.request log: Bad Request: /api/tickets/categories/1/
+.2026-11-22 11:43:53 WARNING django.request log: Bad Request: /api/tickets/categories/1/
+..2026-11-22 11:44:06 WARNING common.security middleware: auth_failure status=403 method=PATCH path=/api/tickets/categories/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:44:06 WARNING django.request log: Forbidden: /api/tickets/categories/1/
+..2026-11-22 11:44:25 INFO common.outbox outbox: Outbox wake-up deferred to scanner for cdc9ddec-a018-40eb-8831-28a239cb7957
+2026-11-22 11:44:25 INFO common.outbox outbox: Outbox wake-up deferred to scanner for cdc9ddec-a018-40eb-8831-28a239cb7957
+2026-11-22 11:44:29 INFO common.outbox outbox: Outbox wake-up deferred to scanner for a2a0d255-0d0e-4f47-82d3-2bfc92745eb0
+2026-11-22 11:44:29 INFO common.outbox outbox: Outbox wake-up deferred to scanner for a2a0d255-0d0e-4f47-82d3-2bfc92745eb0
+.2026-11-22 11:44:36 ERROR django.request log: Internal Server Error: /api/tickets/
+Traceback (most recent call last):
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 55, in inner
+    response = get_response(request)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 198, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\viewsets.py", line 125, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 515, in dispatch
+    response = self.handle_exception(exc)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 475, in handle_exception
+    self.raise_uncaught_exception(exc)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 486, in raise_uncaught_exception
+    raise exc
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 512, in dispatch
+    response = handler(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\mixins.py", line 19, in create
+    self.perform_create(serializer)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\views.py", line 495, in perform_create
+    _write_history(obj, user, "created", new={"status": "open"})
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1241, in _execute_mock_call
+    raise effect
+RuntimeError: db down
+.2026-11-22 11:44:43 ERROR django.request log: Internal Server Error: /api/tickets/
+Traceback (most recent call last):
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 55, in inner
+    response = get_response(request)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 198, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\viewsets.py", line 125, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 515, in dispatch
+    response = self.handle_exception(exc)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 475, in handle_exception
+    self.raise_uncaught_exception(exc)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 486, in raise_uncaught_exception
+    raise exc
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 512, in dispatch
+    response = handler(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\mixins.py", line 19, in create
+    self.perform_create(serializer)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\views.py", line 504, in perform_create
+    _notify_user(obj.assignee, user,
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+                 f"Ticket #{obj.pk} assigned to you",
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                 f"{obj.title}\nPriority: {obj.priority}", obj)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1241, in _execute_mock_call
+    raise effect
+RuntimeError: db down
+.2026-11-22 11:44:54 INFO common.outbox outbox: Outbox wake-up deferred to scanner for 804d94b8-4321-4e1a-8ed2-2e9d11348d88
+2026-11-22 11:44:54 INFO common.outbox outbox: Outbox wake-up deferred to scanner for 804d94b8-4321-4e1a-8ed2-2e9d11348d88
+2026-11-22 11:44:58 INFO common.outbox outbox: Outbox wake-up deferred to scanner for eb10ec5b-7313-4c60-b32a-2f4533a3e21f
+2026-11-22 11:44:58 INFO common.outbox outbox: Outbox wake-up deferred to scanner for eb10ec5b-7313-4c60-b32a-2f4533a3e21f
+F...2026-11-22 11:45:22 WARNING django.request log: Bad Request: /api/tickets/
+..2026-11-22 11:45:35 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/tickets/bulk_delete/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:45:35 WARNING django.request log: Forbidden: /api/tickets/bulk_delete/
+.2026-11-22 11:45:41 WARNING common.security middleware: auth_failure status=403 method=DELETE path=/api/tickets/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:45:41 WARNING django.request log: Forbidden: /api/tickets/1/
+.2026-11-22 11:45:47 WARNING common.security middleware: auth_failure status=403 method=DELETE path=/api/tickets/3/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:45:47 WARNING django.request log: Forbidden: /api/tickets/3/
+.....................2026-11-22 11:47:35 WARNING common.security middleware: auth_failure status=403 method=PATCH path=/api/tickets/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:47:35 WARNING django.request log: Forbidden: /api/tickets/1/
+.2026-11-22 11:47:40 WARNING django.request log: Bad Request: /api/tickets/1/
+......2026-11-22 11:48:10 ERROR django.request log: Internal Server Error: /api/tickets/1/
+Traceback (most recent call last):
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 55, in inner
+    response = get_response(request)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 198, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\viewsets.py", line 125, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 515, in dispatch
+    response = self.handle_exception(exc)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 475, in handle_exception
+    self.raise_uncaught_exception(exc)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 486, in raise_uncaught_exception
+    raise exc
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 512, in dispatch
+    response = handler(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\mixins.py", line 82, in partial_update
+    return self.update(request, *args, **kwargs)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\mixins.py", line 68, in update
+    self.perform_update(serializer)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\views.py", line 702, in perform_update
+    log_action(actor=self.request.user, action="update",
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               instance=updated, details={"changes": str(changes)})
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1247, in _execute_mock_call
+    result = effect(*args, **kwargs)
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\tests.py", line 856, in fail_on_update
+    raise RuntimeError("audit db down")
+RuntimeError: audit db down
+.2026-11-22 11:48:17 ERROR django.request log: Internal Server Error: /api/tickets/1/
+Traceback (most recent call last):
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 55, in inner
+    response = get_response(request)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 198, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\viewsets.py", line 125, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 515, in dispatch
+    response = self.handle_exception(exc)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 475, in handle_exception
+    self.raise_uncaught_exception(exc)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 486, in raise_uncaught_exception
+    raise exc
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 512, in dispatch
+    response = handler(request, *args, **kwargs)
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\mixins.py", line 82, in partial_update
+    return self.update(request, *args, **kwargs)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sapsupport3\AppData\Roaming\Python\Python314\site-packages\rest_framework\mixins.py", line 68, in update
+    self.perform_update(serializer)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\views.py", line 642, in perform_update
+    _write_history(updated, self.request.user, "updated",
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                   old=old, new={k: str(v) for k, v in
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                 serializer.validated_data.items()})
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\unittest\mock.py", line 1241, in _execute_mock_call
+    raise effect
+RuntimeError: db down
+.2026-11-22 11:48:28 INFO common.outbox outbox: Outbox wake-up deferred to scanner for 384d4227-dcff-46c6-a397-736158deb4a7
+2026-11-22 11:48:28 INFO common.outbox outbox: Outbox wake-up deferred to scanner for 384d4227-dcff-46c6-a397-736158deb4a7
+F2026-11-22 11:48:34 WARNING common.security middleware: auth_failure status=403 method=POST path=/api/tickets/bulk_update/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:48:34 WARNING django.request log: Forbidden: /api/tickets/bulk_update/
+..2026-11-22 11:48:47 WARNING common.security middleware: auth_failure status=403 method=PATCH path=/api/tickets/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:48:47 WARNING django.request log: Forbidden: /api/tickets/1/
+.2026-11-22 11:48:54 WARNING common.security middleware: auth_failure status=403 method=PATCH path=/api/tickets/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:48:54 WARNING django.request log: Forbidden: /api/tickets/1/
+2026-11-22 11:48:54 WARNING common.security middleware: auth_failure status=403 method=PATCH path=/api/tickets/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:48:54 WARNING django.request log: Forbidden: /api/tickets/1/
+.2026-11-22 11:49:01 WARNING common.security middleware: auth_failure status=403 method=PATCH path=/api/tickets/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:49:01 WARNING django.request log: Forbidden: /api/tickets/1/
+.2026-11-22 11:49:08 WARNING common.security middleware: auth_failure status=403 method=PATCH path=/api/tickets/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:49:08 WARNING django.request log: Forbidden: /api/tickets/1/
+.2026-11-22 11:49:15 WARNING common.security middleware: auth_failure status=403 method=PATCH path=/api/tickets/2/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:49:15 WARNING django.request log: Forbidden: /api/tickets/2/
+.2026-11-22 11:49:24 WARNING common.security middleware: auth_failure status=403 method=PATCH path=/api/tickets/1/ user_id=3 role=employee client=127.0.0.1
+2026-11-22 11:49:24 WARNING django.request log: Forbidden: /api/tickets/1/
+.....
+======================================================================
+ERROR: ; (unittest.loader._FailedTest.;)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: ;
+Traceback (most recent call last):
+  File "C:\Python314\Lib\unittest\loader.py", line 141, in loadTestsFromName
+    module = __import__(module_name)
+ModuleNotFoundError: No module named ';'
+
+
+======================================================================
+ERROR: find (unittest.loader._FailedTest.find)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: find
+Traceback (most recent call last):
+  File "C:\Python314\Lib\unittest\loader.py", line 141, in loadTestsFromName
+    module = __import__(module_name)
+ModuleNotFoundError: No module named 'find'
+
+
+======================================================================
+ERROR: /i (unittest.loader._FailedTest./i)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: /i
+Traceback (most recent call last):
+  File "C:\Python314\Lib\unittest\loader.py", line 141, in loadTestsFromName
+    module = __import__(module_name)
+ModuleNotFoundError: No module named '/i'
+
+
+======================================================================
+ERROR: " (unittest.loader._FailedTest.")
+----------------------------------------------------------------------
+ImportError: Failed to import test module: "
+Traceback (most recent call last):
+  File "C:\Python314\Lib\unittest\loader.py", line 141, in loadTestsFromName
+    module = __import__(module_name)
+ModuleNotFoundError: No module named '"'
+
+
+======================================================================
+ERROR: OK\ /i \FAIL\ /i \ERROR\ test_result (unittest.loader._FailedTest.OK\ /i \FAIL\ /i \ERROR\ test_result)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: OK\ /i \FAIL\ /i \ERROR\ test_result
+Traceback (most recent call last):
+  File "C:\Python314\Lib\unittest\loader.py", line 141, in loadTestsFromName
+    module = __import__(module_name)
+ModuleNotFoundError: No module named 'OK\\ /i \\FAIL\\ /i \\ERROR\\ test_result'
+
+
+======================================================================
+FAIL: test_email_preference_respected_per_recipient (tickets.tests.TicketBulkCreateTests.test_email_preference_respected_per_recipient)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\tests.py", line 1168, in test_email_preference_respected_per_recipient
+    self.assertEqual(len(mail.outbox), 1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 1
+
+======================================================================
+FAIL: test_staff_bulk_creates_with_side_effects (tickets.tests.TicketBulkCreateTests.test_staff_bulk_creates_with_side_effects)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\tests.py", line 1080, in test_staff_bulk_creates_with_side_effects
+    self.assertEqual(len(mail.outbox), 3)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 3
+
+======================================================================
+FAIL: test_success_commits_everything_once (tickets.tests.TicketCreateAtomicityTests.test_success_commits_everything_once)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\tests.py", line 918, in test_success_commits_everything_once
+    self.assertEqual(len(mail.outbox), 2)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 2
+
+======================================================================
+FAIL: test_success_commits_everything_once (tickets.tests.TicketUpdateAtomicityTests.test_success_commits_everything_once)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\IT-Asset-Management-and-Ticketing-System\backend\tickets\tests.py", line 836, in test_success_commits_everything_once
+    self.assertEqual(state["mails"], 1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 1
+
+----------------------------------------------------------------------
+Ran 157 tests in 1086.270s
+
+FAILED (failures=4, errors=5)
+Destroying test database for alias 'default'...
+Found 157 test(s).
+System check identified no issues (0 silenced).

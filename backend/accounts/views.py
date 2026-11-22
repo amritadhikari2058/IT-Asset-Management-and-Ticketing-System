@@ -6,11 +6,10 @@
   hard-delete (bulk delete = soft delete only, blocked when history exists).
 """
 import csv
-import io
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count, Q
-from openpyxl import load_workbook
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import ValidationError
@@ -24,6 +23,9 @@ from accounts.serializers import (
     UserSerializer,
 )
 from common.audit import log_action
+from common.import_stream import (
+    batches, count_uploaded_rows, iter_uploaded_rows,
+)
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from tickets.serializers import validate_attachment_file
 
@@ -148,66 +150,151 @@ class DepartmentViewSet(viewsets.ModelViewSet):
 
 
 def _parse_upload(file_obj, allowed=None):
-    """Return list of dict rows from CSV or Excel.
-
-    When ``allowed`` is given, every header must be in that set; an
-    unknown column is rejected instead of being silently ignored.
-    """
-    name = (file_obj.name or "").lower()
-    if name.endswith((".xlsx", ".xlsm", ".xltx")):
-        wb = load_workbook(file_obj, read_only=True, data_only=True)
-        ws = wb.active
-        rows = list(ws.iter_rows(values_only=True))
-        if not rows:
-            raise ValueError("spreadsheet is empty; header row missing")
-        header = [str(h or "").strip() for h in rows[0]]
-        if allowed is not None:
-            unknown = [h for h in header if h and h not in allowed]
-            if unknown:
-                raise ValueError(
-                    "unknown columns: " + ", ".join(unknown))
-            if not any(h in allowed for h in header):
-                raise ValueError("header row missing")
-        return [dict(zip(header, r)) for r in rows[1:] if any(r)]
-    text = file_obj.read().decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text))
-    if reader.fieldnames is None:
-        raise ValueError("CSV is empty; header row missing")
-    header = [str(h or "").strip() for h in reader.fieldnames]
-    if allowed is not None:
-        unknown = [h for h in header if h and h not in allowed]
-        if unknown:
-            raise ValueError("unknown columns: " + ", ".join(unknown))
-        if not any(h in allowed for h in header):
-            raise ValueError("header row missing")
-    return list(reader)
+    """Return an incremental CSV or Excel row iterator."""
+    max_bytes = int(settings.EMPLOYEE_BULK_IMPORT_MAX_FILE_SIZE_MB
+                    * 1024 * 1024)
+    return iter_uploaded_rows(
+        file_obj, allowed, max_bytes,
+        settings.EMPLOYEE_BULK_IMPORT_MAX_ROWS,
+        xlsx_extensions=(".xlsx", ".xlsm", ".xltx"),
+    )
 
 
 def _employee_preview(rows):
     preview, errors = [], []
     seen = set()
-    for i, raw in enumerate(rows, start=2):
-        data = {k.strip(): (v.strip() if isinstance(v, str) else v)
-                for k, v in raw.items() if k}
-        ser = BulkEmployeeRowSerializer(data=data)
-        if not ser.is_valid():
-            errors.append({"row": i, "errors": ser.errors, "data": raw})
-            continue
-        eid = ser.validated_data["employee_id"]
-        if eid in seen:
-            errors.append({"row": i, "errors": {"employee_id": ["duplicate in file"]},
-                           "data": raw})
-            continue
-        seen.add(eid)
-        exists = User.objects.with_deleted().filter(employee_id=eid).first()
-        preview.append({
-            "row": i, "employee_id": eid,
-            "exists": bool(exists),
-            "is_deleted": bool(exists and exists.is_deleted),
-            "would_create": not bool(exists),
-            "data": ser.validated_data,
-        })
+    for row_batch in batches(enumerate(rows, start=2)):
+        valid_rows = []
+        employee_ids = set()
+        for i, raw in row_batch:
+            if not isinstance(raw, dict):
+                errors.append({"row": i,
+                               "errors": {"file": ["row must be an object"]},
+                               "data": raw})
+                continue
+            data = {k.strip(): (v.strip() if isinstance(v, str) else v)
+                    for k, v in raw.items() if k}
+            serializer = BulkEmployeeRowSerializer(data=data)
+            if not serializer.is_valid():
+                errors.append({"row": i, "errors": serializer.errors,
+                               "data": raw})
+                continue
+            employee_id = serializer.validated_data["employee_id"]
+            if employee_id in seen:
+                errors.append({
+                    "row": i,
+                    "errors": {"employee_id": ["duplicate in file"]},
+                    "data": raw})
+                continue
+            seen.add(employee_id)
+            employee_ids.add(employee_id)
+            valid_rows.append((i, employee_id, serializer.validated_data))
+
+        existing_by_id = dict(
+            User.objects.with_deleted().filter(
+                employee_id__in=employee_ids
+            ).values_list("employee_id", "is_deleted")
+        ) if employee_ids else {}
+        for i, employee_id, validated_data in valid_rows:
+            exists = employee_id in existing_by_id
+            preview.append({
+                "row": i, "employee_id": employee_id,
+                "exists": exists,
+                "is_deleted": existing_by_id.get(employee_id, False),
+                "would_create": not exists,
+                "data": validated_data,
+            })
     return preview, errors
+
+
+def _confirm_employee_rows(rows, actor):
+    successful, failed, skipped = [], [], []
+    employee_id_by_row = {}
+    seen = set()
+    for row_batch in batches(enumerate(rows, start=2)):
+        valid_rows = []
+        employee_ids = set()
+        department_refs = set()
+        for row_number, raw in row_batch:
+            if not isinstance(raw, dict):
+                failed.append({
+                    "row": row_number,
+                    "errors": {"file": ["row must be an object"]},
+                    "data": raw})
+                continue
+            data = {key.strip(): (value.strip()
+                                  if isinstance(value, str) else value)
+                    for key, value in raw.items() if key}
+            serializer = BulkEmployeeRowSerializer(data=data)
+            if not serializer.is_valid():
+                failed.append({
+                    "row": row_number, "errors": serializer.errors,
+                    "data": raw})
+                continue
+            employee_id = serializer.validated_data["employee_id"]
+            if employee_id in seen:
+                failed.append({
+                    "row": row_number,
+                    "errors": {"employee_id": ["duplicate in file"]},
+                    "data": raw})
+                continue
+            seen.add(employee_id)
+            employee_ids.add(employee_id)
+            department_ref = serializer.validated_data.get(
+                "home_department")
+            if department_ref:
+                department_refs.add(department_ref)
+            valid_rows.append((
+                row_number, employee_id, serializer.validated_data))
+
+        existing_ids = set(User.objects.with_deleted().filter(
+            employee_id__in=employee_ids
+        ).values_list("employee_id", flat=True)) if employee_ids else set()
+        departments_by_code, departments_by_name = {}, {}
+        if department_refs:
+            for department in Department.objects.filter(
+                    Q(code__in=department_refs)
+                    | Q(name__in=department_refs)):
+                departments_by_code[department.code] = department
+                departments_by_name[department.name] = department
+
+        for row_number, employee_id, data in valid_rows:
+            employee_id_by_row[row_number] = employee_id
+            if employee_id in existing_ids:
+                skipped.append({
+                    "row": row_number,
+                    "reason": "exists; use bulk_update"})
+                continue
+            try:
+                department_ref = data.get("home_department")
+                department = (departments_by_code.get(department_ref)
+                              or departments_by_name.get(department_ref))
+                with transaction.atomic():
+                    user = User(
+                        employee_id=employee_id,
+                        username=(data.get("username") or data.get("email")
+                                  or employee_id),
+                        email=data.get("email") or f"{employee_id}@local",
+                        first_name=data.get("first_name", ""),
+                        last_name=data.get("last_name", ""),
+                        phone=data.get("phone", ""),
+                        job_title=data.get("job_title", ""),
+                        home_department=department,
+                        is_active=data.get("is_active", True),
+                        receive_ticket_emails=(
+                            data.get("receive_ticket_emails")
+                            if data.get("receive_ticket_emails") is not None
+                            else True),
+                    )
+                    user.set_unusable_password()
+                    user.save()
+                    log_action(actor=actor, action="bulk_create",
+                               instance=user)
+                    successful.append(employee_id)
+            except Exception as exc:  # per-row partial failure
+                failed.append({
+                    "row": row_number, "errors": str(exc)})
+    return successful, failed, skipped, employee_id_by_row
 
 
 def _flatten_message(value, limit=500):
@@ -244,15 +331,15 @@ def _csv_report_response(filename, rows):
     return resp
 
 
-def _employee_report_rows(preview, ok, skipped, failed):
+def _employee_report_rows(employee_id_by_row, ok, skipped, failed):
     """Build CSV rows from a bulk_import confirmation result.
 
-    Keys for skipped/exception rows are recovered from the preview items
-    (same execution, no re-query); validation failures read the key from
-    the rejected row's employee_id field only — never the full payload.
+    Keys are recovered from the bounded row-number map; validation failures
+    read only the rejected row's employee_id field from its error record.
     """
-    row_of_key = {item["employee_id"]: item["row"] for item in preview}
-    key_of_row = {item["row"]: item["employee_id"] for item in preview}
+    row_of_key = {employee_id: row_number
+                  for row_number, employee_id in employee_id_by_row.items()}
+    key_of_row = employee_id_by_row
     rows = []
     for eid in ok:
         rows.append({"row": row_of_key.get(eid, ""), "key": eid,
@@ -327,7 +414,7 @@ class UserViewSet(viewsets.ModelViewSet):
         return super().get_permissions()
 
     def get_queryset(self):
-        qs = User.objects.all()
+        qs = User.objects.select_related("home_department").all()
         if not is_system_admin(self.request.user):
             qs = qs.filter(is_deleted=False)
         q = self.request.query_params.get("q")
@@ -642,15 +729,31 @@ class UserViewSet(viewsets.ModelViewSet):
             })
         upload = request.FILES.get("file")
         rows_data = request.data.get("rows")
+        preview_requested = request.data.get(
+            "preview", True) in (True, "true", "1", 1)
+        confirmed = request.data.get("confirm")
         if upload:
             allowed = {"employee_id", "username", "email", "first_name",
                        "last_name", "phone", "job_title",
                        "home_department", "is_active",
                        "receive_ticket_emails"}
+            if not preview_requested and confirmed:
+                count_uploaded_rows(
+                    upload, allowed,
+                    int(settings.EMPLOYEE_BULK_IMPORT_MAX_FILE_SIZE_MB
+                        * 1024 * 1024),
+                    settings.EMPLOYEE_BULK_IMPORT_MAX_ROWS,
+                    xlsx_extensions=(".xlsx", ".xlsm", ".xltx"),
+                )
             rows = _parse_upload(upload, allowed=allowed)
         elif rows_data:
             rows = rows_data if isinstance(rows_data, list) else []
             if rows:
+                if len(rows) > settings.EMPLOYEE_BULK_IMPORT_MAX_ROWS:
+                    return Response({
+                        "file": "Too many rows in request body. Maximum is "
+                                f"{settings.EMPLOYEE_BULK_IMPORT_MAX_ROWS}."},
+                        status=400)
                 allowed = {"employee_id", "username", "email", "first_name",
                            "last_name", "phone", "job_title",
                            "home_department", "is_active",
@@ -666,61 +769,25 @@ class UserViewSet(viewsets.ModelViewSet):
         else:
             return Response({"detail": "Provide 'file' or 'rows'."},
                             status=400)
-        preview, errors = _employee_preview(rows)
-        if request.data.get("preview", True) in (True, "true", "1", 1):
+        if preview_requested or not confirmed:
+            preview, errors = _employee_preview(rows)
+        if preview_requested:
             return Response({"preview": preview, "errors": errors,
                              "counts": {"ok": len(preview),
                                         "failed": len(errors)}})
-        if not request.data.get("confirm"):
+        if not confirmed:
             return Response({"detail": "Confirmation required.",
                              "preview": preview, "errors": errors},
                             status=400)
-        ok, failed, skipped = [], list(errors), []
-        for item in preview:
-            d = item["data"]
-            try:
-                with transaction.atomic():
-                    dept = None
-                    if d.get("home_department"):
-                        dept = Department.objects.filter(
-                            code=d["home_department"]).first() or \
-                            Department.objects.filter(
-                                name=d["home_department"]).first()
-                    existing = User.objects.with_deleted().filter(
-                        employee_id=item["employee_id"]).first()
-                    if existing:
-                        skipped.append({"row": item["row"], "reason":
-                                                 "exists; use bulk_update"})
-                        continue
-                    user = User(
-                        employee_id=item["employee_id"],
-                        username=(d.get("username") or d.get("email")
-                                  or item["employee_id"]),
-                        email=d.get("email") or f"{item['employee_id']}@local",
-                        first_name=d.get("first_name", ""),
-                        last_name=d.get("last_name", ""),
-                        phone=d.get("phone", ""),
-                        job_title=d.get("job_title", ""),
-                        home_department=dept,
-                        is_active=d.get("is_active", True),
-                        receive_ticket_emails=(
-                            d.get("receive_ticket_emails")
-                            if d.get("receive_ticket_emails") is not None
-                            else True),
-                    )
-                    user.set_unusable_password()
-                    user.save()
-                    log_action(actor=request.user, action="bulk_create",
-                               instance=user)
-                    ok.append(item["employee_id"])
-            except Exception as exc:  # per-row partial failure
-                failed.append({"row": item["row"], "errors": str(exc)})
+        ok, failed, skipped, employee_id_by_row = _confirm_employee_rows(
+            rows, request.user)
         if request.query_params.get("download") == "csv":
             # Same executed import, CSV representation of the per-row
             # outcomes. JSON remains the default when absent.
             return _csv_report_response(
                 "employee_import_report.csv",
-                _employee_report_rows(preview, ok, skipped, failed))
+                _employee_report_rows(
+                    employee_id_by_row, ok, skipped, failed))
         return Response({"successful": ok, "skipped": skipped,
                          "failed": failed,
                          "summary": {"ok": len(ok),

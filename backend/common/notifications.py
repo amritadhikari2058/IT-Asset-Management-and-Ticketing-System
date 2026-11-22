@@ -73,7 +73,11 @@ def get_user_preferences(user):
     return prefs
 
 
-def email_enabled_for(user, category=None):
+_UNSET_PREFERENCE = object()
+
+
+def email_enabled_for(user, category=None,
+                      preference=_UNSET_PREFERENCE):
     """Centralized: should ``user`` receive an email for ``category``?
 
     - ``category`` is optional; ``None`` means "global master switch only".
@@ -91,7 +95,8 @@ def email_enabled_for(user, category=None):
     if user is None or not getattr(user, "pk", None):
         # Unresolvable / system recipients fail open (current behaviour).
         return True
-    prefs = get_user_preferences(user)
+    prefs = (get_user_preferences(user) if preference is _UNSET_PREFERENCE
+             else preference)
     master_enabled = True
     if prefs is not None and not prefs.email_enabled:
         master_enabled = False

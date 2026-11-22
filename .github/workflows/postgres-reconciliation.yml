@@ -84,6 +84,14 @@ jobs:
         working-directory: backend
         run: python -m pytest assets/test_lifecycle_integrity.py assets/test_operations.py assets/test_reports.py assets/test_knowledge_base_versioning.py assets/tests.py assets/test_pagination_role_scope.py assets/test_vendors.py -q
 
+      - name: Knowledge Base authorization and workflow tests (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest -o "addopts=--ds=config.settings_test" assets/test_knowledge_base_authorization_security.py assets/test_knowledge_base_auth_revocation.py assets/test_knowledge_base_postgres_concurrency.py assets/test_knowledge_base_versioning.py common/test_kb_integration.py common/test_notification_outbox_postgres.py -q
+
+      - name: Account query and shared import regressions (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest -o "addopts=--ds=config.settings_test" accounts/test_user_query_performance.py common/test_import_scalability.py -q
+
       - name: Notification acceptance tests (PostgreSQL)
         working-directory: backend
         run: python -m pytest common/test_notification_dedup.py common/test_notification_reliability.py common/test_notification_api_security_phase62.py assets/test_maintenance_task_notifications.py tickets/test_sla_task_notifications.py licensing/test_tasks.py cmdb/test_tasks.py cmdb/tests.py -q

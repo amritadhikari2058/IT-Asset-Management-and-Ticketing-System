@@ -91,12 +91,12 @@ describe('Procurement route resolution', () => {
     });
   }
 
-  it('shows fallback for unknown procurement route', () => {
+  it('shows fallback for unknown procurement route', async () => {
     mockAuth.mockReturnValue(makeAuth('system_admin'));
     window.location.hash = '#/procurement/bogus';
     render(<App />);
 
-    expect(screen.getByText('This procurement page does not exist.')).toBeTruthy();
+    expect(await screen.findByText('This procurement page does not exist.', {}, { timeout: 10_000 })).toBeTruthy();
   });
 
   it('renders dashboard content for bare #/procurement', async () => {
@@ -107,7 +107,7 @@ describe('Procurement route resolution', () => {
     expect(screen.queryByText('This procurement page does not exist.')).toBeNull();
     await waitFor(() => {
       expect(screen.getByText('Pending asset registration')).toBeTruthy();
-    });
+    }, { timeout: 10_000 });
   });
 
   it('renders vendor performance content for #/procurement/vendor-performance', async () => {

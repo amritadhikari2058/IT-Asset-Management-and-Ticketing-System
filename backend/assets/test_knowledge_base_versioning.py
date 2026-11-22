@@ -370,7 +370,11 @@ class ReviewWorkflowTests(KnowledgeBaseTestBase):
         self.assertEqual(res.status_code, 403, res.data)
 
     def test_archive_requires_staff_and_is_audited(self):
-        data = self.create_article(status="published")
+        data = self.create_article()
+        # The API requires approval before publication; prepare an existing
+        # published record here because this test targets archival policy.
+        KnowledgeBaseArticle.objects.filter(pk=data["id"]).update(
+            status="published")
         auth(self.c, self.emp)
         res = self.c.post(
             f"/api/assets/knowledge-base/{data['id']}/archive/",

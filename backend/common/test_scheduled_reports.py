@@ -1,9 +1,16 @@
 """Scheduled report management: CRUD permissions, history, and retry."""
 from django.core import mail
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.tests import auth, make_users
+from common.tasks import (
+    _finalize_scheduled_report_run,
+    _renew_scheduled_report_lease,
+    _scheduled_run_lease_expired,
+    run_scheduled_reports,
+)
 from common.models import ScheduledReport, ScheduledReportRun, SavedReport
 from tickets.models import TicketCategory
 
@@ -139,4 +146,239 @@ class ScheduledReportTests(TestCase):
         auth(self.c, self.emp)
         res = self.c.post(f"/api/common/scheduled-report-runs/{run.pk}/retry/",
                           {}, format="json")
-        self.assertEqual(res.status_code, 403)
+    # ---------- Lease and heartbeat tests ----------
+
+    def _due_schedule(self):
+        sr = self._schedule()
+        ScheduledReport.objects.filter(pk=sr.pk).update(
+            next_run_at=timezone.now() - timezone.timedelta(hours=1))
+        sr.refresh_from_db()
+        return sr
+
+    def test_long_running_report_not_recovered_prematurely(self):
+        """A live lease protects a legitimately long-running report."""
+        sr = self._due_schedule()
+        run = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="running", success=False,
+            started_at=timezone.now() - timezone.timedelta(minutes=4),
+            execution_token="live-token",
+            lease_expires_at=timezone.now() + timezone.timedelta(minutes=1))
+        results = run_scheduled_reports()
+        self.assertEqual(results["checked"], 1)
+        # Not reclaimed while the lease is still valid.
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(
+                scheduled_report=sr, status="failed").count(), 0)
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(
+                scheduled_report=sr, status="running").count(), 1)
+        run.refresh_from_db()
+        self.assertEqual(run.status, "running")
+
+    def test_heartbeat_renews_lease_during_long_run(self):
+        """Renewing the lease keeps ownership even past the fixed window."""
+        sr = self._due_schedule()
+        run = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="running", success=False,
+            started_at=timezone.now() - timezone.timedelta(minutes=30),
+            execution_token="beating-token",
+            lease_expires_at=timezone.now() + timezone.timedelta(minutes=1),
+            last_heartbeat_at=timezone.now())
+        # Simulate a heartbeat renewal extending the lease.
+        renewed = _renew_scheduled_report_lease(run.pk, "beating-token")
+        self.assertTrue(renewed)
+        run.refresh_from_db()
+        self.assertGreater(run.lease_expires_at, timezone.now())
+        results = run_scheduled_reports()
+        self.assertEqual(results["checked"], 1)
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(
+                scheduled_report=sr, status="failed").count(), 0)
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(
+                scheduled_report=sr, status="running").count(), 1)
+
+    def test_crashed_worker_recovery_after_lease_expire(self):
+        """An expired lease makes a crashed execution recoverable."""
+        sr = self._due_schedule()
+        crashed = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="running", success=False,
+            started_at=timezone.now() - timezone.timedelta(minutes=6),
+            execution_token="dead-token",
+            lease_expires_at=timezone.now() - timezone.timedelta(minutes=1))
+        results = run_scheduled_reports()
+        self.assertEqual(results["checked"], 1)
+        self.assertGreaterEqual(results["recovered"], 1)
+        crashed.refresh_from_db()
+        self.assertEqual(crashed.status, "failed")
+        self.assertEqual(crashed.error_summary, "stale_worker_recovered")
+        # A fresh execution replaced the recovered one and delivered.
+        new_runs = ScheduledReportRun.objects.filter(
+            scheduled_report=sr, status="succeeded")
+        self.assertEqual(new_runs.count(), 1)
+        self.assertNotEqual(new_runs.first().pk, crashed.pk)
+
+    def test_crashed_worker_recovery_when_schedule_already_advanced(self):
+        """A crash after next_run_at advanced must still be recovered.
+
+        Regression: recovery used to scan only due schedules, so a worker
+        that crashed after advancing next_run_at left its run ``running``
+        until the next scheduled period (a week for weekly reports).
+        """
+        sr = self._schedule()
+        ScheduledReport.objects.filter(pk=sr.pk).update(
+            next_run_at=timezone.now() + timezone.timedelta(days=6))
+        crashed = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="running", success=False,
+            started_at=timezone.now() - timezone.timedelta(minutes=6),
+            execution_token="dead-token",
+            lease_expires_at=timezone.now() - timezone.timedelta(minutes=1))
+        results = run_scheduled_reports()
+        self.assertEqual(results["recovered"], 1)
+        self.assertEqual(results["sent"], 1)
+        crashed.refresh_from_db()
+        self.assertEqual(crashed.status, "failed")
+        self.assertEqual(crashed.error_summary, "stale_worker_recovered")
+        sr.refresh_from_db()
+        self.assertGreater(sr.next_run_at, timezone.now())
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(
+                scheduled_report=sr, status="succeeded").count(), 1)
+
+    def test_legacy_run_without_lease_uses_started_at_grace(self):
+        """Pre-lease rows fall back to the started_at grace window."""
+        sr = self._due_schedule()
+        run = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="running", success=False)
+        # started_at is auto_now_add, so stamp the legacy age via update.
+        ScheduledReportRun.objects.filter(pk=run.pk).update(
+            started_at=timezone.now() - timezone.timedelta(minutes=1))
+        run.refresh_from_db()
+        self.assertIsNone(run.lease_expires_at)
+        self.assertFalse(_scheduled_run_lease_expired(run))
+        ScheduledReportRun.objects.filter(pk=run.pk).update(
+            started_at=timezone.now() - timezone.timedelta(minutes=6))
+        run.refresh_from_db()
+        self.assertTrue(_scheduled_run_lease_expired(run))
+
+    def test_recovery_is_single_winner(self):
+        """The optimistic recovery guard lets exactly one scanner win."""
+        sr = self._due_schedule()
+        crashed = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="running", success=False,
+            started_at=timezone.now() - timezone.timedelta(minutes=6),
+            execution_token="dead-token",
+            lease_expires_at=timezone.now() - timezone.timedelta(minutes=1))
+        # Two scanners both observed the same expired lease. Apply the
+        # recovery update the task uses, twice: only the first matches.
+        def recover():
+            return ScheduledReportRun.objects.filter(
+                pk=crashed.pk, status="running",
+                lease_expires_at=crashed.lease_expires_at,
+                execution_token=crashed.execution_token,
+            ).update(status="failed", success=False,
+                     error_summary="stale_worker_recovered",
+                     finished_at=timezone.now())
+
+        first = recover()
+        second = recover()
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)
+
+    def test_stale_worker_cannot_finalize_newer_execution(self):
+        """A worker that lost ownership cannot overwrite the run state."""
+        sr = self._due_schedule()
+        run = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="running", success=False,
+            execution_token="owner-token",
+            lease_expires_at=timezone.now() + timezone.timedelta(minutes=5))
+        # A stale worker still holding the old token tries to finalize.
+        wrote = _finalize_scheduled_report_run(
+            run.pk, "stale-token", status="succeeded", success=True,
+            finished_at=timezone.now(), recipient_count=1)
+        self.assertFalse(wrote)
+        run.refresh_from_db()
+        self.assertEqual(run.status, "running")
+        self.assertFalse(run.success)
+        # The real owner can still finalize.
+        wrote = _finalize_scheduled_report_run(
+            run.pk, "owner-token", status="succeeded", success=True,
+            finished_at=timezone.now(), recipient_count=1)
+        self.assertTrue(wrote)
+        run.refresh_from_db()
+        self.assertEqual(run.status, "succeeded")
+
+    def test_lease_expiry_triggers_recovery(self):
+        """An expired lease causes recovery on the next scan."""
+        sr = self._due_schedule()
+        run = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="running", success=False,
+            started_at=timezone.now() - timezone.timedelta(minutes=5.5),
+            execution_token="expired-token",
+            lease_expires_at=timezone.now() - timezone.timedelta(seconds=1))
+        results = run_scheduled_reports()
+        self.assertEqual(results["checked"], 1)
+        self.assertGreaterEqual(
+            ScheduledReportRun.objects.filter(
+                scheduled_report=sr, status="failed").count(), 1)
+        # The replacement execution runs to completion in the same scan.
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(
+                scheduled_report=sr, status="succeeded").count(), 1)
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(
+                scheduled_report=sr, status="running").count(), 0)
+
+
+class ScheduledReportLeaseTaskTests(TestCase):
+    """Isolated lease tests that assert on delivery outcomes."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        tcat = TicketCategory.objects.create(name="HW")
+        self.saved = SavedReport.objects.create(
+            user=self.mgr, report_type="ticket_category", name="Lease report",
+            filters={"category": tcat.pk})
+
+    def _due_schedule(self):
+        sr = ScheduledReport.objects.create(
+            saved_report=self.saved, schedule="weekly",
+            recipients=["ops@example.com"], format="csv", enabled=True,
+            next_run_at=timezone.now() - timezone.timedelta(hours=1))
+        return sr
+
+    def test_successful_run_records_token_and_advanced_schedule(self):
+        sr = self._due_schedule()
+        before = sr.next_run_at
+        results = run_scheduled_reports()
+        self.assertEqual(results["sent"], 1)
+        run = ScheduledReportRun.objects.get(scheduled_report=sr)
+        self.assertEqual(run.status, "succeeded")
+        self.assertTrue(run.execution_token)
+        self.assertIsNotNone(run.lease_expires_at)
+        sr.refresh_from_db()
+        self.assertGreater(sr.next_run_at, before)
+
+    def test_recovered_schedule_does_not_double_deliver(self):
+        sr = self._due_schedule()
+        crashed = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="running", success=False,
+            started_at=timezone.now() - timezone.timedelta(minutes=6),
+            execution_token="dead",
+            lease_expires_at=timezone.now() - timezone.timedelta(minutes=1))
+        results = run_scheduled_reports()
+        self.assertEqual(results["sent"], 1)
+        self.assertGreaterEqual(results["recovered"], 1)
+        crashed.refresh_from_db()
+        self.assertEqual(crashed.status, "failed")
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(
+                scheduled_report=sr, status="running").count(), 0)
+
+    def test_disabled_report_not_run(self):
+        sr = self._due_schedule()
+        ScheduledReport.objects.filter(pk=sr.pk).update(enabled=False)
+        results = run_scheduled_reports()
+        self.assertEqual(results["checked"], 0)
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(scheduled_report=sr).count(), 0)

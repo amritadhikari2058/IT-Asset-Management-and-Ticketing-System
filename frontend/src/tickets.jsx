@@ -52,10 +52,13 @@ export function TicketForm({ id }) {
       if (user?.home_department) setForm((f) => ({ ...f, department: user.home_department }));
       return;
     }
+    let active = true;
+    const controller = new AbortController();
     (async () => {
       setLoading(true);
       try {
-        const r = await api.get(`/tickets/${id}/`);
+        const r = await api.get(`/tickets/${id}/`, { signal: controller.signal });
+        if (!active) return;
         const t = r.data;
         setInitialStatus(t.status ?? 'open');
         setForm({
@@ -66,11 +69,17 @@ export function TicketForm({ id }) {
           resolution_notes: t.resolution_notes ?? '',
         });
       } catch (e) {
-        setLoadError(parseApiError(e).global || 'Could not load ticket.');
+        if (active && !controller.signal.aborted) {
+          setLoadError(parseApiError(e).global || 'Could not load ticket.');
+        }
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     })();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [id, isEdit, user]);
 
   useEffect(() => {
@@ -82,25 +91,32 @@ export function TicketForm({ id }) {
 
   // Debounced KB article search while typing title/description.
   useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
     if (!isEdit) {
       clearTimeout(kbSearchTimer.current);
       kbSearchTimer.current = setTimeout(async () => {
         const query = (form.title.trim() + ' ' + form.description.trim()).trim();
         if (query.length < 3) {
-          setKbSuggestions([]);
+          if (active) setKbSuggestions([]);
           return;
         }
         try {
           const r = await api.get('/assets/knowledge-base/', {
             params: { q: query, page_size: 5 },
+            signal: controller.signal,
           });
-          setKbSuggestions(r.data.results ?? r.data ?? []);
+          if (active) setKbSuggestions(r.data.results ?? r.data ?? []);
         } catch {
-          setKbSuggestions([]);
+          if (active && !controller.signal.aborted) setKbSuggestions([]);
         }
       }, 300);
     }
-    return () => clearTimeout(kbSearchTimer.current);
+    return () => {
+      active = false;
+      clearTimeout(kbSearchTimer.current);
+      controller.abort();
+    };
   }, [form.title, form.description, isEdit]);
 
   const submit = async (ev) => {

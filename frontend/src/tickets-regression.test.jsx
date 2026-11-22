@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 
 const { mockGet, mockPatch, mockAuth } = vi.hoisted(() => ({
   mockGet: vi.fn(),
@@ -324,5 +324,52 @@ describe('Ticket update — state refresh after mutation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(mockPatch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(window.location.hash).toBe('#/tickets/7'));
+  });
+});
+
+describe('Ticket form request lifecycle', () => {
+  it('does not let an older knowledge-base search replace newer suggestions', async () => {
+    employee();
+    const pendingSearches = [];
+    mockGet.mockImplementation((url) => {
+      if (url === '/assets/knowledge-base/') {
+        return new Promise((resolve) => pendingSearches.push(resolve));
+      }
+      return Promise.resolve(ticketRoutes(url));
+    });
+
+    render(<TicketForm />);
+    const subject = () => screen.getByPlaceholderText('Brief summary of the issue');
+    fireEvent.change(subject(), { target: { value: 'Printer issue' } });
+    await waitFor(() => expect(pendingSearches).toHaveLength(1));
+    fireEvent.change(subject(), { target: { value: 'Monitor issue' } });
+    await waitFor(() => expect(pendingSearches).toHaveLength(2));
+
+    await act(async () => pendingSearches[1]({ data: { results: [{ id: 2, title: 'Monitor help' }] } }));
+    expect(await screen.findByText('Monitor help')).toBeTruthy();
+    await act(async () => pendingSearches[0]({ data: { results: [{ id: 1, title: 'Printer help' }] } }));
+
+    expect(screen.getByText('Monitor help')).toBeTruthy();
+    expect(screen.queryByText('Printer help')).toBeNull();
+  });
+
+  it('ignores a ticket detail response after the form switches records', async () => {
+    staff();
+    let resolveFirstTicket;
+    mockGet.mockImplementation((url) => {
+      if (url === '/tickets/7/') return new Promise((resolve) => { resolveFirstTicket = resolve; });
+      if (url === '/tickets/8/') {
+        return Promise.resolve({ data: { ...DETAIL_TICKET, id: 8, title: 'Ticket eight' } });
+      }
+      return Promise.resolve(ticketRoutes(url));
+    });
+
+    const view = render(<TicketForm id="7" />);
+    view.rerender(<TicketForm id="8" />);
+    const subject = await screen.findByPlaceholderText('Brief summary of the issue');
+    await waitFor(() => expect(subject.value).toBe('Ticket eight'));
+    await act(async () => resolveFirstTicket({ data: { ...DETAIL_TICKET, title: 'Stale ticket seven' } }));
+
+    expect(subject.value).toBe('Ticket eight');
   });
 });

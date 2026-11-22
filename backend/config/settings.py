@@ -393,6 +393,18 @@ TICKET_BULK_IMPORT_MAX_JSON_ROWS = int(
 TICKET_BULK_IMPORT_TOKEN_TTL_HOURS = int(
     os.environ.get('TICKET_BULK_IMPORT_TOKEN_TTL_HOURS', '24'))
 
+# Synchronous employee and asset import guardrails. Parsing is incremental;
+# these caps bound request time and row-result memory while allowing larger
+# imports than the ticket endpoint's stricter transactional workflow.
+EMPLOYEE_BULK_IMPORT_MAX_FILE_SIZE_MB = float(
+    os.environ.get('EMPLOYEE_BULK_IMPORT_MAX_FILE_SIZE_MB', '5'))
+EMPLOYEE_BULK_IMPORT_MAX_ROWS = int(
+    os.environ.get('EMPLOYEE_BULK_IMPORT_MAX_ROWS', '25000'))
+ASSET_BULK_IMPORT_MAX_FILE_SIZE_MB = float(
+    os.environ.get('ASSET_BULK_IMPORT_MAX_FILE_SIZE_MB', '5'))
+ASSET_BULK_IMPORT_MAX_ROWS = int(
+    os.environ.get('ASSET_BULK_IMPORT_MAX_ROWS', '25000'))
+
 # ---------- Email intake (organizational support mailbox via IMAP) ----------
 INBOUND_MAILBOX_ENABLED = os.environ.get('INBOUND_MAILBOX_ENABLED', 'true').lower() == 'true'
 INBOUND_MAILBOX_HOST = os.environ.get('INBOUND_MAILBOX_HOST', '')

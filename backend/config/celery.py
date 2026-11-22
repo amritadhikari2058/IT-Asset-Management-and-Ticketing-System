@@ -34,6 +34,9 @@ app.conf.worker_concurrency = int(os.getenv('CELERY_CONCURRENCY', '4'))
 #   should have a `CELERY_` prefix.
 app.config_from_object('django.conf:settings', namespace='CELERY')
 
+import django
+django.setup()
+
 # Registration strategy: autodiscovery is the single source of truth for
 # every installed app's ``tasks.py`` (tickets, assets, changes, common,
 # licensing, cmdb, ...). Do not add per-app imports here - they drift and

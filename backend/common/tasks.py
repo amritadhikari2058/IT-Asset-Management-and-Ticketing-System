@@ -7,13 +7,16 @@
 - Task runs are recorded in ``common.BackgroundTaskRun`` for operational
   health visibility.
 """
+import hashlib
 import logging
+import threading
+import uuid
 from datetime import timedelta
 
 from celery import shared_task
 
 from django.conf import settings
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from common import inbound
@@ -37,6 +40,46 @@ RETENTION_EVALUATION_INTERVAL = timedelta(days=1)
 # Shorter back-off used when a policy could not be dispatched at all, so a
 # transient broker/worker problem does not delay retention for a full day.
 RETENTION_DISPATCH_RETRY_INTERVAL = timedelta(hours=1)
+
+# How long a scheduled-report execution owns its run before another worker may
+# treat it as abandoned. The owner renews this lease with heartbeats while the
+# report renders and delivers, so a legitimately long-running report keeps its
+# ownership. A crashed worker stops renewing and the lease lapses, at which
+# point exactly one recovery worker can reclaim the run (guarded by the row
+# lock and the optimistic token/lease condition).
+SCHEDULED_REPORT_LEASE_SECONDS = 300
+# How often the in-process heartbeat helper renews an active lease. One third
+# of the lease leaves room for two missed renewals before a worker is presumed
+# dead.
+SCHEDULED_REPORT_HEARTBEAT_INTERVAL = max(
+    1, SCHEDULED_REPORT_LEASE_SECONDS // 3)
+# Maximum number of delivery attempts per recipient within a single run.
+# Bounded so a repeatedly failing recipient does not block the run forever.
+SCHEDULED_REPORT_MAX_DELIVERY_ATTEMPTS = 3
+
+
+def _normalize_email(email):
+    """Normalize an email address for dedupe-key calculation.
+
+    Lowercases and strips surrounding whitespace so that
+    ``Ops@example.com`` and ``ops@example.com`` resolve to the same
+    delivery identity without changing the stored recipient address.
+    """
+    if not email:
+        return ""
+    return email.strip().lower()
+
+
+def _delivery_dedupe_key(run, to_email):
+    """Stable per-(occurrence, recipient) deduplication key.
+
+    Uses the run's ``occurrence_id`` so that the same logical scheduled
+    occurrence + recipient always produces the same dedupe key, even when
+    replacement runs are created after lease expiration or worker crashes.
+    """
+    normalized = _normalize_email(to_email)
+    return hashlib.sha256(
+        f"{run.occurrence_id}|{normalized}".encode("utf-8")).hexdigest()[:64]
 
 
 def _retention_due_q(now):
@@ -171,12 +214,127 @@ def process_inbound_email_task(self):  # pragma: no cover - operational entry
     return poll_support_mailbox()
 
 
+def _lease_deadline(now=None):
+    """Return the timestamp at which a freshly renewed lease expires."""
+    now = now or timezone.now()
+    return now + timedelta(seconds=SCHEDULED_REPORT_LEASE_SECONDS)
+
+
+def _scheduled_run_lease_expired(run, now=None):
+    """Whether another worker may treat ``run`` as abandoned.
+
+    A run is reclaimable only once its lease has lapsed. Legacy rows created
+    before leases existed have no ``lease_expires_at``; they fall back to the
+    old fixed grace window measured from ``started_at``.
+    """
+    now = now or timezone.now()
+    if run.lease_expires_at is not None:
+        return run.lease_expires_at <= now
+    return run.started_at <= now - timedelta(seconds=SCHEDULED_REPORT_LEASE_SECONDS)
+
+
+def _renew_scheduled_report_lease(run_id, token):
+    """Conditionally extend an execution lease.
+
+    Returns ``True`` only while ``token`` still owns the running row. A worker
+    whose execution was recovered by another scanner will see ``False`` and
+    must stop touching the report.
+    """
+    from common.models import ScheduledReportRun
+
+    now = timezone.now()
+    updated = ScheduledReportRun.objects.filter(
+        pk=run_id, status="running", execution_token=token,
+    ).update(lease_expires_at=_lease_deadline(now), last_heartbeat_at=now)
+    return bool(updated)
+
+
+def _finalize_scheduled_report_run(run_id, token, **fields):
+    """Ownership-checked finalization of a scheduled report run.
+
+    Only the worker that still holds ``token`` and whose run is still
+    ``running`` may write the terminal state. A stale worker whose lease was
+    recovered gets ``False`` here and therefore cannot overwrite the newer
+    execution's state or advance the schedule.
+    """
+    from common.models import ScheduledReportRun
+
+    return bool(
+        ScheduledReportRun.objects.filter(
+            pk=run_id, status="running", execution_token=token,
+        ).update(**fields)
+    )
+
+
+class _ScheduledReportLeaseKeeper:
+    """Renew a run lease in the background while a long report executes.
+
+    Report rendering and delivery are synchronous, so a lease renewed only at
+    entry would lapse for a genuinely long report and let a second scanner
+    reclaim it mid-flight. This bounded helper renews every
+    ``SCHEDULED_REPORT_HEARTBEAT_INTERVAL`` seconds until the block exits,
+    then stops and joins the thread. If the lease can no longer be renewed the
+    worker has lost ownership and ``lost`` is set.
+    """
+
+    def __init__(self, run_id, token, interval=None):
+        self.run_id = run_id
+        self.token = token
+        self.interval = interval or SCHEDULED_REPORT_HEARTBEAT_INTERVAL
+        self.lost = False
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _loop(self):
+        try:
+            while not self._stop.wait(self.interval):
+                try:
+                    if not _renew_scheduled_report_lease(self.run_id, self.token):
+                        self.lost = True
+                        return
+                except Exception:  # pragma: no cover - defensive
+                    logger.exception(
+                        "Failed to renew lease for scheduled report run %s",
+                        self.run_id)
+        finally:
+            # Each worker/heartbeat thread owns its own Django DB connection;
+            # close it when the thread exits so connections do not leak and
+            # block test teardown or exhaust the pool in production.
+            try:
+                from django.db import connections
+                connections.close_all()
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+    def __enter__(self):
+        self._thread = threading.Thread(
+            target=self._loop, name=f"sr-lease-{self.run_id}", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval + 1)
+        return False
+
+
 @shared_task(bind=True, max_retries=2, retry_backoff=300)
 def run_scheduled_reports(self):
     """Due scheduled reports: render, export, email, record history.
 
     Idempotent per (scheduled_report, run window): a ScheduledReportRun row
     is created before delivery so a retried task does not double-send.
+
+    Concurrency safety rests on three mechanisms:
+
+    * A unique partial constraint allows at most one ``running`` run per
+      scheduled report, so two scanners cannot both start a run.
+    * Each execution carries an ``execution_token`` and a renewable lease
+      (``lease_expires_at`` / ``last_heartbeat_at``). Only an execution whose
+      lease has lapsed is considered abandoned and recovered.
+    * Finalization is ownership-checked, so a worker that lost its lease to a
+      recovery worker cannot later overwrite the newer execution's state.
 
     Recipient policy: deliveries go to the explicit recipient list configured
     on the schedule (IT / staff authored) and do not inherit per-user
@@ -186,88 +344,252 @@ def run_scheduled_reports(self):
     from common.models import ScheduledReport, ScheduledReportRun
 
     now = timezone.now()
-    due = ScheduledReport.objects.filter(
-        enabled=True, next_run_at__lte=now).select_related("saved_report")
 
-    results = {"checked": 0, "sent": 0, "failed": 0}
+    results = {"checked": 0, "sent": 0, "failed": 0, "recovered": 0}
+
+    # Reclaim abandoned executions whose schedule is no longer due. A worker
+    # that crashes after advancing ``next_run_at`` but before finalizing would
+    # otherwise leave its run ``running`` until the next scheduled period (a
+    # week for weekly reports). Recover those rows and re-arm the schedule so
+    # the due pass below re-runs the missed occurrence. Delivery is
+    # at-least-once: a crash after a successful send may re-send, which the
+    # per-run delivery dedupe cannot detect across runs.
+    expired_running = list(
+        ScheduledReportRun.objects.filter(
+            status="running", lease_expires_at__isnull=False,
+            lease_expires_at__lte=now).select_related("scheduled_report")
+    )
+    for stale in expired_running:
+        reclaimed = ScheduledReportRun.objects.filter(
+            pk=stale.pk, status="running",
+            lease_expires_at=stale.lease_expires_at,
+            execution_token=stale.execution_token,
+        ).update(
+            status="failed", success=False,
+            error_summary="stale_worker_recovered", finished_at=now)
+        if not reclaimed:
+            continue
+        results["recovered"] += 1
+        # Pending deliveries for the reclaimed run belong to a dead worker.
+        # Mark them failed so they don't stay pending forever; the re-armed
+        # schedule will create a new run with fresh delivery rows.
+        ScheduledReportDelivery.objects.filter(
+            scheduled_report_run=stale.pk, status="pending"
+        ).update(status="failed", error_message="worker_crashed_before_send",
+                 updated_at=now)
+        ScheduledReport.objects.filter(
+            pk=stale.scheduled_report_id, enabled=True,
+            next_run_at__gt=now,
+        ).update(next_run_at=now)
+
+    due = list(
+        ScheduledReport.objects.filter(
+            enabled=True, next_run_at__lte=now).select_related("saved_report")
+    )
+
     for sr in due:
         results["checked"] += 1
         run = None
+        token = uuid.uuid4().hex
+        # Serialize workers per scheduled report so two scanners cannot both
+        # start a run for the same report and double-deliver it. The row lock
+        # is held only for the quick claim + next_run_at advance; rendering
+        # and delivery then run outside the lock while the lease protects the
+        # execution from being reclaimed by another scanner.
         try:
             with transaction.atomic():
+                locked = ScheduledReport.objects.select_for_update().get(
+                    pk=sr.pk)
+                if not locked.enabled or locked.next_run_at is None \
+                        or locked.next_run_at > now:
+                    # Another worker already advanced this report.
+                    continue
+                existing_run = ScheduledReportRun.objects.filter(
+                    scheduled_report=locked, status="running").first()
+                if existing_run is not None:
+                    if not _scheduled_run_lease_expired(existing_run, now):
+                        # A live worker still owns this execution; leave it
+                        # alone and do not start a competing run.
+                        continue
+                    # The lease lapsed: the owner is presumed dead. Recover
+                    # with an optimistic guard so only one scanner wins even
+                    # if several reach this point concurrently.
+                    recovered = ScheduledReportRun.objects.filter(
+                        pk=existing_run.pk, status="running",
+                        lease_expires_at=existing_run.lease_expires_at,
+                        execution_token=existing_run.execution_token,
+                    ).update(
+                        status="failed", success=False,
+                        error_summary="stale_worker_recovered",
+                        finished_at=now)
+                    if not recovered:
+                        # Someone else recovered it first; back off.
+                        continue
+                    results["recovered"] += 1
                 run = ScheduledReportRun.objects.create(
-                    scheduled_report=sr,
+                    scheduled_report=locked,
                     status="running", success=False,
-                    started_at=now)
-            # Render the saved report by calling the existing report endpoint
-            # logic directly (no HTTP round-trip needed).
+                    started_at=now,
+                    execution_token=token,
+                    lease_expires_at=_lease_deadline(now),
+                    last_heartbeat_at=now)
+                # Advance next_run_at under the same lock so a concurrent
+                # scanner cannot read a stale next_run_at and produce a
+                # duplicate run / lost update.
+                _advance_next_run(locked)
+        except Exception as exc:
+            logger.exception(
+                "Scheduled report %s failed to start: %s", sr.pk, sr)
+            results["failed"] += 1
+            continue
+
+        # Render and deliver outside the row lock, renewing the lease so a
+        # long-running report is never mistaken for an abandoned execution.
+        try:
             from tickets.views import category_report, sla_report
             from rest_framework.test import APIRequestFactory
             from accounts import email_utils as _email_utils
 
-            factory = APIRequestFactory()
-            req = factory.get("/api/tickets/reports/by-category/",
-                              data=sr.saved_report.filters or {})
-            # Attach the user so permission-aware reports work.
-            req.user = sr.saved_report.user
+            with _ScheduledReportLeaseKeeper(run.pk, token) as keeper:
+                factory = APIRequestFactory()
+                req = factory.get("/api/tickets/reports/by-category/",
+                                  data=sr.saved_report.filters or {})
+                # Attach the user so permission-aware reports work.
+                req.user = sr.saved_report.user
 
-            if sr.saved_report.report_type == "ticket_category":
-                resp = category_report(req)
-            elif sr.saved_report.report_type == "ticket_sla":
-                resp = sla_report(req)
+                if sr.saved_report.report_type == "ticket_category":
+                    resp = category_report(req)
+                elif sr.saved_report.report_type == "ticket_sla":
+                    resp = sla_report(req)
+                else:
+                    raise ValueError(
+                        f"Unknown report type: {sr.saved_report.report_type}")
+
+                payload = resp.data if hasattr(resp, "data") else resp
+                fmt = sr.format or "csv"
+                content = _render_report(payload, fmt)
+                filename = (
+                    f"{sr.saved_report.name.replace(' ', '_')}_"
+                    f"{now:%Y%m%d}.{fmt}")
+                content_type = {
+                    "csv": "text/csv",
+                    "xlsx": (
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"),
+                    "pdf": "application/pdf",
+                    "docx": (
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"),
+                }.get(fmt, "application/octet-stream")
+                subject = f"Scheduled report: {sr.saved_report.name}"
+                body = "Please find the attached scheduled report."
+
+                # Renew once more right before delivery so a report that
+                # rendered near the lease deadline still delivers.
+                if not _renew_scheduled_report_lease(run.pk, token):
+                    keeper.lost = True
+                    raise _ScheduledReportOwnershipLost()
+
+                # Explicit recipient policy: report deliveries go to the
+                # schedule's recipient list without per-user notification
+                # filters.
+                recipients = sr.recipients or []
+                sent_count = 0
+                from common.models import ScheduledReportDelivery
+                for to_email in recipients:
+                    normalized_email = _normalize_email(to_email)
+                    dedupe_key = _delivery_dedupe_key(run, to_email)
+
+                    # Durable per-recipient dedupe within this run: a pending
+                    # row is inserted before SMTP so a worker crash cannot
+                    # silently lose the delivery, and a ``sent`` row prevents
+                    # a recovered/retrying worker from re-sending to the same
+                    # recipient in the same run.
+                    existing = (
+                        ScheduledReportDelivery.objects.filter(
+                            delivery_dedupe_key=dedupe_key).first())
+                    if existing is not None:
+                        if existing.status == "sent":
+                            sent_count += 1
+                            continue
+                        if existing.status == "failed" \
+                                and existing.attempts >= \
+                                SCHEDULED_REPORT_MAX_DELIVERY_ATTEMPTS:
+                            # Bounded retry exhausted; skip this recipient.
+                            continue
+                        # Pending or retryable failed: attempt delivery.
+                        delivery = existing
+                    else:
+                        delivery = ScheduledReportDelivery.objects.create(
+                            scheduled_report_run=run,
+                            recipient_email=normalized_email,
+                            delivery_dedupe_key=dedupe_key,
+                            status="pending",
+                            attempts=1)
+
+                    # Atomic claim: only this worker may deliver this row.
+                    claimed = ScheduledReportDelivery.objects.filter(
+                        pk=delivery.pk, status__in=("pending", "failed"),
+                        attempts__lt=SCHEDULED_REPORT_MAX_DELIVERY_ATTEMPTS,
+                    ).update(
+                        status="pending",
+                        attempts=models.F("attempts") + 1,
+                    )
+                    if not claimed:
+                        # Another worker already claimed this delivery or
+                        # retry budget is exhausted; skip.
+                        continue
+
+                    if _email_utils.send_scheduled_report_email(
+                            to_email, subject, body, filename, content,
+                            content_type):
+                        updated = ScheduledReportDelivery.objects.filter(
+                            pk=delivery.pk, status="pending").update(
+                            status="sent", sent_at=timezone.now())
+                        if updated:
+                            sent_count += 1
+                    else:
+                        ScheduledReportDelivery.objects.filter(
+                            pk=delivery.pk, status="pending").update(
+                            status="failed",
+                            error_message="smtp_send_failed",
+                            updated_at=timezone.now())
+
+            finalized = _finalize_scheduled_report_run(
+                run.pk, token,
+                status="succeeded", success=True,
+                finished_at=timezone.now(),
+                recipient_count=sent_count)
+            if finalized:
+                results["sent"] += 1
             else:
-                raise ValueError(f"Unknown report type: {sr.saved_report.report_type}")
+                # We lost the lease while delivering; another worker owns the
+                # report now. Do not count this attempt or touch its state.
+                logger.warning(
+                    "Scheduled report %s run %s lost ownership before "
+                    "finalization", sr.pk, run.pk)
+                results["failed"] += 1
 
-            payload = resp.data if hasattr(resp, "data") else resp
-            fmt = sr.format or "csv"
-            content = _render_report(payload, fmt)
-            filename = f"{sr.saved_report.name.replace(' ', '_')}_{now:%Y%m%d}.{fmt}"
-            content_type = {
-                "csv": "text/csv",
-                "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "pdf": "application/pdf",
-                "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            }.get(fmt, "application/octet-stream")
-            subject = f"Scheduled report: {sr.saved_report.name}"
-            body = "Please find the attached scheduled report."
-
-            # Explicit recipient policy: report deliveries go to the
-            # schedule's recipient list without per-user notification filters.
-            recipients = sr.recipients or []
-            sent_count = 0
-            for to_email in recipients:
-                if _email_utils.send_scheduled_report_email(
-                        to_email, subject, body, filename, content, content_type):
-                    sent_count += 1
-
-            with transaction.atomic():
-                run.status = "succeeded"
-                run.success = True
-                run.finished_at = timezone.now()
-                run.recipient_count = sent_count
-                run.save(update_fields=["status", "success", "finished_at",
-                                        "recipient_count"])
-
-            # Compute next run and advance.
-            _advance_next_run(sr)
-            results["sent"] += 1
-
+        except _ScheduledReportOwnershipLost:
+            logger.warning(
+                "Scheduled report %s run %s lease was recovered during "
+                "execution", sr.pk, run.pk)
+            results["failed"] += 1
         except Exception as exc:
             logger.exception("Scheduled report %s failed: %s", sr.pk, sr)
-            if run:
-                with transaction.atomic():
-                    run.status = "failed"
-                    run.success = False
-                    run.error_summary = type(exc).__name__
-                    run.finished_at = timezone.now()
-                    run.save(update_fields=["status", "success",
-                                            "error_summary", "finished_at"])
-            # Still advance next_run so a persistently-failing report doesn't
-            # block the queue forever.
-            _advance_next_run(sr)
+            _finalize_scheduled_report_run(
+                run.pk, token,
+                status="failed", success=False,
+                error_summary=type(exc).__name__,
+                finished_at=timezone.now())
             results["failed"] += 1
 
     return results
+
+
+class _ScheduledReportOwnershipLost(Exception):
+    """Raised when a worker discovers another worker recovered its run."""
+
 
 
 def _advance_next_run(sr):

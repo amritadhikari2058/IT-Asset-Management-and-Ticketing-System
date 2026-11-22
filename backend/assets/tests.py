@@ -1280,14 +1280,27 @@ class AssetBulkUploadParseTests(TestCase):
         self.assertTrue(res["Content-Type"].startswith("application/json"))
 
     def test_binary_junk_csv_is_rejected(self):
+        count_before = Asset.all_objects.count()
         res = self._upload("data.csv", b"\xff\xfe\x00\x01junk\x00\xff")
         self._assert_clean_400(res)
         self.assertIn("file", res.data)
+        self.assertEqual(Asset.all_objects.count(), count_before)
 
     def test_fake_xlsx_is_rejected(self):
+        count_before = Asset.all_objects.count()
         res = self._upload("assets.xlsx", b"this is not a zip archive")
         self._assert_clean_400(res)
         self.assertIn("file", res.data)
+        self.assertEqual(Asset.all_objects.count(), count_before)
+
+    def test_unsupported_extension_is_rejected_without_writes(self):
+        count_before = Asset.all_objects.count()
+        csv = ("asset_tag,name,category\nU-TXT,Printer,Laptop\n"
+               ).encode("utf-8")
+        res = self._upload("assets.txt", csv, preview="false", confirm="true")
+        self._assert_clean_400(res)
+        self.assertIn("Unsupported file type", str(res.data))
+        self.assertEqual(Asset.all_objects.count(), count_before)
 
     def test_empty_csv_is_rejected(self):
         res = self._upload("empty.csv", b"")
@@ -1313,12 +1326,37 @@ class AssetBulkUploadParseTests(TestCase):
             Asset.all_objects.filter(asset_tag="P1",
                                      serial_number="PS-1").exists())
 
+    def test_missing_required_column_is_reported_without_writes(self):
+        count_before = Asset.all_objects.count()
+        res = self._upload(
+            "missing-tag.csv", b"name,category\nPrinter,Laptop\n")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["preview"], [])
+        self.assertEqual(res.data["errors"][0]["errors"], "asset_tag required")
+        self.assertEqual(Asset.all_objects.count(), count_before)
+
+    def test_invalid_row_is_reported_without_writes(self):
+        count_before = Asset.all_objects.count()
+        res = self._upload(
+            "invalid-row.csv",
+            b"asset_tag,name,category\nU-BAD,Printer,Missing\n",
+            preview="false", confirm="true")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["successful"], [])
+        self.assertEqual(len(res.data["failed"]), 1)
+        self.assertEqual(Asset.all_objects.count(), count_before)
+
     def test_parse_errors_are_logged_server_side_only(self):
-        with self.assertLogs("assets.views", level="ERROR") as captured:
-            res = self._upload("data.csv", b"\xff\xfe\x00junk")
+        count_before = Asset.all_objects.count()
+        with self.assertLogs("common.import_stream", level="ERROR") as captured:
+            res = self._upload(
+                "data.csv", b"\xffPRIVATE_IMPORT_ROW_CONTENT")
         self._assert_clean_400(res)
-        self.assertTrue(any("bulk" in line or "parse" in line
-                            for line in captured.output))
+        self.assertEqual(len(captured.records), 1)
+        self.assertIn("data.csv", captured.records[0].getMessage())
+        self.assertNotIn("PRIVATE_IMPORT_ROW_CONTENT", "\n".join(
+            captured.output))
+        self.assertEqual(Asset.all_objects.count(), count_before)
 
 
 class AssetCreateWithFileTests(TestCase):

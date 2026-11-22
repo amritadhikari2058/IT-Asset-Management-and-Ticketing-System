@@ -6,7 +6,7 @@ Visibility:
   privileged history hidden (separate permission-checked endpoints).
 """
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Prefetch, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -28,8 +28,8 @@ from tickets.models import (
 from tickets.serializers import (
     TicketAttachmentSerializer, TicketBulkImportOperationSerializer,
     TicketCategorySerializer, TicketHistorySerializer,
-    TicketKbArticleSerializer, TicketNoteSerializer, TicketSerializer,
-    TicketSLASerializer,
+    TicketKbArticleSerializer, TicketNoteSerializer,
+    TicketBulkImportSerializer, TicketSerializer, TicketSLASerializer,
 )
 
 
@@ -151,7 +151,7 @@ def _notify_user(recipient, actor, title, body, ticket):
     )
 
 
-def _wants_ticket_email(person, category=None):
+def _wants_ticket_email(person, category=None, preference_cache=None):
     """Ticket-event email opt-out check for one recipient object.
 
     Delegates to the centralized preference check in
@@ -165,7 +165,21 @@ def _wants_ticket_email(person, category=None):
     - Missing preference records default to enabled; essential transactional
       emails (verification / password reset) never consult this.
     """
-    return email_enabled_for(person, category=category)
+    if preference_cache is None:
+        return email_enabled_for(person, category=category)
+    pk = getattr(person, "pk", None)
+    if pk is None:
+        return True
+    if pk not in preference_cache:
+        from common.models import UserNotificationPreference
+        preference = UserNotificationPreference.objects.filter(
+            user_id=pk).first()
+        if preference is None:
+            preference, _ = UserNotificationPreference.objects.get_or_create(
+                user=person)
+        preference_cache[pk] = preference
+    return email_enabled_for(
+        person, category=category, preference=preference_cache[pk])
 
 
 class TicketCategoryViewSet(viewsets.ModelViewSet):
@@ -252,7 +266,7 @@ def _ticket_bulk_import_limits():
     }
 
 
-def _ticket_bulk_import_fingerprint(rows_in, upload=None):
+def _ticket_bulk_import_fingerprint(rows_in, upload=None, return_count=False):
     import hashlib
     import json
     h = hashlib.sha256()
@@ -262,14 +276,21 @@ def _ticket_bulk_import_fingerprint(rows_in, upload=None):
         h.update(b"\0")
         h.update(str(getattr(upload, "size", "") or "").encode("utf-8"))
         h.update(b"\0")
-        # For file uploads, row content is the authoritative payload.
-        h.update(json.dumps(rows_in, sort_keys=True, separators=(",", ":"),
-                            ensure_ascii=False, default=str).encode("utf-8"))
     else:
         h.update(b"json\0")
-        h.update(json.dumps(rows_in, sort_keys=True, separators=(",", ":"),
-                            ensure_ascii=False, default=str).encode("utf-8"))
-    return h.hexdigest()
+    encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False, default=str)
+    h.update(b"[")
+    row_count = 0
+    for row in rows_in:
+        if row_count:
+            h.update(b",")
+        for chunk in encoder.iterencode(row):
+            h.update(chunk.encode("utf-8"))
+        row_count += 1
+    h.update(b"]")
+    fingerprint = h.hexdigest()
+    return (fingerprint, row_count) if return_count else fingerprint
 
 
 def _ticket_bulk_import_row_fingerprint(row_data):
@@ -335,12 +356,7 @@ def _ticket_csv_report_response(filename, rows):
     return resp
 
 
-def _ticket_report_rows(source_rows, ok, failed):
-    first_row = {}
-    for i, r in enumerate(source_rows, start=1):
-        t = str(r.get("title", "")).strip() if isinstance(r, dict) else ""
-        if t and t not in first_row:
-            first_row[t] = i
+def _ticket_report_rows(ok, failed):
     rows = []
     for entry in ok:
         entry = entry if isinstance(entry, dict) else {}
@@ -425,7 +441,19 @@ class TicketViewSet(viewsets.ModelViewSet):
         return super().get_permissions()
 
     def get_queryset(self):
-        qs = _ticket_visible_qs(self.request.user)
+        from services.models import ServiceRequest
+
+        qs = _ticket_visible_qs(self.request.user).prefetch_related(
+            Prefetch(
+                "service_requests",
+                queryset=ServiceRequest.objects.filter(
+                    is_deleted=False,
+                ).select_related("catalogue_item").order_by(
+                    "-submitted_at",
+                )[:1],
+                to_attr="_ticket_source_service_requests",
+            )
+        )
         p = self.request.query_params
         if p.get("q"):
             qs = qs.filter(title__icontains=p["q"]) | qs.filter(
@@ -576,6 +604,7 @@ class TicketViewSet(viewsets.ModelViewSet):
 
         transaction.on_commit(_send_followup_notifications)
 
+    @transaction.atomic
     def perform_update(self, serializer):
         # select_for_update() inside the transaction boundary prevents
         # concurrent lost updates: two writers cannot both read the same
@@ -836,16 +865,11 @@ class TicketViewSet(viewsets.ModelViewSet):
                 {"detail": "Ticket creation disabled for this user."},
                 status=403)
 
-        import csv
         import io
-        import json
-        import hashlib
-        import uuid
         from datetime import timedelta
         from django.conf import settings
-        from django.db import transaction, IntegrityError
+        from django.db import transaction
         from django.utils import timezone
-        from openpyxl import load_workbook
         from accounts.models import User, Department
         from assets.models import Asset
         from tickets.models import TicketCategory, TicketSLA, TicketBulkImportOperation
@@ -872,7 +896,6 @@ class TicketViewSet(viewsets.ModelViewSet):
             return bool(value)
 
         preview_flag = _truthy_flag(request.data.get("preview", True), True)
-        confirm_requested = not preview_flag
         import_token = (request.data.get("import_token")
                         or request.query_params.get("import_token") or "")
         if isinstance(import_token, str):
@@ -883,6 +906,14 @@ class TicketViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Invalid import token."}, status=400)
 
         upload = request.FILES.get("file")
+        allowed_columns = {
+            "title", "description", "category", "priority", "department",
+            "on_behalf_reason", "asset_tag", "assignee_employee_id",
+            "department_code", "department_name", "asset", "asset_id",
+            "on_behalf", "assignee", "employee_id",
+        }
+        from common.import_stream import batches, iter_uploaded_rows
+
         if upload is not None:
             file_size = getattr(upload, "size", None)
             if file_size is not None and file_size > max_file_bytes:
@@ -890,69 +921,18 @@ class TicketViewSet(viewsets.ModelViewSet):
                     {"file": f"Uploaded file is too large. Maximum size is "
                              f"{limits['max_file_mb']:.0f} MB."},
                     status=400)
-            try:
-                name = (upload.name or "").lower()
-                if name.endswith((".xlsx", ".xlsm")):
-                    wb = load_workbook(upload, read_only=True, data_only=True)
-                    ws = wb.active
-                    if ws is None:
-                        raise ValueError("workbook has no worksheets")
-                    rows_raw = list(ws.iter_rows(values_only=True))
-                    if not rows_raw:
-                        raise ValueError("spreadsheet is empty; header row missing")
-                    header = [str(h or "").strip() for h in rows_raw[0]]
-                    if any(header.count(h) > 1 for h in header if h):
-                        raise ValidationError(
-                            {"file": "Duplicate column headers are not allowed."})
-                    rows = [dict(zip(header, r)) for r in rows_raw[1:]
-                            if any(v is not None and str(v).strip() != ""
-                                   for v in r)]
-                    row_offset = 2
-                else:
-                    text = upload.read().decode("utf-8-sig")
-                    reader = csv.DictReader(io.StringIO(text))
-                    if not reader.fieldnames:
-                        raise ValueError("CSV is empty; header row missing")
-                    fieldnames = [str(h or "").strip()
-                                  for h in reader.fieldnames]
-                    if any(fieldnames.count(h) > 1 for h in fieldnames if h):
-                        raise ValidationError(
-                            {"file": "Duplicate column headers are not allowed."})
-                    reader.fieldnames = fieldnames
-                    rows = [dict(row) for row in reader
-                            if any(v is not None and str(v).strip() != ""
-                                   for v in row.values())]
-                    row_offset = 2
-                if len(rows) > max_rows:
-                    return Response(
-                        {"file": f"Too many rows in uploaded file ({len(rows)}). "
-                                 f"Maximum is {max_rows}."},
-                        status=400)
-                allowed = {"title", "description", "category", "priority",
-                           "department", "on_behalf_reason", "asset_tag",
-                           "assignee_employee_id",
-                           # aliases normalized by _norm()
-                           "department_code", "department_name", "asset",
-                           "asset_id", "on_behalf", "assignee", "employee_id"}
-                unknown = set()
-                for r in rows:
-                    if isinstance(r, dict):
-                        for k in r:
-                            if isinstance(k, str) and k not in allowed:
-                                unknown.add(k)
-                if unknown:
-                    raise ValidationError({"file": "unknown columns: "
-                                           + ", ".join(sorted(unknown))})
-            except ValidationError:
-                raise
-            except Exception:
-                import logging
-                logging.getLogger(__name__).exception(
-                    "Could not parse bulk ticket upload %r", getattr(upload, "name", ""))
-                raise ValidationError({"file": "Could not read the uploaded file. "
-                                             "Expected a UTF-8 CSV or valid XLSX "
-                                             "workbook with a header row."})
-            rows_in = list(rows)
+            row_offset = 2
+
+            def _iter_input_rows():
+                return iter_uploaded_rows(
+                    upload, allowed_columns, max_file_bytes, max_rows,
+                    skip_empty_xlsx_rows=True,
+                    skip_empty_csv_rows=True,
+                    reject_duplicate_headers=True,
+                    strip_empty_xlsx_values=True)
+
+            request_fingerprint, row_count = _ticket_bulk_import_fingerprint(
+                _iter_input_rows(), upload=upload, return_count=True)
         else:
             rows_in = request.data.get("tickets", request.data.get("rows", []))
             if not isinstance(rows_in, list):
@@ -962,126 +942,147 @@ class TicketViewSet(viewsets.ModelViewSet):
                     {"detail": f"Too many rows in request body ({len(rows_in)}). "
                                f"Maximum is {max_json_rows}."},
                     status=400)
-            rows = list(rows_in)
             row_offset = 1
 
-        if not rows:
+            def _iter_input_rows():
+                return iter(rows_in)
+
+            request_fingerprint, row_count = _ticket_bulk_import_fingerprint(
+                rows_in, return_count=True)
+
+        if row_count == 0:
             return Response({"detail": "Provide 'tickets' or a non-empty "
                                        "uploaded file."}, status=400)
 
-        request_fingerprint = _ticket_bulk_import_fingerprint(rows_in, upload=upload)
-
-        # ---- request-scoped lookup caches (performance, correctness-preserving) ----
-        cat_ids, cat_names = set(), set()
-        dept_ids, dept_codes, dept_names = set(), set(), set()
-        asset_ids, asset_tags = set(), set()
-        assignee_ids, assignee_eids = set(), set()
-        for raw in rows_in:
-            if not isinstance(raw, dict):
-                continue
-            cat = raw.get("category")
-            if cat not in (None, "") and not isinstance(cat, bool):
-                if isinstance(cat, int) or (isinstance(cat, str) and str(cat).strip().isdigit()):
+        def _resolve_references(raw_rows, include_ids=True):
+            cat_ids, cat_names = set(), set()
+            dept_ids, dept_codes, dept_names = set(), set(), set()
+            asset_ids, asset_tags = set(), set()
+            assignee_ids, assignee_eids = set(), set()
+            for raw in raw_rows:
+                if not isinstance(raw, dict):
+                    continue
+                cat = raw.get("category")
+                if cat not in (None, "") and not isinstance(cat, bool):
                     try:
-                        cat_ids.add(int(cat))
-                    except Exception:
-                        pass
-                else:
-                    cat_names.add(str(cat).strip())
-            dept = (raw.get("department") or raw.get("department_code")
-                    or raw.get("department_name"))
-            if dept not in (None, ""):
-                if isinstance(dept, int) or (isinstance(dept, str) and str(dept).strip().isdigit()):
-                    try:
-                        dept_ids.add(int(dept))
-                    except Exception:
-                        pass
-                else:
-                    ds = str(dept).strip()
-                    dept_codes.add(ds)
-                    dept_names.add(ds)
-            asset = (raw.get("asset") or raw.get("asset_tag") or raw.get("asset_id"))
-            if asset not in (None, "") and _is_ticket_staff(user):
-                if isinstance(asset, int) or (isinstance(asset, str) and str(asset).strip().isdigit()):
-                    try:
-                        asset_ids.add(int(asset))
-                    except Exception:
-                        pass
-                else:
-                    asset_tags.add(str(asset).strip())
-            assignee = (raw.get("assignee") or raw.get("assignee_employee_id")
-                        or raw.get("employee_id"))
-            if assignee not in (None, ""):
-                if isinstance(assignee, int) or (isinstance(assignee, str) and str(assignee).strip().isdigit()):
-                    try:
-                        assignee_ids.add(int(assignee))
-                    except Exception:
-                        pass
-                else:
-                    assignee_eids.add(str(assignee).strip())
+                        category_id = int(cat)
+                    except (TypeError, ValueError, OverflowError):
+                        cat_names.add(str(cat).strip())
+                    else:
+                        if include_ids:
+                            cat_ids.add(category_id)
+                dept = (raw.get("department") or raw.get("department_code")
+                        or raw.get("department_name"))
+                if dept not in (None, ""):
+                    if (isinstance(dept, int)
+                            or isinstance(dept, str)
+                            and str(dept).strip().isdigit()):
+                        if include_ids:
+                            dept_ids.add(int(dept))
+                    else:
+                        department_value = str(dept).strip()
+                        dept_codes.add(department_value)
+                        dept_names.add(department_value)
+                asset = (raw.get("asset") or raw.get("asset_tag")
+                         or raw.get("asset_id"))
+                if asset not in (None, "") and _is_ticket_staff(user):
+                    if (isinstance(asset, int)
+                            or isinstance(asset, str)
+                            and str(asset).strip().isdigit()):
+                        if include_ids:
+                            asset_ids.add(int(asset))
+                    else:
+                        asset_tags.add(str(asset).strip())
+                assignee = (raw.get("assignee")
+                            or raw.get("assignee_employee_id")
+                            or raw.get("employee_id"))
+                if assignee not in (None, ""):
+                    if (isinstance(assignee, int)
+                            or isinstance(assignee, str)
+                            and str(assignee).strip().isdigit()):
+                        if include_ids:
+                            assignee_ids.add(int(assignee))
+                    else:
+                        assignee_eids.add(str(assignee).strip())
 
-        cat_by_id = {}
-        cat_by_name = {}
-        if cat_ids or cat_names:
             from django.db.models import Q
-            q = Q()
-            if cat_ids:
-                q |= Q(pk__in=cat_ids)
-            if cat_names:
-                q |= Q(name__in=cat_names)
-            for c in TicketCategory.objects.filter(q):
-                cat_by_id[c.pk] = c
-                cat_by_name[c.name] = c
-                cat_by_name[str(c.name).strip()] = c
 
-        dept_by_id = {}
-        dept_by_code = {}
-        dept_by_name = {}
-        if dept_ids or dept_codes or dept_names:
-            from django.db.models import Q
-            q = Q()
-            if dept_ids:
-                q |= Q(pk__in=dept_ids)
-            if dept_codes:
-                q |= Q(code__in=dept_codes)
-            if dept_names:
-                q |= Q(name__in=dept_names)
-            for d in Department.objects.filter(q):
-                dept_by_id[d.pk] = d
-                if d.code:
-                    dept_by_code[d.code] = d
-                if d.name:
-                    dept_by_name[d.name] = d
+            category_by_id = {}
+            category_by_name = {}
+            if cat_ids or cat_names:
+                query = Q()
+                if cat_ids:
+                    query |= Q(pk__in=cat_ids)
+                if cat_names:
+                    query |= Q(name__in=cat_names)
+                for category in TicketCategory.objects.filter(query):
+                    category_by_id[category.pk] = category
+                    category_by_name[category.name] = category
+                    category_by_name[str(category.name).strip()] = category
 
-        asset_by_id = {}
-        asset_by_tag = {}
-        if asset_ids or asset_tags:
-            from django.db.models import Q
-            q = Q()
-            if asset_ids:
-                q |= Q(pk__in=asset_ids)
-            if asset_tags:
-                q |= Q(asset_tag__in=asset_tags)
-            for a in Asset.objects.filter(q):
-                asset_by_id[a.pk] = a
-                if a.asset_tag:
-                    asset_by_tag[a.asset_tag] = a
+            department_by_id = {}
+            department_by_code = {}
+            department_by_name = {}
+            if dept_ids or dept_codes or dept_names:
+                query = Q()
+                if dept_ids:
+                    query |= Q(pk__in=dept_ids)
+                if dept_codes:
+                    query |= Q(code__in=dept_codes)
+                if dept_names:
+                    query |= Q(name__in=dept_names)
+                for department in Department.objects.filter(query):
+                    department_by_id[department.pk] = department
+                    if department.code:
+                        department_by_code[department.code] = department
+                    if department.name:
+                        department_by_name[department.name] = department
 
-        user_by_id = {}
-        user_by_eid = {}
-        if assignee_ids or assignee_eids:
-            from django.db.models import Q
-            q = Q()
-            if assignee_ids:
-                q |= Q(pk__in=assignee_ids)
-            if assignee_eids:
-                q |= Q(employee_id__in=assignee_eids)
-            for u in User.objects.filter(q):
-                user_by_id[u.pk] = u
-                if u.employee_id:
-                    user_by_eid[u.employee_id] = u
+            asset_by_id = {}
+            asset_by_tag = {}
+            if asset_ids or asset_tags:
+                query = Q()
+                if asset_ids:
+                    query |= Q(pk__in=asset_ids)
+                if asset_tags:
+                    query |= Q(asset_tag__in=asset_tags)
+                for asset in Asset.objects.filter(query):
+                    asset_by_id[asset.pk] = asset
+                    if asset.asset_tag:
+                        asset_by_tag[asset.asset_tag] = asset
 
-        def _norm(raw):
+            user_by_id = {}
+            user_by_employee_id = {}
+            if assignee_ids or assignee_eids:
+                query = Q()
+                if assignee_ids:
+                    query |= Q(pk__in=assignee_ids)
+                if assignee_eids:
+                    query |= Q(employee_id__in=assignee_eids)
+                for assignee in User.objects.filter(query):
+                    user_by_id[assignee.pk] = assignee
+                    if assignee.employee_id:
+                        user_by_employee_id[assignee.employee_id] = assignee
+
+            return {
+                "category_by_id": category_by_id,
+                "category_by_name": category_by_name,
+                "department_by_id": department_by_id,
+                "department_by_code": department_by_code,
+                "department_by_name": department_by_name,
+                "asset_by_id": asset_by_id,
+                "asset_by_tag": asset_by_tag,
+                "user_by_id": user_by_id,
+                "user_by_employee_id": user_by_employee_id,
+                "related_objects": {
+                    "category": category_by_id,
+                    "department": department_by_id,
+                    "asset": asset_by_id,
+                    "assignee": user_by_id,
+                },
+            }
+
+        def _norm(raw, references):
             data = raw if isinstance(raw, dict) else {}
             out = {}
             title = data.get("title")
@@ -1100,11 +1101,11 @@ class TicketViewSet(viewsets.ModelViewSet):
                 else:
                     try:
                         cid = int(cat)
-                        tc = cat_by_id.get(cid)
+                        tc = references["category_by_id"].get(cid)
                         out["category"] = tc.pk if tc is not None else cid
                     except (TypeError, ValueError):
                         name = str(cat).strip()
-                        tc = cat_by_name.get(name)
+                        tc = references["category_by_name"].get(name)
                         out["category"] = tc.pk if tc is not None else name
             dept = (data.get("department")
                     or data.get("department_code")
@@ -1116,11 +1117,13 @@ class TicketViewSet(viewsets.ModelViewSet):
                         did = int(dept)
                     except Exception:
                         did = str(dept).strip()
-                    d = dept_by_id.get(did) if isinstance(did, int) else None
+                    d = (references["department_by_id"].get(did)
+                         if isinstance(did, int) else None)
                     out["department"] = d.pk if d is not None else did
                 else:
                     ds = str(dept).strip()
-                    d = dept_by_code.get(ds) or dept_by_name.get(ds)
+                    d = (references["department_by_code"].get(ds)
+                         or references["department_by_name"].get(ds))
                     out["department"] = d.pk if d is not None else ds
             reason = (data.get("on_behalf_reason")
                       or data.get("on_behalf"))
@@ -1138,11 +1141,12 @@ class TicketViewSet(viewsets.ModelViewSet):
                         aid = int(asset)
                     except Exception:
                         aid = str(asset).strip()
-                    a = asset_by_id.get(aid) if isinstance(aid, int) else None
+                    a = (references["asset_by_id"].get(aid)
+                         if isinstance(aid, int) else None)
                     out["asset"] = a.pk if a is not None else aid
                 else:
                     tag = str(asset).strip()
-                    a = asset_by_tag.get(tag)
+                    a = references["asset_by_tag"].get(tag)
                     out["asset"] = a.pk if a is not None else tag
             assignee = (data.get("assignee")
                         or data.get("assignee_employee_id")
@@ -1155,40 +1159,130 @@ class TicketViewSet(viewsets.ModelViewSet):
                         uid = int(assignee)
                     except Exception:
                         uid = str(assignee).strip()
-                    u = user_by_id.get(uid) if isinstance(uid, int) else None
+                    u = (references["user_by_id"].get(uid)
+                         if isinstance(uid, int) else None)
                     out["assignee"] = u.pk if u is not None else uid
                 else:
                     eid = str(assignee).strip()
-                    u = user_by_eid.get(eid)
+                    u = references["user_by_employee_id"].get(eid)
                     out["assignee"] = u.pk if u is not None else eid
             return out
 
-        rows = [_norm(r) for r in rows]
-        if not rows:
-            return Response({"detail": "Provide 'tickets' or a non-empty "
-                                       "uploaded file."}, status=400)
+        def _iter_normalized_rows(include_ids=True):
+            for batch in batches(_iter_input_rows()):
+                references = _resolve_references(
+                    batch, include_ids=include_ids)
+                related_objects = references["related_objects"]
+                for original in batch:
+                    yield original, _norm(original, references), related_objects
+                # Release references to free memory after each batch
+                references.clear()
+                related_objects.clear()
 
-        def _row_errors(data):
-            """Dry-run validation mirroring perform_create guards."""
-            ser = TicketSerializer(data=data)
-            if not ser.is_valid():
-                return ser.errors
-            vd = ser.validated_data
+        def _iter_normalized_batches(include_ids=True):
+            """Yield bounded normalized batches for confirmation."""
+            start_index = 0
+            for batch in batches(_iter_input_rows()):
+                references = _resolve_references(
+                    batch, include_ids=include_ids)
+                normalized = [
+                    (original, _norm(original, references), references)
+                    for original in batch
+                ]
+                yield start_index, normalized
+                start_index += len(normalized)
+                references.clear()
+
+        def _lock_reference_batch(normalized_batch):
+            """Lock the unique references used by one bounded batch once."""
+            category_ids, department_ids, asset_ids, assignee_ids = (
+                set(), set(), set(), set())
+            for _original, data, _references in normalized_batch:
+                category = data.get("category")
+                department = data.get("department")
+                asset = data.get("asset")
+                assignee = data.get("assignee")
+                if isinstance(category, int):
+                    category_ids.add(category)
+                if isinstance(department, int):
+                    department_ids.add(department)
+                elif department in (None, ""):
+                    home_department_id = getattr(
+                        user, "home_department_id", None)
+                    if isinstance(home_department_id, int):
+                        department_ids.add(home_department_id)
+                if isinstance(asset, int):
+                    asset_ids.add(asset)
+                if isinstance(assignee, int):
+                    assignee_ids.add(assignee)
+
+            return {
+                "category": TicketCategory._default_manager.select_for_update(
+                ).filter(pk__in=category_ids).in_bulk()
+                if category_ids else {},
+                "department": Department._default_manager.select_for_update(
+                ).filter(pk__in=department_ids).in_bulk()
+                if department_ids else {},
+                "asset": Asset._default_manager.select_for_update(
+                ).filter(pk__in=asset_ids).in_bulk()
+                if asset_ids else {},
+                "assignee": User._default_manager.select_for_update(
+                ).filter(pk__in=assignee_ids).in_bulk()
+                if assignee_ids else {},
+            }
+
+        def _validate_row(data, related_objects):
+            """Validate once and retain the serializer for confirmation."""
+            serializer = TicketBulkImportSerializer(
+                data=data, context={"bulk_related_objects": related_objects})
+            if not serializer.is_valid():
+                return serializer.errors, None
+            vd = serializer.validated_data
             if (not _is_ticket_staff(user)
                     and vd.get("assignee") is not None):
-                return {"assignee": "Only IT staff can assign tickets."}
+                return {"assignee": "Only IT staff can assign tickets."}, None
             # Employees cannot assign assets via bulk creation either.
             if (not _is_ticket_staff(user)
                     and vd.get("asset") is not None):
-                return {"asset": "Only IT staff can assign assets to tickets."}
+                return {"asset": "Only IT staff can assign assets to tickets."}, None
             target = vd.get("department") or getattr(
                 user, "home_department", None)
             if (target and getattr(user, "home_department_id", None)
                     and target.pk != user.home_department_id
                     and not vd.get("on_behalf_reason")):
-                return {"on_behalf_reason":
-                        "Required when filing for another department."}
-            return None
+                return ({"on_behalf_reason":
+                         "Required when filing for another department."},
+                        None)
+            return None, serializer
+
+        def _lock_row_references(data):
+            """Load current reference state under the row's transaction lock."""
+            department = data.get("department")
+            if department in (None, ""):
+                department = getattr(user, "home_department_id", None)
+            references = (
+                ("category", TicketCategory),
+                ("department", Department),
+                ("asset", Asset),
+                ("assignee", User),
+            )
+            locked = {}
+            for field, model in references:
+                value = department if field == "department" else data.get(field)
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, int):
+                    pk = value
+                elif isinstance(value, str) and value.strip().isdigit():
+                    pk = int(value.strip())
+                else:
+                    continue
+                locked[field] = (
+                    model._default_manager.select_for_update()
+                    .filter(pk=pk)
+                    .in_bulk()
+                )
+            return locked
 
         operation = None
         if import_token:
@@ -1221,22 +1315,20 @@ class TicketViewSet(viewsets.ModelViewSet):
 
         if preview_flag:
             preview, invalid = [], []
-            for i, raw in enumerate(rows, start=row_offset):
+            for idx, (orig, raw, related_objects) in enumerate(
+                    _iter_normalized_rows()):
+                i = idx + row_offset
                 data = raw if isinstance(raw, dict) else {}
-                errors = _row_errors(data)
-                # Check original rows_in data for asset assignment from non-staff.
-                # raw is normalized ( _norm() may have stripped asset), so check rows_in.
-                idx = i - row_offset  # 0-based index into rows_in
-                if 0 <= idx < len(rows_in):
-                    orig = rows_in[idx]
-                    if (not _is_ticket_staff(user)
-                            and isinstance(orig, dict)
-                            and (orig.get("asset") not in (None, "")
-                                 or orig.get("asset_tag") not in (None, "")
-                                 or orig.get("asset_id") not in (None, ""))):
-                        if errors is None:
-                            errors = {}
-                        errors["asset"] = "Only IT staff can assign assets to tickets."
+                errors, _ = _validate_row(data, related_objects)
+                # Check the original row because normalization omits employee assets.
+                if (not _is_ticket_staff(user)
+                        and isinstance(orig, dict)
+                        and (orig.get("asset") not in (None, "")
+                             or orig.get("asset_tag") not in (None, "")
+                             or orig.get("asset_id") not in (None, ""))):
+                    if errors is None:
+                        errors = {}
+                    errors["asset"] = "Only IT staff can assign assets to tickets."
                 entry = {"row": i, "valid": errors is None,
                          "title": data.get("title", ""),
                          "errors": errors or {}}
@@ -1324,7 +1416,7 @@ class TicketViewSet(viewsets.ModelViewSet):
                 locked.status = TicketBulkImportOperation.STATUS_PROCESSING
                 locked.started_at = timezone.now()
                 locked.error_detail = ""
-                locked.total_rows = len(rows)
+                locked.total_rows = row_count
                 locked.processed_count = 0
                 locked.successful_count = 0
                 locked.failed_count = 0
@@ -1359,7 +1451,7 @@ class TicketViewSet(viewsets.ModelViewSet):
             try:
                 TicketBulkImportOperation.objects.filter(
                     pk=operation.pk, user=user).update(
-                    total_rows=len(rows),
+                    total_rows=row_count,
                     processed_count=len(ok) + len(failed) + len(skipped),
                     successful_count=len(ok),
                     failed_count=len(failed),
@@ -1370,159 +1462,153 @@ class TicketViewSet(viewsets.ModelViewSet):
                 pass
 
         try:
-            for i, raw in enumerate(rows, start=row_offset):
-                data = raw if isinstance(raw, dict) else {}
-                errors = _row_errors(data)
-                # Enforce the same row-level permission checks as preview.
-                # Confirmation must never accept a row that preview would reject
-                # or silently transform (e.g. employee asset assignment is stripped
-                # by normalization but must be rejected, not dropped).
-                idx = i - row_offset
-                if 0 <= idx < len(rows_in):
-                    orig = rows_in[idx]
-                    if (not _is_ticket_staff(user)
-                            and isinstance(orig, dict)
-                            and (orig.get("asset") not in (None, "")
-                                 or orig.get("asset_tag") not in (None, "")
-                                 or orig.get("asset_id") not in (None, ""))):
-                        if errors is None:
-                            errors = {}
-                        errors["asset"] = "Only IT staff can assign assets to tickets."
-                if errors:
-                    failed.append({"row": i, "errors": errors})
-                    if operation is not None:
-                        _record_ticket_bulk_import_row_failure(
-                            operation, idx, i, data, errors)
-                    _persist_operation_progress()
-                    continue
-                try:
-                    with transaction.atomic():
-                        ser = TicketSerializer(data=data)
-                        ser.is_valid(raise_exception=True)
-                        vd = ser.validated_data
-                        if vd.get("department") is None and getattr(
-                                user, "home_department_id", None):
-                            vd["department_id"] = user.home_department_id
-                        obj = ser.save(requester=user)
-                        # Compute SLA due date from active priority target, same
-                        # as single-ticket creation (missing/inactive config leaves
-                        # sla_due_at unset).
-                        sla = _sla_for(obj.priority)
-                        if sla:
-                            obj.sla_due_at = timezone.now() + timedelta(
-                                hours=sla.target_resolution_hours)
-                            obj.save(update_fields=["sla_due_at"])
-                        _write_history(obj, user, "created",
-                                       new={"status": "open"})
-                        log_action(actor=user, action="create", instance=obj)
-                        # Evaluate ticket_created automation rules inline so rule
-                        # mutations/executions share this row's transaction.
-                        from workflow.services import run_rules
-                        run_rules("ticket_created", obj)
-                        _notify_user(
-                            obj.assignee, user,
-                            f"Ticket #{obj.pk} assigned to you",
-                            f"{obj.title}\nPriority: {obj.priority}", obj)
-                        # Phase 66: enqueue durable create/assignment emails in
-                        # THIS row transaction (atomic with the ticket). The
-                        # per-row enqueue uses current values, so there is no
-                        # loop-variable capture hazard.
-                        from common.outbox import enqueue_email
-                        from accounts.email_utils import ticket_links as _tl
-                        ticket_pk = obj.pk
-                        ticket_title = obj.title
-                        ticket_status = obj.status
-                        ticket_priority = obj.priority
-                        ticket_asset_id = obj.asset_id
-                        requester_email = getattr(user, "email", "")
-                        requester_wants = _wants_ticket_email(user)
-                        assignee = obj.assignee
-                        assignee_email = (getattr(assignee, "email", "")
-                                          if assignee else "")
-                        assignee_wants = bool(
-                            assignee and assignee_email
-                            and _wants_ticket_email(
-                                assignee,
-                                category=TICKET_ASSIGNMENT_CATEGORY))
-                        if requester_wants and requester_email:
-                            _fe, _ = _tl(ticket_pk)
-                            enqueue_email(
-                                event_type="ticket.email.created",
-                                to_email=requester_email,
-                                subject=(f"Ticket #{ticket_pk} created: "
-                                         f"{ticket_title}"),
-                                body=(f"Your ticket was created.\n"
-                                      f"Status: {ticket_status}\nView: {_fe}"),
-                                recipient=user, category="", ticket_id=ticket_pk)
-                        if assignee_wants:
-                            _fe, _ = _tl(ticket_pk)
-                            enqueue_email(
-                                event_type="ticket.email.assigned",
-                                to_email=assignee_email,
-                                subject=f"Ticket #{ticket_pk} assigned to you",
-                                body=(f"{ticket_title}\nPriority: "
-                                      f"{ticket_priority}\nView: {_fe}"),
-                                recipient=assignee,
-                                category=TICKET_ASSIGNMENT_CATEGORY,
-                                ticket_id=ticket_pk)
-                        # Durable row-level outcome: must commit atomically with the
-                        # ticket and required transactional writes for tokenized ops.
+            email_preference_cache = {}
+            automation_rule_cache = {}
+            idx = -1
+            for batch_start, normalized_batch in _iter_normalized_batches(
+                    include_ids=True):
+                for batch_idx, (orig, raw, _related_objects) in enumerate(
+                        normalized_batch):
+                    idx = batch_start + batch_idx
+                    i = idx + row_offset
+                    data = raw if isinstance(raw, dict) else {}
+                    try:
+                        with transaction.atomic():
+                            current_references = _lock_row_references(data)
+                            errors, serializer = _validate_row(
+                                data, current_references)
+                            if (not _is_ticket_staff(user)
+                                    and isinstance(orig, dict)
+                                    and (orig.get("asset") not in (None, "")
+                                         or orig.get("asset_tag") not in (None, "")
+                                         or orig.get("asset_id") not in (None, ""))):
+                                if errors is None:
+                                    errors = {}
+                                errors["asset"] = (
+                                    "Only IT staff can assign assets to tickets.")
+                            if errors:
+                                failed.append({"row": i, "errors": errors})
+                                if operation is not None:
+                                    _record_ticket_bulk_import_row_failure(
+                                        operation, idx, i, data, errors)
+                                _persist_operation_progress()
+                                continue
+                            vd = serializer.validated_data
+                            if vd.get("department") is None and getattr(
+                                    user, "home_department_id", None):
+                                vd["department_id"] = user.home_department_id
+                            obj = serializer.save(requester=user)
+                            sla = _sla_for(obj.priority)
+                            if sla:
+                                obj.sla_due_at = timezone.now() + timedelta(
+                                    hours=sla.target_resolution_hours)
+                                obj.save(update_fields=["sla_due_at"])
+                            _write_history(obj, user, "created",
+                                           new={"status": "open"})
+                            log_action(actor=user, action="create", instance=obj)
+                            from workflow.services import run_rules
+                            run_rules(
+                                "ticket_created", obj,
+                                enabled_rules_cache=automation_rule_cache)
+                            _notify_user(
+                                obj.assignee, user,
+                                f"Ticket #{obj.pk} assigned to you",
+                                f"{obj.title}\nPriority: {obj.priority}", obj)
+                            from common.outbox import enqueue_email
+                            from accounts.email_utils import ticket_links as _tl
+                            ticket_pk = obj.pk
+                            ticket_title = obj.title
+                            ticket_status = obj.status
+                            ticket_priority = obj.priority
+                            ticket_asset_id = obj.asset_id
+                            requester_email = getattr(user, "email", "")
+                            requester_wants = _wants_ticket_email(
+                                user, preference_cache=email_preference_cache)
+                            assignee = obj.assignee
+                            assignee_email = (getattr(assignee, "email", "")
+                                              if assignee else "")
+                            assignee_wants = bool(
+                                assignee and assignee_email
+                                and _wants_ticket_email(
+                                    assignee,
+                                    category=TICKET_ASSIGNMENT_CATEGORY,
+                                    preference_cache=email_preference_cache))
+                            if requester_wants and requester_email:
+                                _fe, _ = _tl(ticket_pk)
+                                enqueue_email(
+                                    event_type="ticket.email.created",
+                                    to_email=requester_email,
+                                    subject=(f"Ticket #{ticket_pk} created: "
+                                             f"{ticket_title}"),
+                                    body=(f"Your ticket was created.\n"
+                                          f"Status: {ticket_status}\nView: {_fe}"),
+                                    recipient=user, category="", ticket_id=ticket_pk)
+                            if assignee_wants:
+                                _fe, _ = _tl(ticket_pk)
+                                enqueue_email(
+                                    event_type="ticket.email.assigned",
+                                    to_email=assignee_email,
+                                    subject=f"Ticket #{ticket_pk} assigned to you",
+                                    body=(f"{ticket_title}\nPriority: "
+                                          f"{ticket_priority}\nView: {_fe}"),
+                                    recipient=assignee,
+                                    category=TICKET_ASSIGNMENT_CATEGORY,
+                                    ticket_id=ticket_pk)
+                            if operation is not None:
+                                TicketBulkImportRowOutcome.objects.create(
+                                    operation=operation,
+                                    row_index=idx,
+                                    row_number=i,
+                                    row_fingerprint=_ticket_bulk_import_row_fingerprint(data),
+                                    outcome=TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED,
+                                    ticket=obj,
+                                    error_message="",
+                                )
+                            def _send_bulk_followups(
+                                _ticket=obj, _asset_id=ticket_asset_id,
+                                _req_wants=requester_wants,
+                                _assignee_wants=assignee_wants,
+                                _maint_cache=maint_cache,
+                                _sla=sla,
+                            ):
+                                try:
+                                    ticket = _ticket
+                                    if ticket is None:
+                                        return
+                                    if _req_wants:
+                                        if _sla:
+                                            _notify_sla_approaching(ticket)
+                                            _notify_sla_breached(ticket)
+                                        if _asset_id:
+                                            from assets.models import Maintenance
+                                            if _asset_id not in _maint_cache:
+                                                _maint_cache[_asset_id] = Maintenance.objects.filter(
+                                                    asset=_asset_id).first()
+                                            maint = _maint_cache[_asset_id]
+                                            if maint:
+                                                _notify_maintenance_reminder(maint)
+                                    if _assignee_wants:
+                                        if _sla:
+                                            _notify_sla_approaching(ticket)
+                                            _notify_sla_breached(ticket)
+                                        if _asset_id:
+                                            from assets.models import Maintenance
+                                            if _asset_id not in _maint_cache:
+                                                _maint_cache[_asset_id] = Maintenance.objects.filter(
+                                                    asset=_asset_id).first()
+                                            maint = _maint_cache[_asset_id]
+                                            if maint:
+                                                _notify_maintenance_reminder(maint)
+                                except Exception:
+                                    pass
+                            transaction.on_commit(_send_bulk_followups)
+                            ok.append({"row": i, "id": obj.pk, "title": obj.title})
+                    except Exception as exc:
+                        failed.append({"row": i, "errors": str(exc)})
                         if operation is not None:
-                            TicketBulkImportRowOutcome.objects.create(
-                                operation=operation,
-                                row_index=idx,
-                                row_number=i,
-                                row_fingerprint=_ticket_bulk_import_row_fingerprint(data),
-                                outcome=TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED,
-                                ticket=obj,
-                                error_message="",
-                            )
-                    # SLA / maintenance follow-ups after the row commit (the
-                    # primary create/assignment emails were already enqueued
-                    # durably inside the row transaction above).
-                    def _send_bulk_followups(
-                        _pk=ticket_pk, _asset_id=ticket_asset_id,
-                        _req_wants=requester_wants,
-                        _assignee_wants=assignee_wants,
-                        _maint_cache=maint_cache,
-                    ):
-                        try:
-                            ticket = Ticket.objects.filter(pk=_pk).first()
-                            if ticket is None:
-                                return
-                            if _req_wants:
-                                _notify_sla_approaching(ticket)
-                                _notify_sla_breached(ticket)
-                                if _asset_id:
-                                    from assets.models import Maintenance
-                                    if _asset_id not in _maint_cache:
-                                        _maint_cache[_asset_id] = Maintenance.objects.filter(
-                                            asset=_asset_id).first()
-                                    maint = _maint_cache[_asset_id]
-                                    if maint:
-                                        _notify_maintenance_reminder(maint)
-                            if _assignee_wants:
-                                _notify_sla_approaching(ticket)
-                                _notify_sla_breached(ticket)
-                                if _asset_id:
-                                    from assets.models import Maintenance
-                                    if _asset_id not in _maint_cache:
-                                        _maint_cache[_asset_id] = Maintenance.objects.filter(
-                                            asset=_asset_id).first()
-                                    maint = _maint_cache[_asset_id]
-                                    if maint:
-                                        _notify_maintenance_reminder(maint)
-                        except Exception:
-                            pass
-
-                    transaction.on_commit(_send_bulk_followups)
-                    ok.append({"row": i, "id": obj.pk, "title": obj.title})
-                except Exception as exc:
-                    failed.append({"row": i, "errors": str(exc)})
-                    if operation is not None:
-                        _record_ticket_bulk_import_row_failure(
-                            operation, idx, i, data, exc)
-                _persist_operation_progress()
+                            _record_ticket_bulk_import_row_failure(
+                                operation, idx, i, data, exc)
+                    _persist_operation_progress()
         except Exception as exc:
             # Unexpected failure during processing/finalization; record as failed
             # operation so a retry does not blindly duplicate work. Manual review
@@ -1531,7 +1617,7 @@ class TicketViewSet(viewsets.ModelViewSet):
                 try:
                     now = timezone.now()
                     counts = {
-                        "total_rows": len(rows),
+                        "total_rows": row_count,
                         "processed_count": len(ok) + len(failed) + len(skipped),
                         "successful_count": len(ok),
                         "failed_count": len(failed),
@@ -1562,7 +1648,7 @@ class TicketViewSet(viewsets.ModelViewSet):
         # Build and persist the final response (after durable per-row outcomes).
         if request.query_params.get("download") == "csv":
             import csv as _csv
-            report_rows = _ticket_report_rows(rows, ok, failed)
+            report_rows = _ticket_report_rows(ok, failed)
             out = io.StringIO()
             writer = _csv.writer(out)
             writer.writerow(["row", "key", "outcome", "message"])
@@ -1578,7 +1664,7 @@ class TicketViewSet(viewsets.ModelViewSet):
                     result_csv=csv_body,
                     result_json=None,
                     result_status_code=200,
-                    total_rows=len(rows),
+                    total_rows=row_count,
                     processed_count=len(ok) + len(failed) + len(skipped),
                     successful_count=len(ok),
                     failed_count=len(failed),
@@ -1603,7 +1689,7 @@ class TicketViewSet(viewsets.ModelViewSet):
                 result_json=payload,
                 result_csv="",
                 result_status_code=200,
-                total_rows=len(rows),
+                total_rows=row_count,
                 processed_count=len(ok) + len(failed) + len(skipped),
                 successful_count=len(ok),
                 failed_count=len(failed),

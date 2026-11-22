@@ -186,6 +186,15 @@ class Asset(SoftDeleteModel):
         self.full_clean()
         return super().save(*args, **kwargs)
 
+    def save_from_import(self, *args, **kwargs):
+        """Save after batch-resolving import references and duplicate keys."""
+        self.full_clean(
+            exclude={"category", "department"},
+            validate_unique=False,
+            validate_constraints=False,
+        )
+        return super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.asset_tag} - {self.name}"
 

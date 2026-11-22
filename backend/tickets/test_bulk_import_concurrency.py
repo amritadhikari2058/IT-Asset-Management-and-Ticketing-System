@@ -281,6 +281,158 @@ class TicketBulkImportPostgresConcurrencyTests(TransactionTestCase):
         for resp in ok_responses:
             self.assertEqual([s["id"] for s in resp["data"].get("successful", [])], db_ids, resp)
 
+    def test_related_reference_updates_wait_for_confirmation_row_commit(self):
+        """A concurrent deactivation/deletion cannot race row validation."""
+        from accounts.models import Department, User
+        from assets.models import Asset, AssetCategory
+        from tickets.serializers import TicketBulkImportSerializer
+
+        asset_category = AssetCategory.objects.create(
+            name="PG import concurrency hardware")
+        asset = Asset.objects.create(
+            asset_tag="PG-IMPORT-LOCK-1", name="PG import asset",
+            category=asset_category, department=self.dep)
+        row = self._row(
+            title="pg-reference-lock",
+            asset_tag=asset.asset_tag,
+            assignee_employee_id=self.emp.employee_id)
+
+        update_attempted = {
+            "category": threading.Event(),
+            "department": threading.Event(),
+            "asset": threading.Event(),
+            "assignee": threading.Event(),
+        }
+        update_finished = {key: threading.Event() for key in update_attempted}
+        update_errors = []
+        updates = {
+            "category": (
+                TicketCategory, self.tcat.pk, {"is_active": False}),
+            "department": (
+                Department, self.dep.pk, {"is_deleted": True}),
+            "asset": (Asset, asset.pk, {"is_deleted": True}),
+            "assignee": (User, self.emp.pk, {"is_active": False}),
+        }
+
+        def mutate_reference(name, model, pk, values):
+            close_old_connections()
+            try:
+                update_attempted[name].set()
+                model.objects.filter(pk=pk).update(**values)
+            except Exception as exc:
+                update_errors.append(exc)
+            finally:
+                update_finished[name].set()
+                connections.close_all()
+
+        workers = [
+            threading.Thread(
+                target=mutate_reference, args=(name, model, pk, values))
+            for name, (model, pk, values) in updates.items()
+        ]
+        original_is_valid = TicketBulkImportSerializer.is_valid
+        updates_started = [False]
+
+        def start_updates(serializer, *args, **kwargs):
+            if not updates_started[0]:
+                updates_started[0] = True
+                for worker in workers:
+                    worker.start()
+                for event in update_attempted.values():
+                    self.assertTrue(event.wait(timeout=10))
+                for name, event in update_finished.items():
+                    self.assertFalse(
+                        event.wait(timeout=0.5),
+                        f"{name} changed before the row transaction committed")
+            return original_is_valid(serializer, *args, **kwargs)
+
+        client = APIClient()
+        auth(client, self.mgr)
+        with unittest.mock.patch.object(
+                TicketBulkImportSerializer, "is_valid", start_updates):
+            response = client.post(
+                "/api/tickets/bulk_create/",
+                self._payload([row], "pg-reference-lock"),
+                format="json")
+
+        for worker in workers:
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(update_errors, [])
+        self.assertTrue(all(event.is_set() for event in update_finished.values()))
+        self.assertEqual(response.status_code, 200, getattr(response, "data", response))
+        self.assertEqual(
+            response.data["summary"], {"ok": 1, "skipped": 0, "failed": 0})
+
+        ticket = Ticket.objects.get(title="pg-reference-lock")
+        self.assertEqual(ticket.category_id, self.tcat.pk)
+        self.assertEqual(ticket.department_id, self.dep.pk)
+        self.assertEqual(ticket.asset_id, asset.pk)
+        self.assertEqual(ticket.assignee_id, self.emp.pk)
+        for model, pk, _values in updates.values():
+            manager = getattr(model, "all_objects", model.objects)
+            instance = manager.get(pk=pk)
+            if model is TicketCategory:
+                self.assertFalse(instance.is_active)
+            elif model is User:
+                self.assertFalse(instance.is_active)
+            else:
+                self.assertTrue(instance.is_deleted)
+
+    def test_category_deactivated_after_batch_resolution_is_revalidated(self):
+        """A change between cached resolution and the row lock is observed."""
+        from django.db.models.query import QuerySet
+
+        client = APIClient()
+        auth(client, self.mgr)
+        row = self._row(title="pg-category-revalidation")
+        update_attempted = threading.Event()
+        update_finished = threading.Event()
+        update_error = [None]
+
+        def deactivate_category():
+            close_old_connections()
+            try:
+                update_attempted.set()
+                TicketCategory.objects.filter(pk=self.tcat.pk).update(
+                    is_active=False)
+            except Exception as exc:
+                update_error[0] = exc
+            finally:
+                update_finished.set()
+                connections.close_all()
+
+        worker = threading.Thread(target=deactivate_category)
+        original_select_for_update = QuerySet.select_for_update
+        mutation_started = [False]
+
+        def update_before_category_lock(queryset, *args, **kwargs):
+            if (queryset.model is TicketCategory
+                    and not mutation_started[0]):
+                mutation_started[0] = True
+                worker.start()
+                self.assertTrue(update_attempted.wait(timeout=10))
+                self.assertTrue(update_finished.wait(timeout=10))
+            return original_select_for_update(queryset, *args, **kwargs)
+
+        with unittest.mock.patch.object(
+                QuerySet, "select_for_update", update_before_category_lock):
+            response = client.post(
+                "/api/tickets/bulk_create/",
+                self._payload([row], "pg-category-revalidation"),
+                format="json")
+
+        worker.join(timeout=10)
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(update_error[0])
+        self.assertEqual(response.status_code, 200, getattr(response, "data", response))
+        self.assertEqual(
+            response.data["summary"], {"ok": 0, "skipped": 0, "failed": 1})
+        self.assertFalse(Ticket.objects.filter(
+            title="pg-category-revalidation").exists())
+        self.tcat.refresh_from_db()
+        self.assertFalse(self.tcat.is_active)
+
     def test_concurrent_inspection_sees_only_committed_row_outcomes(self):
         """Read-only reconciliation must not report uncommitted row outcomes."""
         from tickets.models import TicketBulkImportRowOutcome
@@ -772,7 +924,7 @@ class TicketBulkImportReconciliationPostgresConcurrencyTests(TransactionTestCase
         prev = self._preview(op)
         self.assertTrue(prev["eligible_for_finalization"])
         ticket = Ticket.objects.get(title="pg-setnull-1")
-        ticket.delete()  # SET_NULL on TicketBulkImportRowOutcome.ticket
+        ticket.hard_delete()  # SET_NULL on TicketBulkImportRowOutcome.ticket
         outcome = TicketBulkImportRowOutcome.objects.get(operation=op, row_index=0)
         self.assertIsNone(outcome.ticket_id)
         after = self._preview(op)

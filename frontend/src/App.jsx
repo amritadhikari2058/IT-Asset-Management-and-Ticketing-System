@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { lazy, Suspense, useMemo, useState } from 'react';
 import { HashRouter, useLocation } from 'react-router-dom';
 import { useAuth, AuthProvider } from './auth';
 import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, SLAConfig, SLAReport, Tickets, Users, VerifyEmail } from './pages';
@@ -12,19 +12,20 @@ import { AuditLogPage } from './audit';
 import { VendorForm, VendorsPage, VendorDetail } from './vendors';
 import { TicketForm, TicketDetail } from './tickets';
 import { ChangesPage } from './changes';
-import CmdbDashboard from './cmdb-dashboard';
-import { CmdbItemsList } from './cmdb-items';
-import { CiForm } from './cmdb-item-form';
-import { CiDetail } from './cmdb-item-detail';
-import { CiRelationshipsPage } from './cmdb-relationships';
-import { BaselinesPage } from './cmdb-baselines';
-import { DriftFindingsPage } from './cmdb-drift';
-import { VerificationQueuePage } from './cmdb-verification';
-import { ImpactAnalysisPage } from './cmdb-impact';
-import { DependencyMap } from './cmdb-dependency-map';
-import { CmdbReports } from './cmdb-reports';
-import { CiTypesPage } from './cmdb-types';
-import { ServiceMappingPage } from './cmdb-services';
+const lazyNamed = (load, name) => lazy(() => load().then((module) => ({ default: module[name] })));
+const CmdbDashboard = lazy(() => import('./cmdb-dashboard'));
+const CmdbItemsList = lazyNamed(() => import('./cmdb-items'), 'CmdbItemsList');
+const CiForm = lazyNamed(() => import('./cmdb-item-form'), 'CiForm');
+const CiDetail = lazyNamed(() => import('./cmdb-item-detail'), 'CiDetail');
+const CiRelationshipsPage = lazyNamed(() => import('./cmdb-relationships'), 'CiRelationshipsPage');
+const BaselinesPage = lazyNamed(() => import('./cmdb-baselines'), 'BaselinesPage');
+const DriftFindingsPage = lazyNamed(() => import('./cmdb-drift'), 'DriftFindingsPage');
+const VerificationQueuePage = lazyNamed(() => import('./cmdb-verification'), 'VerificationQueuePage');
+const ImpactAnalysisPage = lazyNamed(() => import('./cmdb-impact'), 'ImpactAnalysisPage');
+const DependencyMap = lazyNamed(() => import('./cmdb-dependency-map'), 'DependencyMap');
+const CmdbReports = lazyNamed(() => import('./cmdb-reports'), 'CmdbReports');
+const CiTypesPage = lazyNamed(() => import('./cmdb-types'), 'CiTypesPage');
+const ServiceMappingPage = lazyNamed(() => import('./cmdb-services'), 'ServiceMappingPage');
 import { TicketQueuesPage } from './ticket-queues';
 import { TicketOperationsDashboard } from './ticket-operations';
 import { TicketBulkImportDetailPage, TicketBulkImportsPage } from './ticket-bulk-imports';
@@ -44,7 +45,7 @@ import { SavedReports } from './saved-reports';
 import { ScheduledReports } from './scheduled-reports';
 import { NotificationSettings } from './settings';
 import { Privacy } from './privacy';
-import { Monitoring } from './monitoring';
+const Monitoring = lazyNamed(() => import('./monitoring'), 'Monitoring');
 import { Retention } from './retention';
 import { Backup } from './backup';
 import { ServicesCatalogue, MyServiceRequests, ServiceRequestDetail } from './services';
@@ -55,15 +56,15 @@ import { ApprovalCenter } from './approvals';
 import {
   LifecycleDashboard, LifecycleCases, LifecycleForm, LifecycleDetail,
 } from './lifecycle';
-import { ProcurementRouter } from './procurement';
-import { LicensingRouter } from './licensing';
-import { ProblemList } from './components/problem-management/problem-list';
-import { ProblemDetail } from './components/problem-management/problem-detail';
-import { MonitoringOverview } from './features/monitoring/MonitoringOverview';
-import { SourceManagement } from './features/monitoring/SourceManagement';
-import { AlertList } from './features/monitoring/AlertList';
-import { AlertDetail } from './features/monitoring/AlertDetail';
-import { PolicyManagement } from './features/monitoring/PolicyManagement';
+const ProcurementRouter = lazyNamed(() => import('./procurement'), 'ProcurementRouter');
+const LicensingRouter = lazyNamed(() => import('./licensing'), 'LicensingRouter');
+const ProblemList = lazyNamed(() => import('./components/problem-management/problem-list'), 'ProblemList');
+const ProblemDetail = lazyNamed(() => import('./components/problem-management/problem-detail'), 'ProblemDetail');
+const MonitoringOverview = lazyNamed(() => import('./features/monitoring/MonitoringOverview'), 'MonitoringOverview');
+const SourceManagement = lazyNamed(() => import('./features/monitoring/SourceManagement'), 'SourceManagement');
+const AlertList = lazyNamed(() => import('./features/monitoring/AlertList'), 'AlertList');
+const AlertDetail = lazyNamed(() => import('./features/monitoring/AlertDetail'), 'AlertDetail');
+const PolicyManagement = lazyNamed(() => import('./features/monitoring/PolicyManagement'), 'PolicyManagement');
 
 const NAV = [
   { section: 'Overview' },
@@ -552,7 +553,11 @@ function Shell() {
             ))}
           </nav>
         </div>
-        <main className="content" id="main-content">{el}</main>
+        <main className="content" id="main-content">
+          <Suspense fallback={<p className="page-loading" role="status"><span className="spinner" aria-hidden="true" />Loading page…</p>}>
+            {el}
+          </Suspense>
+        </main>
       </div>
     </div>
   );

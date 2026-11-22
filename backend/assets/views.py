@@ -216,23 +216,13 @@ def _csv_report_response(filename, rows):
     return resp
 
 
-def _asset_report_rows(source_rows, ok, skipped, failed):
-    """Build CSV rows from a bulk_create confirmation result.
-
-    Success row numbers are recovered from the source rows (first
-    occurrence of each created tag); skips/failures already carry their
-    source row number. Keys are asset tags only — never full row data.
-    """
-    first_row = {}
-    for i, r in enumerate(source_rows, start=2):
-        t = str(r.get("asset_tag", "")).strip() if isinstance(r, dict) \
-            else ""
-        if t and t not in first_row:
-            first_row[t] = i
-    rows = []
-    for tag in ok:
-        rows.append({"row": first_row.get(tag, ""), "key": tag,
-                     "outcome": "successful", "message": "created"})
+def _asset_report_rows(ok, skipped, failed):
+    """Build CSV rows from per-row confirmation results."""
+    rows = [
+        {"row": item["row"], "key": item["asset_tag"],
+         "outcome": "successful", "message": "created"}
+        for item in ok
+    ]
     for entry in skipped:
         entry = entry if isinstance(entry, dict) else {}
         rows.append({"row": entry.get("row", ""),
@@ -256,6 +246,86 @@ def _asset_report_rows(source_rows, ok, skipped, failed):
     rows.sort(key=lambda d: (d["row"] if isinstance(d["row"], int)
                              else 10 ** 9))
     return rows
+
+
+ASSET_IMPORT_FIELDS = {
+    "asset_tag", "name", "category", "serial_number", "status",
+    "department", "location", "description", "purchase_date",
+    "warranty_expiry", "purchase_cost",
+}
+
+
+def _asset_import_batch_lookup(row_batch):
+    from accounts.models import Department
+
+    asset_tags, serials, category_names = set(), set(), set()
+    department_refs, department_ids = set(), set()
+    for _, row in row_batch:
+        if not isinstance(row, dict):
+            continue
+        tag = str(row.get("asset_tag", "")).strip()
+        serial = str(row.get("serial_number") or "").strip()
+        category = str(row.get("category") or "").strip()
+        if tag:
+            asset_tags.add(tag)
+        if serial:
+            serials.add(serial)
+        if category:
+            category_names.add(category)
+        department = row.get("department")
+        if department not in (None, ""):
+            department_refs.add(str(department))
+            try:
+                department_ids.add(int(department))
+            except (TypeError, ValueError):
+                pass
+
+    existing_tags, existing_serials = set(), set()
+    if asset_tags or serials:
+        query = Q()
+        if asset_tags:
+            query |= Q(asset_tag__in=asset_tags)
+        if serials:
+            query |= Q(serial_number__in=serials)
+        for tag, serial in Asset.all_objects.filter(query).values_list(
+                "asset_tag", "serial_number"):
+            if tag in asset_tags:
+                existing_tags.add(tag)
+            if serial in serials:
+                existing_serials.add(serial)
+
+    categories = {}
+    if category_names:
+        categories = {
+            category.name: category
+            for category in AssetCategory.objects.filter(
+                name__in=category_names)
+        }
+
+    departments_by_code, departments_by_name, departments_by_id = {}, {}, {}
+    department_query = Q()
+    if department_refs:
+        department_query |= Q(code__in=department_refs)
+        department_query |= Q(name__in=department_refs)
+    if department_ids:
+        department_query |= Q(pk__in=department_ids)
+    if department_refs or department_ids:
+        for department in Department.objects.filter(department_query):
+            departments_by_code[department.code] = department
+            departments_by_name[department.name] = department
+            departments_by_id[department.pk] = department
+
+    return (existing_tags, existing_serials, categories,
+            departments_by_code, departments_by_name, departments_by_id)
+
+
+def _iter_asset_import_rows(rows):
+    from common.import_stream import batches
+
+    for row_batch in batches(enumerate(rows, start=2)):
+        lookups = _asset_import_batch_lookup(row_batch)
+        for row_number, row in row_batch:
+            yield row_number, row, lookups
 
 
 class AssetCategoryViewSet(viewsets.ModelViewSet):
@@ -799,72 +869,41 @@ class AssetViewSet(viewsets.ModelViewSet):
 
     # ---------- bulk ----------
     def _parse(self, request):
-        """Parse an uploaded CSV/XLSX or fall back to JSON rows.
-
-        Every unreadable-file failure (bad encoding, corrupt/not-a-zip
-        workbook, empty file) is converted into a 400 with a clear field
-        error instead of a raw Django 500 page; the full exception goes
-        to the server log only.
-        """
+        """Return JSON rows or a bounded-memory iterator for CSV/XLSX."""
         upload = request.FILES.get("file")
+        from django.conf import settings
+        from common.import_stream import iter_uploaded_rows
+        max_rows = settings.ASSET_BULK_IMPORT_MAX_ROWS
         if not upload:
             rows = request.data.get("rows", [])
             if isinstance(rows, list) and rows:
-                allowed = {"asset_tag", "name", "description", "category",
-                           "serial_number", "status", "department", "location",
-                           "purchase_date", "warranty_expiry", "purchase_cost"}
                 unknown = set()
                 for r in rows:
                     if isinstance(r, dict):
-                        unknown |= set(r) - allowed
+                        unknown |= set(r) - ASSET_IMPORT_FIELDS
                 if unknown:
                     raise ValidationError(
                         {"file": "unknown columns: "
                                  + ", ".join(sorted(unknown))})
+                if len(rows) > max_rows:
+                    raise ValidationError({
+                        "file": f"Too many rows in request body. Maximum is "
+                                f"{max_rows}."})
             return rows
-        name = (upload.name or "").lower()
-        allowed = {"asset_tag", "name", "description", "category",
-                   "serial_number", "status", "department", "location",
-                   "purchase_date", "warranty_expiry", "purchase_cost"}
-        try:
-            if name.endswith((".xlsx", ".xlsm")):
-                wb = load_workbook(upload, read_only=True, data_only=True)
-                ws = wb.active
-                if ws is None:
-                    raise ValueError("workbook has no worksheets")
-                rows = list(ws.iter_rows(values_only=True))
-                if not rows:
-                    raise ValueError("spreadsheet is empty; header row missing")
-                header = [str(h or "").strip() for h in rows[0]]
-                unknown = [h for h in header if h and h not in allowed]
-                if unknown:
-                    raise ValidationError(
-                        {"file": "unknown columns: "
-                                 + ", ".join(unknown)})
-                if not any(h in allowed for h in header):
-                    raise ValueError("header row missing")
-                return [dict(zip(header, r)) for r in rows[1:] if any(r)]
-            text = upload.read().decode("utf-8-sig")
-            reader = csv.DictReader(io.StringIO(text))
-            if not reader.fieldnames:
-                raise ValueError("CSV is empty; header row missing")
-            header = [str(h or "").strip() for h in reader.fieldnames]
-            unknown = [h for h in header if h and h not in allowed]
-            if unknown:
-                raise ValidationError(
-                    {"file": "unknown columns: "
-                             + ", ".join(unknown)})
-            if not any(h in allowed for h in header):
-                raise ValueError("header row missing")
-            return [{k.strip(): v for k, v in r.items()} for r in reader]
-        except ValidationError:
-            raise
-        except Exception:
-            logger.exception("Could not parse bulk asset upload %r", name)
-            raise ValidationError(
-                {"file": f"Could not read the uploaded file '{name}'. "
-                         "Expected a UTF-8 CSV or a valid XLSX workbook "
-                         "with a header row."})
+        filename = (upload.name or "").lower()
+        if not filename.endswith((".csv", ".xlsx", ".xlsm")):
+            raise ValidationError({
+                "file": "Unsupported file type. Upload a CSV or XLSX file."})
+        max_file_bytes = int(
+            settings.ASSET_BULK_IMPORT_MAX_FILE_SIZE_MB * 1024 * 1024)
+        name = upload.name or ""
+        return iter_uploaded_rows(
+            upload, ASSET_IMPORT_FIELDS, max_file_bytes, max_rows,
+            reject_extra_csv_values=True,
+            error_message=f"Could not read the uploaded file '{name}'. "
+                          "Expected a UTF-8 CSV or a valid XLSX workbook "
+                          "with a header row.",
+        )
 
     @action(detail=False, methods=["get"])
     def find_all(self, request):
@@ -905,80 +944,107 @@ class AssetViewSet(viewsets.ModelViewSet):
             return Response({
                 "template_columns": columns,
                 "matching_key": "asset_tag"})
+        from django.conf import settings
+        from common.import_stream import batches, count_uploaded_rows
+        upload = request.FILES.get("file")
+        max_rows = settings.ASSET_BULK_IMPORT_MAX_ROWS
+        max_file_bytes = int(
+            settings.ASSET_BULK_IMPORT_MAX_FILE_SIZE_MB * 1024 * 1024)
         rows = self._parse(request)
-        if request.data.get("preview", True) in (True, "true", "1", 1):
+        preview_requested = request.data.get(
+            "preview", True) in (True, "true", "1", 1)
+        if upload and not preview_requested and request.data.get("confirm"):
+            count_uploaded_rows(
+                upload, ASSET_IMPORT_FIELDS, max_file_bytes, max_rows,
+                reject_extra_csv_values=True)
+            rows = self._parse(request)
+        if preview_requested:
             ok, errors = [], []
             seen = set()
             seen_serials = set()
-            for i, r in enumerate(rows, start=2):
-                tag = str(r.get("asset_tag", "")).strip()
-                serial = str(r.get("serial_number") or "").strip()
-                if not tag:
-                    errors.append({"row": i, "errors": "asset_tag required"})
-                elif tag in seen or Asset.all_objects.filter(
-                        asset_tag=tag).exists():
-                    errors.append({"row": i, "errors": f"duplicate tag {tag}"})
-                elif (serial and (serial in seen_serials
-                                  or Asset.all_objects.filter(
-                                      serial_number=serial).exists())):
-                    errors.append(
-                        {"row": i,
-                         "errors": f"duplicate serial number {serial}"})
-                elif not str(r.get("category") or "").strip():
-                    errors.append({"row": i, "errors": "category required"})
-                elif not AssetCategory.objects.filter(
-                        name=str(r.get("category") or "").strip()).exists():
-                    errors.append({"row": i, "errors": "unknown category"})
-                elif str(r.get("status") or "available").strip().lower() not in (
-                        "available", "assigned", "in_repair", "retired",
-                        "lost", "disposed"):
-                    errors.append({"row": i, "errors": "unknown status"})
-                else:
-                    seen.add(tag)
-                    if serial:
-                        seen_serials.add(serial)
-                    if str(r.get("status") or "available") == "assigned":
-                        errors.append(
-                            {"row": i,
-                             "errors": "status 'assigned' cannot be imported; "
-                                      "use the assign workflow"})
+            for row_batch in batches(enumerate(rows, start=2)):
+                lookups = _asset_import_batch_lookup(row_batch)
+                existing_tags, existing_serials, categories = lookups[:3]
+                for i, r in row_batch:
+                    if not isinstance(r, dict):
+                        errors.append({"row": i,
+                                       "errors": "row must be an object"})
+                        continue
+                    tag = str(r.get("asset_tag", "")).strip()
+                    serial = str(r.get("serial_number") or "").strip()
+                    category = str(r.get("category") or "").strip()
+                    if not tag:
+                        errors.append({"row": i,
+                                       "errors": "asset_tag required"})
+                    elif tag in seen or tag in existing_tags:
+                        errors.append({"row": i,
+                                       "errors": f"duplicate tag {tag}"})
+                    elif (serial and (serial in seen_serials
+                                      or serial in existing_serials)):
+                        errors.append({
+                            "row": i,
+                            "errors": f"duplicate serial number {serial}"})
+                    elif not category:
+                        errors.append({"row": i,
+                                       "errors": "category required"})
+                    elif category not in categories:
+                        errors.append({"row": i,
+                                       "errors": "unknown category"})
+                    elif str(r.get("status") or "available").strip().lower() not in (
+                            "available", "assigned", "in_repair", "retired",
+                            "lost", "disposed"):
+                        errors.append({"row": i, "errors": "unknown status"})
                     else:
-                        ok.append({"row": i, "asset_tag": tag})
+                        seen.add(tag)
+                        if serial:
+                            seen_serials.add(serial)
+                        if str(r.get("status") or "available") == "assigned":
+                            errors.append({
+                                "row": i,
+                                "errors": "status 'assigned' cannot be imported; "
+                                          "use the assign workflow"})
+                        else:
+                            ok.append({"row": i, "asset_tag": tag})
             return Response({"preview": ok, "errors": errors})
         if not request.data.get("confirm"):
             return Response({"detail": "Confirmation required."}, status=400)
         ok, failed, skipped = [], [], []
-        for i, r in enumerate(rows, start=2):
+        for i, r, lookups in _iter_asset_import_rows(rows):
+            (existing_tags, existing_serials, categories,
+             departments_by_code, departments_by_name,
+             departments_by_id) = lookups
             tag = ""
             try:
                 with transaction.atomic():
                     tag = str(r.get("asset_tag", "")).strip()
-                    if Asset.all_objects.filter(asset_tag=tag).exists():
+                    if tag in existing_tags:
                         skipped.append({"row": i, "asset_tag": tag,
                                         "reason": "exists; use bulk_update"})
                         continue
-                    cat = AssetCategory.objects.filter(
-                        name=str(r.get("category") or "").strip()).first()
+                    cat = categories.get(
+                        str(r.get("category") or "").strip())
                     if not cat:
                         failed.append({"row": i, "asset_tag": tag,
                                        "errors": "unknown category"})
                         continue
                     serial = str(r.get("serial_number") or "").strip()
-                    if serial and Asset.all_objects.filter(
-                            serial_number=serial).exists():
+                    if serial and serial in existing_serials:
                         failed.append(
                             {"row": i, "asset_tag": tag,
                              "errors": f"duplicate serial number {serial}"})
                         continue
-                    from accounts.models import Department as Dept
                     dept = None
                     raw_dept = r.get("department")
                     if raw_dept not in (None, ""):
-                        dept = (Dept.objects.filter(code=raw_dept).first()
-                                or Dept.objects.filter(name=raw_dept).first())
-                        if raw_dept not in ("", None) and dept is None:
+                        if isinstance(raw_dept, int):
+                            dept = departments_by_id.get(raw_dept)
+                        else:
+                            dept = (departments_by_code.get(str(raw_dept))
+                                    or departments_by_name.get(
+                                        str(raw_dept).strip()))
+                        if dept is None:
                             try:
-                                dept = Dept.objects.filter(pk=int(raw_dept)).first()
+                                dept = departments_by_id.get(int(raw_dept))
                             except (TypeError, ValueError):
                                 dept = None
                     cost = r.get("purchase_cost")
@@ -1009,12 +1075,15 @@ class AssetViewSet(viewsets.ModelViewSet):
                                 purchase_date=r.get("purchase_date") or None,
                                 warranty_expiry=r.get("warranty_expiry") or None,
                                 purchase_cost=cost)
-                    obj.save()
+                    obj.save_from_import()
                     _history(obj, request.user, "created",
                              new={"asset_tag": tag, "bulk": True})
                     log_action(actor=request.user, action="bulk_create",
                                instance=obj)
-                    ok.append(tag)
+                    ok.append({"row": i, "asset_tag": tag})
+                    existing_tags.add(tag)
+                    if serial:
+                        existing_serials.add(serial)
             except IntegrityError:
                 # DB backstop (unique tag / serial trigger) hit despite
                 # the pre-checks - i.e. a concurrent write. Row-level,
@@ -1032,8 +1101,9 @@ class AssetViewSet(viewsets.ModelViewSet):
             # outcomes. JSON remains the default when absent.
             return _csv_report_response(
                 "asset_import_report.csv",
-                _asset_report_rows(rows, ok, skipped, failed))
-        return Response({"successful": ok, "skipped": skipped,
+                _asset_report_rows(ok, skipped, failed))
+        return Response({"successful": [item["asset_tag"] for item in ok],
+                         "skipped": skipped,
                          "failed": failed})
 
     @action(detail=False, methods=["post"])
@@ -1739,8 +1809,7 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         with transaction.atomic():
             article = (KnowledgeBaseArticle.objects
-                       .select_related("category")
-                       .select_for_update()
+                       .select_for_update(of=("self",))
                        .get(pk=serializer.instance.pk))
             self._check_version(article, self.request.data.get("version"))
             before = kb_services.article_snapshot(article)
@@ -1952,12 +2021,14 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
                        details={"action": "approve",
                                 "to": article.status,
                                 "comment": article.review_comment})
-            # Notify the author after commit; self-approval is already
-            # rejected above, so reviewer != author here.
-            transaction.on_commit(
-                lambda a=article, u=request.user, r=request.user,
-                c=article.review_comment:
-                kb_services.notify_article_approved(a, u, r, c))
+            # Notify the author: in-app + outbox. The outbox event is
+            # registered inside this atomic block, so it commits or rolls
+            # back with the business change.  The on_commit wake-up is
+            # kept only as a best-effort low-latency hint; correctness
+            # does not depend on it (the periodic scanner re-discovers).
+            kb_services.notify_article_approved(
+                article, request.user, request.user,
+                article.review_comment)
         article.refresh_from_db()
         return Response(KnowledgeBaseArticleSerializer(article).data)
 
@@ -1991,11 +2062,12 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
                        details={"action": "reject",
                                 "to": article.status,
                                 "comment": article.review_comment})
-            # Notify the author (with the rejection reason) after commit.
-            comment = article.review_comment
-            transaction.on_commit(
-                lambda a=article, u=request.user, r=request.user, c=comment:
-                kb_services.notify_article_rejected(a, u, r, c))
+            # Notify the author (with the rejection reason): in-app + outbox.
+            # The outbox event is registered inside this atomic block, so it
+            # commits or rolls back with the business change.
+            kb_services.notify_article_rejected(
+                article, request.user, request.user,
+                article.review_comment)
         article.refresh_from_db()
         return Response(KnowledgeBaseArticleSerializer(article).data)
 
@@ -2019,11 +2091,11 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
                        details={"action": "publish", "from": previous,
                                 "to": article.status})
             # Notify the author on a real transition to published (not on the
-            # idempotent already-published case), after commit.
+            # idempotent already-published case): in-app + outbox.
+            # The outbox event is registered inside this atomic block, so it
+            # commits or rolls back with the business change.
             if previous != "published":
-                transaction.on_commit(
-                    lambda a=article, u=request.user:
-                    kb_services.notify_article_published(a, u))
+                kb_services.notify_article_published(article, request.user)
         article.refresh_from_db()
         return Response(KnowledgeBaseArticleSerializer(article).data)
 
