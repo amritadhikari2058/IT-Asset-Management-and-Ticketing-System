@@ -83,3 +83,15 @@ jobs:
       - name: Asset regression suites (PostgreSQL)
         working-directory: backend
         run: python -m pytest assets/test_lifecycle_integrity.py assets/test_operations.py assets/test_reports.py assets/test_knowledge_base_versioning.py assets/tests.py assets/test_pagination_role_scope.py assets/test_vendors.py -q
+
+      - name: Notification acceptance tests (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest common/test_notification_dedup.py common/test_notification_reliability.py common/test_notification_api_security_phase62.py assets/test_maintenance_task_notifications.py tickets/test_sla_task_notifications.py licensing/test_tasks.py cmdb/test_tasks.py cmdb/tests.py -q
+
+      - name: Notification outbox tests (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest common/test_notification_outbox.py common/test_notification_outbox_postgres.py -q
+
+      - name: Ticket regression suites (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest tickets/tests.py tickets/test_status_transitions.py tickets/test_lifecycle.py -q

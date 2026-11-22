@@ -1527,6 +1527,1869 @@ class UserNotificationPreferenceTests(TestCase):
 
 
 @override_settings(**LOC)
+class TicketNotificationTransactionTests(TransactionTestCase):
+    """Regression coverage for accounts.email_utils._notify_user.
+
+    The in-app notification must be created only after the surrounding
+    transaction commits, so a rolled-back ticket creation or state change
+    never leaves an orphaned notification pointing at a non-existent or
+    reverted record.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="EM")
+        self.ticket = Ticket.objects.create(
+            title="Existing ticket",
+            description="existing",
+            category=self.tcat,
+            priority="medium",
+            status="open",
+            requester=self.emp,
+            department=self.dep)
+
+    def _notify(self):
+        from accounts.email_utils import _notify_user
+        return _notify_user(
+            self.mgr, self.emp,
+            "Ticket status changed", f"Ticket {self.ticket.pk} moved.",
+            self.ticket)
+
+    def test_notify_user_created_after_commit(self):
+        from accounts.email_utils import _notify_user
+        # Inside an atomic transaction: notification is deferred, not yet visible.
+        with transaction.atomic():
+            self._notify()
+            self.assertEqual(Notification.objects.count(), 0)
+        # After commit: created.
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.title, "Ticket status changed")
+
+    def test_notify_user_rolled_back_with_transaction(self):
+        from accounts.email_utils import _notify_user
+        try:
+            with transaction.atomic():
+                self._notify()
+                raise IntegrityError("boom")
+        except IntegrityError:
+            pass
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_notify_user_outside_transaction(self):
+        from accounts.email_utils import _notify_user
+        # No active transaction: callback runs immediately.
+        self.assertEqual(Notification.objects.count(), 0)
+        self._notify()
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.object_id, str(self.ticket.pk))
+
+    def test_notify_user_returns_none(self):
+        from accounts.email_utils import _notify_user
+        self.assertIsNone(self._notify())
+
+    def test_notify_user_skips_invalid_recipients(self):
+        from accounts.email_utils import _notify_user
+        _notify_user(None, self.emp, "t", "b", self.ticket)
+        _notify_user(self.mgr, None, "t", "b", self.ticket)
+        self.assertEqual(Notification.objects.count(), 0)
+
+@override_settings(**LOC)
+class TicketEmailPreferenceTests(TestCase):
+    """Opt out of ticket-event emails only; nothing else changes."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="AT")
+
+    def _ticket(self, requester=None):
+        return Ticket.objects.create(
+            title="t", description="d", category=self.tcat,
+            requester=requester or self.emp, department=self.dep)
+
+    def test_default_enabled_for_new_and_existing(self):
+        self.assertTrue(User._meta.get_field(
+            "receive_ticket_emails").default)
+        for u in (self.admin, self.mgr, self.emp):
+            u.refresh_from_db()
+            self.assertTrue(u.receive_ticket_emails)
+        fresh = User.objects.create_user(
+            username="n@x", email="n@example.com", employee_id="N1",
+            password="pw12345678")
+        self.assertTrue(fresh.receive_ticket_emails)
+
+    def test_opted_in_assignee_gets_create_email(self):
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 2)  # requester + assignee
+
+    def test_opted_out_assignee_skips_email_only(self):
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        t = Ticket.objects.get(pk=res.data["id"])
+        self.assertEqual(len(mail.outbox), 1)  # requester only
+        self.assertEqual(mail.outbox[0].to, [self.mgr.email])
+        # In-app notification still created for the assignee.
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp, object_id=str(t.pk)).exists())
+
+    def test_opted_out_requester_skips_status_email(self):
+        t = self._ticket()
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/tickets/{t.pk}/",
+                           {"status": "in_progress"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp, object_id=str(t.pk)).exists())
+
+    def test_bulk_update_sends_no_email_but_notifies(self):
+        t1 = self._ticket()
+        e2 = User.objects.create_user(
+            username="e2@x", email="e2@example.com", employee_id="E2",
+            password="pw12345678", home_department=self.dep)
+        t2 = Ticket.objects.create(
+            title="u", description="d", category=self.tcat,
+            requester=e2, department=self.dep)
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/tickets/bulk_update/",
+                          {"ids": [t1.pk, t2.pk],
+                           "changes": {"status": "in_progress"},
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp, object_id=str(t1.pk)).exists())
+        self.assertTrue(Notification.objects.filter(
+            recipient=e2, object_id=str(t2.pk)).exists())
+
+    def test_self_service_only_and_no_mass_assignment(self):
+        auth(self.c, self.emp)
+        res = self.c.patch("/api/accounts/me/",
+                           {"receive_ticket_emails": False}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["receive_ticket_emails"])
+        self.emp.refresh_from_db()
+        self.assertFalse(self.emp.receive_ticket_emails)
+        self.mgr.refresh_from_db()
+        self.assertTrue(self.mgr.receive_ticket_emails)
+        # Protected fields cannot ride along; invalid values rejected.
+        res = self.c.patch("/api/accounts/me/", {"role": "system_admin"},
+                           format="json")
+        self.assertEqual(res.status_code, 400)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.role, "employee")
+        res = self.c.patch("/api/accounts/me/",
+                           {"receive_ticket_emails": "maybe"},
+                           format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_other_flows_do_not_reset_preference(self):
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.admin)
+        res = self.c.post(f"/api/accounts/users/{self.emp.pk}/change_role/",
+                          {"role": "employee",
+                           "can_create_tickets": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/accounts/users/{self.emp.pk}/",
+                           {"phone": "111"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        res = self.c.post("/api/accounts/users/bulk_update/",
+                          {"rows": [{"employee_id": "E1", "phone": "222"}],
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        res = self.c.post("/api/accounts/users/bulk_import/",
+                          {"rows": [{"employee_id": "E1",
+                                      "email": "newmail@example.com",
+                                      "phone": "333"}],
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertFalse(self.emp.receive_ticket_emails)
+
+    def test_verification_and_reset_ignore_preference(self):
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.emp)
+        res = self.c.post("/api/accounts/verify-email/request/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        res = self.c.post("/api/accounts/password-reset/request/",
+                          {"email": "e@x"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 2)
+
+
+class AuditLogFilterTests(TestCase):
+    def setUp(self):
+        from common.models import AuditLog
+
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        AuditLog.objects.create(actor=self.admin, action="create",
+                                entity_type="tickets.Ticket", object_id="1")
+        AuditLog.objects.create(actor=self.mgr, action="update",
+                                entity_type="assets.Asset", object_id="2")
+
+    def _rows(self, res):
+        self.assertEqual(res.status_code, 200)
+        data = res.data
+        return data["results"] if isinstance(data, dict) else data
+
+    def test_admin_sees_all(self):
+        auth(self.c, self.admin)
+        rows = self._rows(self.c.get("/api/common/audit-logs/"))
+        self.assertEqual(len(rows), 2)
+
+    def test_non_admin_forbidden(self):
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/audit-logs/")
+        self.assertEqual(res.status_code, 403)
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/audit-logs/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_filter_action(self):
+        auth(self.c, self.admin)
+        rows = self._rows(
+            self.c.get("/api/common/audit-logs/", {"action": "create"}))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["action"], "create")
+
+    def test_filter_action_rejects_unknown(self):
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/audit-logs/",
+                         {"action": "drop table"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_filter_entity_type(self):
+        auth(self.c, self.admin)
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"entity_type": "assets.Asset"}))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["entity_type"], "assets.Asset")
+
+    def test_filter_dates(self):
+        from django.utils import timezone
+
+        auth(self.c, self.admin)
+        today = timezone.now().date().isoformat()
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"date_from": today}))
+        self.assertEqual(len(rows), 2)
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"date_from": "2999-01-01"}))
+        self.assertEqual(rows, [])
+        res = self.c.get("/api/common/audit-logs/",
+                         {"date_from": "not-a-date"})
+        self.assertEqual(res.status_code, 400)
+
+
+
+class DataIntegrityReportTests(TestCase):
+    """READ-ONLY data-integrity report: identifies inconsistent records."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+
+    def test_employee_forbidden(self):
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_manager_forbidden(self):
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_admin_reports_holder_without_open_assignment(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="Laptops")
+        Asset.objects.create(asset_tag="LT-9", name="n", category=cat,
+                             status="assigned", assigned_to=self.emp)
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 200)
+        codes = [i["code"] for i in res.data["issues"]]
+        self.assertIn("holder_without_open_assignment", codes)
+
+    def test_clean_state_has_no_issues(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="Laptops")
+        Asset.objects.create(asset_tag="LT-8", name="n", category=cat)
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["issues"], [])
+
+
+class ExportDatasetTests(TestCase):
+    """Read-only multi-format exports (CSV / XLSX / PDF / DOCX)."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+
+    def test_employees_csv(self):
+        res = self.c.get("/api/common/exports/employees/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("text/csv", res["Content-Type"])
+        self.assertIn("attachment", res["Content-Disposition"])
+        self.assertIn("employees_", res["Content-Disposition"])
+        self.assertTrue(res.content)
+
+    def test_assets_xlsx(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="Laptops")
+        Asset.objects.create(asset_tag="A1", name="n", category=cat)
+        res = self.c.get("/api/common/exports/assets/?format=xlsx")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument"
+            ".spreadsheetml.sheet", res["Content-Type"])
+
+    def test_tickets_pdf(self):
+        res = self.c.get("/api/common/exports/tickets/?format=pdf")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("application/pdf", res["Content-Type"])
+
+    def test_departments_docx(self):
+        res = self.c.get("/api/common/exports/departments/?format=docx")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument"
+            ".wordprocessingml.document", res["Content-Type"])
+
+    def test_unknown_dataset_404(self):
+        res = self.c.get("/api/common/exports/nope/?format=csv")
+        self.assertEqual(res.status_code, 404)
+
+    def test_unsupported_format_is_rejected(self):
+        res = self.c.get("/api/common/exports/assets/?format=exe")
+        self.assertNotEqual(res.status_code, 200)
+
+    def test_employee_forbidden_on_employees_export(self):
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/employees/?format=csv")
+        self.assertEqual(res.status_code, 403)
+
+    def test_selected_scope_returns_only_requested_rows(self):
+        from accounts.models import User
+        extra = User.objects.create_user(
+            username="e9@x", email="e9@example.com", employee_id="E9",
+            password="pw12345678", home_department=self.dep)
+        res = self.c.get(
+            f"/api/common/exports/employees/?format=csv&scope=selected&ids={extra.pk},{self.emp.pk}")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("e9@example.com", blob)
+        self.assertIn("E9", blob)
+
+    def test_export_writes_audit_log(self):
+        from common.models import AuditLog
+        before = AuditLog.objects.filter(action="export").count()
+        res = self.c.get("/api/common/exports/tickets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        after = AuditLog.objects.filter(action="export").count()
+        self.assertEqual(after, before + 1)
+
+    def test_employee_forbidden_on_assignments_export(self):
+        """Assignments carry employee_email/assigned_by_email (PII); export
+        must require IT staff, matching the employees dataset."""
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/assignments/?format=csv")
+        self.assertEqual(res.status_code, 403)
+
+    def test_it_staff_can_export_assignments(self):
+        res = self.c.get("/api/common/exports/assignments/?format=csv")
+        self.assertEqual(res.status_code, 200)
+
+    def test_employee_asset_export_limited_to_visible_assets(self):
+        """The assets export must not bypass the asset list API's employee
+        scope (assigned to the employee or in their home department)."""
+        from accounts.models import Department
+        from assets.models import Asset, AssetCategory
+        other_dep = Department.objects.create(name="Other", code="OTHR")
+        visible_cat = AssetCategory.objects.create(name="Visible")
+        hidden_cat = AssetCategory.objects.create(name="Hidden")
+        visible = Asset.objects.create(
+            asset_tag="VISIBLE-1", name="visible", category=visible_cat,
+            department=self.dep, assigned_to=self.emp, status="assigned")
+        hidden = Asset.objects.create(
+            asset_tag="HIDDEN-1", name="hidden", category=hidden_cat,
+            department=other_dep)
+
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/assets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("VISIBLE-1", blob)
+        self.assertNotIn("HIDDEN-1", blob)
+
+    def test_it_staff_asset_export_sees_all_assets(self):
+        from accounts.models import Department
+        from assets.models import Asset, AssetCategory
+        other_dep = Department.objects.create(name="Other2", code="OT2")
+        hidden_cat = AssetCategory.objects.create(name="Hidden2")
+        hidden = Asset.objects.create(
+            asset_tag="HIDDEN-2", name="hidden", category=hidden_cat,
+            department=other_dep)
+        res = self.c.get("/api/common/exports/assets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("HIDDEN-2", blob)
+
+
+
+class UserNotificationPreferenceTests(TestCase):
+    """Notification preference API permissions + centralized enforcement."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="AT")
+
+    # ---------- API: own-only access ----------
+
+    def test_employee_creates_own_preference_record(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/common/notification-preferences/",
+                          {"email_enabled": True,
+                           "categories": {"ticket_assignment": False}},
+                          format="json")
+        self.assertEqual(res.status_code, 201)
+        from common.models import UserNotificationPreference
+        self.assertTrue(UserNotificationPreference.objects.filter(
+            user=self.emp).exists())
+
+    def test_employee_cannot_read_others_preferences(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o@x", email="o@example.com", employee_id="O1",
+            password="pw12345678")
+        prefs = UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.get(
+            f"/api/common/notification-preferences/{prefs.pk}/")
+        self.assertEqual(res.status_code, 404)
+
+    def test_employee_cannot_update_others_preferences(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o2@x", email="o2@example.com", employee_id="O2",
+            password="pw12345678")
+        prefs = UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.patch(
+            f"/api/common/notification-preferences/{prefs.pk}/",
+            {"email_enabled": True}, format="json")
+        self.assertEqual(res.status_code, 404)
+        prefs.refresh_from_db()
+        self.assertFalse(prefs.email_enabled)
+
+    def test_it_staff_can_view_all_preferences_for_auditing(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o3@x", email="o3@example.com", employee_id="O3",
+            password="pw12345678")
+        UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=True, categories={})
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/notification-preferences/")
+        self.assertEqual(res.status_code, 200)
+        rows = res.data["results"] if isinstance(res.data, dict) else res.data
+        self.assertEqual(len(rows), 2)
+
+    def test_invalid_category_value_rejected(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/common/notification-preferences/",
+                          {"email_enabled": True, "categories": {"bogus": True}},
+                          format="json")
+        self.assertEqual(res.status_code, 400)
+
+    # ---------- Enforcement: enabled / disabled / missing / category ----------
+
+    def _create_ticket(self, requester=None, assignee=None):
+        return Ticket.objects.create(
+            title="t", description="d", category=self.tcat,
+            requester=requester or self.emp, department=self.dep,
+            assignee=assignee)
+
+    def test_missing_preference_record_defaults_to_enabled(self):
+        # No UserNotificationPreference row exists for emp -> default opt-in.
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 2)  # requester + assignee
+
+    def test_global_master_switch_off_suppresses_ticket_emails(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        # Creation mail goes to the requester (master on); the opted-out
+        # assignee (emp) receives nothing.
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.mgr.email])
+
+    def test_category_opt_out_only_affects_that_category(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=True,
+            categories={"ticket_status_change": False})
+        # emp creates a ticket -> creation email (master switch) flows.
+        auth(self.c, self.emp)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 1)  # creation to emp (master) flows
+        t = Ticket.objects.get(title="t")
+        # Status change -> requester (emp) opted out of ticket_status_change
+        # -> suppressed, while creation (master) still delivered.
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.patch(f"/api/tickets/{t.pk}/",
+                               {"status": "in_progress"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)  # no status email
+
+        # The opt-out did not block the unrelated ticket_assignment category:
+        # a staff-created ticket assigned to emp still delivers the assignee.
+        before = len(mail.outbox)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t2", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), before + 2)  # creation + assignment
+
+    def test_essential_security_emails_not_suppressed(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.post("/api/accounts/verify-email/request/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        mail.outbox.clear()
+        res = self.c.post("/api/accounts/password-reset/request/",
+                          {"email": "e@x"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_in_app_notification_independent_of_email_preferences(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        # Creation mail to the requester (staff) still goes out; the opted-out
+        # assignee (emp) is email-suppressed ...
+        self.assertEqual(len(mail.outbox), 1)
+        # ... but the in-app notification for the assignee is unaffected.
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp).exists())
+
+
+@override_settings(**LOC)
+class TicketNotificationTransactionTests(TransactionTestCase):
+    """Regression coverage for accounts.email_utils._notify_user.
+
+    The in-app notification must be created only after the surrounding
+    transaction commits, so a rolled-back ticket creation or state change
+    never leaves an orphaned notification pointing at a non-existent or
+    reverted record.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="EM")
+        self.ticket = Ticket.objects.create(
+            title="Existing ticket",
+            description="existing",
+            category=self.tcat,
+            priority="medium",
+            status="open",
+            requester=self.emp,
+            department=self.dep)
+
+    def _notify(self):
+        from accounts.email_utils import _notify_user
+        return _notify_user(
+            self.mgr, self.emp,
+            "Ticket status changed", f"Ticket {self.ticket.pk} moved.",
+            self.ticket)
+
+    def test_notify_user_created_after_commit(self):
+        from accounts.email_utils import _notify_user
+        # Inside an atomic transaction: notification is deferred, not yet visible.
+        with transaction.atomic():
+            self._notify()
+            self.assertEqual(Notification.objects.count(), 0)
+        # After commit: created.
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.title, "Ticket status changed")
+
+    def test_notify_user_rolled_back_with_transaction(self):
+        from accounts.email_utils import _notify_user
+        try:
+            with transaction.atomic():
+                self._notify()
+                raise IntegrityError("boom")
+        except IntegrityError:
+            pass
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_notify_user_outside_transaction(self):
+        from accounts.email_utils import _notify_user
+        # No active transaction: callback runs immediately.
+        self.assertEqual(Notification.objects.count(), 0)
+        self._notify()
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.object_id, str(self.ticket.pk))
+
+    def test_notify_user_returns_none(self):
+        from accounts.email_utils import _notify_user
+        self.assertIsNone(self._notify())
+
+    def test_notify_user_skips_invalid_recipients(self):
+        from accounts.email_utils import _notify_user
+        _notify_user(None, self.emp, "t", "b", self.ticket)
+        _notify_user(self.mgr, None, "t", "b", self.ticket)
+        self.assertEqual(Notification.objects.count(), 0)
+
+@override_settings(**LOC)
+class TicketEmailPreferenceTests(TestCase):
+    """Opt out of ticket-event emails only; nothing else changes."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="AT")
+
+    def _ticket(self, requester=None):
+        return Ticket.objects.create(
+            title="t", description="d", category=self.tcat,
+            requester=requester or self.emp, department=self.dep)
+
+    def test_default_enabled_for_new_and_existing(self):
+        self.assertTrue(User._meta.get_field(
+            "receive_ticket_emails").default)
+        for u in (self.admin, self.mgr, self.emp):
+            u.refresh_from_db()
+            self.assertTrue(u.receive_ticket_emails)
+        fresh = User.objects.create_user(
+            username="n@x", email="n@example.com", employee_id="N1",
+            password="pw12345678")
+        self.assertTrue(fresh.receive_ticket_emails)
+
+    def test_opted_in_assignee_gets_create_email(self):
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 2)  # requester + assignee
+
+    def test_opted_out_assignee_skips_email_only(self):
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        t = Ticket.objects.get(pk=res.data["id"])
+        self.assertEqual(len(mail.outbox), 1)  # requester only
+        self.assertEqual(mail.outbox[0].to, [self.mgr.email])
+        # In-app notification still created for the assignee.
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp, object_id=str(t.pk)).exists())
+
+    def test_opted_out_requester_skips_status_email(self):
+        t = self._ticket()
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/tickets/{t.pk}/",
+                           {"status": "in_progress"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp, object_id=str(t.pk)).exists())
+
+    def test_bulk_update_sends_no_email_but_notifies(self):
+        t1 = self._ticket()
+        e2 = User.objects.create_user(
+            username="e2@x", email="e2@example.com", employee_id="E2",
+            password="pw12345678", home_department=self.dep)
+        t2 = Ticket.objects.create(
+            title="u", description="d", category=self.tcat,
+            requester=e2, department=self.dep)
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/tickets/bulk_update/",
+                          {"ids": [t1.pk, t2.pk],
+                           "changes": {"status": "in_progress"},
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp, object_id=str(t1.pk)).exists())
+        self.assertTrue(Notification.objects.filter(
+            recipient=e2, object_id=str(t2.pk)).exists())
+
+    def test_self_service_only_and_no_mass_assignment(self):
+        auth(self.c, self.emp)
+        res = self.c.patch("/api/accounts/me/",
+                           {"receive_ticket_emails": False}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["receive_ticket_emails"])
+        self.emp.refresh_from_db()
+        self.assertFalse(self.emp.receive_ticket_emails)
+        self.mgr.refresh_from_db()
+        self.assertTrue(self.mgr.receive_ticket_emails)
+        # Protected fields cannot ride along; invalid values rejected.
+        res = self.c.patch("/api/accounts/me/", {"role": "system_admin"},
+                           format="json")
+        self.assertEqual(res.status_code, 400)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.role, "employee")
+        res = self.c.patch("/api/accounts/me/",
+                           {"receive_ticket_emails": "maybe"},
+                           format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_other_flows_do_not_reset_preference(self):
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.admin)
+        res = self.c.post(f"/api/accounts/users/{self.emp.pk}/change_role/",
+                          {"role": "employee",
+                           "can_create_tickets": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/accounts/users/{self.emp.pk}/",
+                           {"phone": "111"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        res = self.c.post("/api/accounts/users/bulk_update/",
+                          {"rows": [{"employee_id": "E1", "phone": "222"}],
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        res = self.c.post("/api/accounts/users/bulk_import/",
+                          {"rows": [{"employee_id": "E1",
+                                      "email": "newmail@example.com",
+                                      "phone": "333"}],
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertFalse(self.emp.receive_ticket_emails)
+
+    def test_verification_and_reset_ignore_preference(self):
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.emp)
+        res = self.c.post("/api/accounts/verify-email/request/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        res = self.c.post("/api/accounts/password-reset/request/",
+                          {"email": "e@x"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 2)
+
+
+class AuditLogFilterTests(TestCase):
+    def setUp(self):
+        from common.models import AuditLog
+
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        AuditLog.objects.create(actor=self.admin, action="create",
+                                entity_type="tickets.Ticket", object_id="1")
+        AuditLog.objects.create(actor=self.mgr, action="update",
+                                entity_type="assets.Asset", object_id="2")
+
+    def _rows(self, res):
+        self.assertEqual(res.status_code, 200)
+        data = res.data
+        return data["results"] if isinstance(data, dict) else data
+
+    def test_admin_sees_all(self):
+        auth(self.c, self.admin)
+        rows = self._rows(self.c.get("/api/common/audit-logs/"))
+        self.assertEqual(len(rows), 2)
+
+    def test_non_admin_forbidden(self):
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/audit-logs/")
+        self.assertEqual(res.status_code, 403)
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/audit-logs/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_filter_action(self):
+        auth(self.c, self.admin)
+        rows = self._rows(
+            self.c.get("/api/common/audit-logs/", {"action": "create"}))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["action"], "create")
+
+    def test_filter_action_rejects_unknown(self):
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/audit-logs/",
+                         {"action": "drop table"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_filter_entity_type(self):
+        auth(self.c, self.admin)
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"entity_type": "assets.Asset"}))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["entity_type"], "assets.Asset")
+
+    def test_filter_dates(self):
+        from django.utils import timezone
+
+        auth(self.c, self.admin)
+        today = timezone.now().date().isoformat()
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"date_from": today}))
+        self.assertEqual(len(rows), 2)
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"date_from": "2999-01-01"}))
+        self.assertEqual(rows, [])
+        res = self.c.get("/api/common/audit-logs/",
+                         {"date_from": "not-a-date"})
+        self.assertEqual(res.status_code, 400)
+
+
+
+class DataIntegrityReportTests(TestCase):
+    """READ-ONLY data-integrity report: identifies inconsistent records."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+
+    def test_employee_forbidden(self):
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_manager_forbidden(self):
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_admin_reports_holder_without_open_assignment(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="Laptops")
+        Asset.objects.create(asset_tag="LT-9", name="n", category=cat,
+                             status="assigned", assigned_to=self.emp)
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 200)
+        codes = [i["code"] for i in res.data["issues"]]
+        self.assertIn("holder_without_open_assignment", codes)
+
+    def test_clean_state_has_no_issues(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="Laptops")
+        Asset.objects.create(asset_tag="LT-8", name="n", category=cat)
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["issues"], [])
+
+
+class ExportDatasetTests(TestCase):
+    """Read-only multi-format exports (CSV / XLSX / PDF / DOCX)."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+
+    def test_employees_csv(self):
+        res = self.c.get("/api/common/exports/employees/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("text/csv", res["Content-Type"])
+        self.assertIn("attachment", res["Content-Disposition"])
+        self.assertIn("employees_", res["Content-Disposition"])
+        self.assertTrue(res.content)
+
+    def test_assets_xlsx(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="Laptops")
+        Asset.objects.create(asset_tag="A1", name="n", category=cat)
+        res = self.c.get("/api/common/exports/assets/?format=xlsx")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument"
+            ".spreadsheetml.sheet", res["Content-Type"])
+
+    def test_tickets_pdf(self):
+        res = self.c.get("/api/common/exports/tickets/?format=pdf")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("application/pdf", res["Content-Type"])
+
+    def test_departments_docx(self):
+        res = self.c.get("/api/common/exports/departments/?format=docx")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument"
+            ".wordprocessingml.document", res["Content-Type"])
+
+    def test_unknown_dataset_404(self):
+        res = self.c.get("/api/common/exports/nope/?format=csv")
+        self.assertEqual(res.status_code, 404)
+
+    def test_unsupported_format_is_rejected(self):
+        res = self.c.get("/api/common/exports/assets/?format=exe")
+        self.assertNotEqual(res.status_code, 200)
+
+    def test_employee_forbidden_on_employees_export(self):
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/employees/?format=csv")
+        self.assertEqual(res.status_code, 403)
+
+    def test_selected_scope_returns_only_requested_rows(self):
+        from accounts.models import User
+        extra = User.objects.create_user(
+            username="e9@x", email="e9@example.com", employee_id="E9",
+            password="pw12345678", home_department=self.dep)
+        res = self.c.get(
+            f"/api/common/exports/employees/?format=csv&scope=selected&ids={extra.pk},{self.emp.pk}")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("e9@example.com", blob)
+        self.assertIn("E9", blob)
+
+    def test_export_writes_audit_log(self):
+        from common.models import AuditLog
+        before = AuditLog.objects.filter(action="export").count()
+        res = self.c.get("/api/common/exports/tickets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        after = AuditLog.objects.filter(action="export").count()
+        self.assertEqual(after, before + 1)
+
+    def test_employee_forbidden_on_assignments_export(self):
+        """Assignments carry employee_email/assigned_by_email (PII); export
+        must require IT staff, matching the employees dataset."""
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/assignments/?format=csv")
+        self.assertEqual(res.status_code, 403)
+
+    def test_it_staff_can_export_assignments(self):
+        res = self.c.get("/api/common/exports/assignments/?format=csv")
+        self.assertEqual(res.status_code, 200)
+
+    def test_employee_asset_export_limited_to_visible_assets(self):
+        """The assets export must not bypass the asset list API's employee
+        scope (assigned to the employee or in their home department)."""
+        from accounts.models import Department
+        from assets.models import Asset, AssetCategory
+        other_dep = Department.objects.create(name="Other", code="OTHR")
+        visible_cat = AssetCategory.objects.create(name="Visible")
+        hidden_cat = AssetCategory.objects.create(name="Hidden")
+        visible = Asset.objects.create(
+            asset_tag="VISIBLE-1", name="visible", category=visible_cat,
+            department=self.dep, assigned_to=self.emp, status="assigned")
+        hidden = Asset.objects.create(
+            asset_tag="HIDDEN-1", name="hidden", category=hidden_cat,
+            department=other_dep)
+
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/assets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("VISIBLE-1", blob)
+        self.assertNotIn("HIDDEN-1", blob)
+
+    def test_it_staff_asset_export_sees_all_assets(self):
+        from accounts.models import Department
+        from assets.models import Asset, AssetCategory
+        other_dep = Department.objects.create(name="Other2", code="OT2")
+        hidden_cat = AssetCategory.objects.create(name="Hidden2")
+        hidden = Asset.objects.create(
+            asset_tag="HIDDEN-2", name="hidden", category=hidden_cat,
+            department=other_dep)
+        res = self.c.get("/api/common/exports/assets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("HIDDEN-2", blob)
+
+
+
+class UserNotificationPreferenceTests(TestCase):
+    """Notification preference API permissions + centralized enforcement."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="AT")
+
+    # ---------- API: own-only access ----------
+
+    def test_employee_creates_own_preference_record(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/common/notification-preferences/",
+                          {"email_enabled": True,
+                           "categories": {"ticket_assignment": False}},
+                          format="json")
+        self.assertEqual(res.status_code, 201)
+        from common.models import UserNotificationPreference
+        self.assertTrue(UserNotificationPreference.objects.filter(
+            user=self.emp).exists())
+
+    def test_employee_cannot_read_others_preferences(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o@x", email="o@example.com", employee_id="O1",
+            password="pw12345678")
+        prefs = UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.get(
+            f"/api/common/notification-preferences/{prefs.pk}/")
+        self.assertEqual(res.status_code, 404)
+
+    def test_employee_cannot_update_others_preferences(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o2@x", email="o2@example.com", employee_id="O2",
+            password="pw12345678")
+        prefs = UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.patch(
+            f"/api/common/notification-preferences/{prefs.pk}/",
+            {"email_enabled": True}, format="json")
+        self.assertEqual(res.status_code, 404)
+        prefs.refresh_from_db()
+        self.assertFalse(prefs.email_enabled)
+
+    def test_it_staff_can_view_all_preferences_for_auditing(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o3@x", email="o3@example.com", employee_id="O3",
+            password="pw12345678")
+        UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=True, categories={})
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/notification-preferences/")
+        self.assertEqual(res.status_code, 200)
+        rows = res.data["results"] if isinstance(res.data, dict) else res.data
+        self.assertEqual(len(rows), 2)
+
+    def test_invalid_category_value_rejected(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/common/notification-preferences/",
+                          {"email_enabled": True, "categories": {"bogus": True}},
+                          format="json")
+        self.assertEqual(res.status_code, 400)
+
+    # ---------- Enforcement: enabled / disabled / missing / category ----------
+
+    def _create_ticket(self, requester=None, assignee=None):
+        return Ticket.objects.create(
+            title="t", description="d", category=self.tcat,
+            requester=requester or self.emp, department=self.dep,
+            assignee=assignee)
+
+    def test_missing_preference_record_defaults_to_enabled(self):
+        # No UserNotificationPreference row exists for emp -> default opt-in.
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 2)  # requester + assignee
+
+    def test_global_master_switch_off_suppresses_ticket_emails(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        # Creation mail goes to the requester (master on); the opted-out
+        # assignee (emp) receives nothing.
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.mgr.email])
+
+    def test_category_opt_out_only_affects_that_category(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=True,
+            categories={"ticket_status_change": False})
+        # emp creates a ticket -> creation email (master switch) flows.
+        auth(self.c, self.emp)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 1)  # creation to emp (master) flows
+        t = Ticket.objects.get(title="t")
+        # Status change -> requester (emp) opted out of ticket_status_change
+        # -> suppressed, while creation (master) still delivered.
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.patch(f"/api/tickets/{t.pk}/",
+                               {"status": "in_progress"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)  # no status email
+
+        # The opt-out did not block the unrelated ticket_assignment category:
+        # a staff-created ticket assigned to emp still delivers the assignee.
+        before = len(mail.outbox)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t2", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), before + 2)  # creation + assignment
+
+    def test_essential_security_emails_not_suppressed(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.post("/api/accounts/verify-email/request/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        mail.outbox.clear()
+        res = self.c.post("/api/accounts/password-reset/request/",
+                          {"email": "e@x"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_in_app_notification_independent_of_email_preferences(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        # Creation mail to the requester (staff) still goes out; the opted-out
+        # assignee (emp) is email-suppressed ...
+        self.assertEqual(len(mail.outbox), 1)
+        # ... but the in-app notification for the assignee is unaffected.
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp).exists())
+
+
+@override_settings(**LOC)
+class TicketNotificationTransactionTests(TransactionTestCase):
+    """Regression coverage for accounts.email_utils._notify_user.
+
+    The in-app notification must be created only after the surrounding
+    transaction commits, so a rolled-back ticket creation or state change
+    never leaves an orphaned notification pointing at a non-existent or
+    reverted record.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="EM")
+        self.ticket = Ticket.objects.create(
+            title="Existing ticket",
+            description="existing",
+            category=self.tcat,
+            priority="medium",
+            status="open",
+            requester=self.emp,
+            department=self.dep)
+
+    def _notify(self):
+        from accounts.email_utils import _notify_user
+        return _notify_user(
+            self.mgr, self.emp,
+            "Ticket status changed", f"Ticket {self.ticket.pk} moved.",
+            self.ticket)
+
+    def test_notify_user_created_after_commit(self):
+        from accounts.email_utils import _notify_user
+        # Inside an atomic transaction: notification is deferred, not yet visible.
+        with transaction.atomic():
+            self._notify()
+            self.assertEqual(Notification.objects.count(), 0)
+        # After commit: created.
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.title, "Ticket status changed")
+
+    def test_notify_user_rolled_back_with_transaction(self):
+        from accounts.email_utils import _notify_user
+        try:
+            with transaction.atomic():
+                self._notify()
+                raise IntegrityError("boom")
+        except IntegrityError:
+            pass
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_notify_user_outside_transaction(self):
+        from accounts.email_utils import _notify_user
+        # No active transaction: callback runs immediately.
+        self.assertEqual(Notification.objects.count(), 0)
+        self._notify()
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.object_id, str(self.ticket.pk))
+
+    def test_notify_user_returns_none(self):
+        from accounts.email_utils import _notify_user
+        self.assertIsNone(self._notify())
+
+    def test_notify_user_skips_invalid_recipients(self):
+        from accounts.email_utils import _notify_user
+        _notify_user(None, self.emp, "t", "b", self.ticket)
+        _notify_user(self.mgr, None, "t", "b", self.ticket)
+        self.assertEqual(Notification.objects.count(), 0)
+
+@override_settings(**LOC)
+class TicketEmailPreferenceTests(TestCase):
+    """Opt out of ticket-event emails only; nothing else changes."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="AT")
+
+    def _ticket(self, requester=None):
+        return Ticket.objects.create(
+            title="t", description="d", category=self.tcat,
+            requester=requester or self.emp, department=self.dep)
+
+    def test_default_enabled_for_new_and_existing(self):
+        self.assertTrue(User._meta.get_field(
+            "receive_ticket_emails").default)
+        for u in (self.admin, self.mgr, self.emp):
+            u.refresh_from_db()
+            self.assertTrue(u.receive_ticket_emails)
+        fresh = User.objects.create_user(
+            username="n@x", email="n@example.com", employee_id="N1",
+            password="pw12345678")
+        self.assertTrue(fresh.receive_ticket_emails)
+
+    def test_opted_in_assignee_gets_create_email(self):
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 2)  # requester + assignee
+
+    def test_opted_out_assignee_skips_email_only(self):
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        t = Ticket.objects.get(pk=res.data["id"])
+        self.assertEqual(len(mail.outbox), 1)  # requester only
+        self.assertEqual(mail.outbox[0].to, [self.mgr.email])
+        # In-app notification still created for the assignee.
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp, object_id=str(t.pk)).exists())
+
+    def test_opted_out_requester_skips_status_email(self):
+        t = self._ticket()
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/tickets/{t.pk}/",
+                           {"status": "in_progress"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp, object_id=str(t.pk)).exists())
+
+    def test_bulk_update_sends_no_email_but_notifies(self):
+        t1 = self._ticket()
+        e2 = User.objects.create_user(
+            username="e2@x", email="e2@example.com", employee_id="E2",
+            password="pw12345678", home_department=self.dep)
+        t2 = Ticket.objects.create(
+            title="u", description="d", category=self.tcat,
+            requester=e2, department=self.dep)
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/tickets/bulk_update/",
+                          {"ids": [t1.pk, t2.pk],
+                           "changes": {"status": "in_progress"},
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp, object_id=str(t1.pk)).exists())
+        self.assertTrue(Notification.objects.filter(
+            recipient=e2, object_id=str(t2.pk)).exists())
+
+    def test_self_service_only_and_no_mass_assignment(self):
+        auth(self.c, self.emp)
+        res = self.c.patch("/api/accounts/me/",
+                           {"receive_ticket_emails": False}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["receive_ticket_emails"])
+        self.emp.refresh_from_db()
+        self.assertFalse(self.emp.receive_ticket_emails)
+        self.mgr.refresh_from_db()
+        self.assertTrue(self.mgr.receive_ticket_emails)
+        # Protected fields cannot ride along; invalid values rejected.
+        res = self.c.patch("/api/accounts/me/", {"role": "system_admin"},
+                           format="json")
+        self.assertEqual(res.status_code, 400)
+        self.emp.refresh_from_db()
+        self.assertEqual(self.emp.role, "employee")
+        res = self.c.patch("/api/accounts/me/",
+                           {"receive_ticket_emails": "maybe"},
+                           format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_other_flows_do_not_reset_preference(self):
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.admin)
+        res = self.c.post(f"/api/accounts/users/{self.emp.pk}/change_role/",
+                          {"role": "employee",
+                           "can_create_tickets": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/accounts/users/{self.emp.pk}/",
+                           {"phone": "111"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        res = self.c.post("/api/accounts/users/bulk_update/",
+                          {"rows": [{"employee_id": "E1", "phone": "222"}],
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        res = self.c.post("/api/accounts/users/bulk_import/",
+                          {"rows": [{"employee_id": "E1",
+                                      "email": "newmail@example.com",
+                                      "phone": "333"}],
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.emp.refresh_from_db()
+        self.assertFalse(self.emp.receive_ticket_emails)
+
+    def test_verification_and_reset_ignore_preference(self):
+        self.emp.receive_ticket_emails = False
+        self.emp.save(update_fields=["receive_ticket_emails"])
+        auth(self.c, self.emp)
+        res = self.c.post("/api/accounts/verify-email/request/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        res = self.c.post("/api/accounts/password-reset/request/",
+                          {"email": "e@x"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 2)
+
+
+class AuditLogFilterTests(TestCase):
+    def setUp(self):
+        from common.models import AuditLog
+
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        AuditLog.objects.create(actor=self.admin, action="create",
+                                entity_type="tickets.Ticket", object_id="1")
+        AuditLog.objects.create(actor=self.mgr, action="update",
+                                entity_type="assets.Asset", object_id="2")
+
+    def _rows(self, res):
+        self.assertEqual(res.status_code, 200)
+        data = res.data
+        return data["results"] if isinstance(data, dict) else data
+
+    def test_admin_sees_all(self):
+        auth(self.c, self.admin)
+        rows = self._rows(self.c.get("/api/common/audit-logs/"))
+        self.assertEqual(len(rows), 2)
+
+    def test_non_admin_forbidden(self):
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/audit-logs/")
+        self.assertEqual(res.status_code, 403)
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/audit-logs/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_filter_action(self):
+        auth(self.c, self.admin)
+        rows = self._rows(
+            self.c.get("/api/common/audit-logs/", {"action": "create"}))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["action"], "create")
+
+    def test_filter_action_rejects_unknown(self):
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/audit-logs/",
+                         {"action": "drop table"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_filter_entity_type(self):
+        auth(self.c, self.admin)
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"entity_type": "assets.Asset"}))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["entity_type"], "assets.Asset")
+
+    def test_filter_dates(self):
+        from django.utils import timezone
+
+        auth(self.c, self.admin)
+        today = timezone.now().date().isoformat()
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"date_from": today}))
+        self.assertEqual(len(rows), 2)
+        rows = self._rows(self.c.get(
+            "/api/common/audit-logs/", {"date_from": "2999-01-01"}))
+        self.assertEqual(rows, [])
+        res = self.c.get("/api/common/audit-logs/",
+                         {"date_from": "not-a-date"})
+        self.assertEqual(res.status_code, 400)
+
+
+
+class DataIntegrityReportTests(TestCase):
+    """READ-ONLY data-integrity report: identifies inconsistent records."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+
+    def test_employee_forbidden(self):
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_manager_forbidden(self):
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_admin_reports_holder_without_open_assignment(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="Laptops")
+        Asset.objects.create(asset_tag="LT-9", name="n", category=cat,
+                             status="assigned", assigned_to=self.emp)
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 200)
+        codes = [i["code"] for i in res.data["issues"]]
+        self.assertIn("holder_without_open_assignment", codes)
+
+    def test_clean_state_has_no_issues(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="Laptops")
+        Asset.objects.create(asset_tag="LT-8", name="n", category=cat)
+        auth(self.c, self.admin)
+        res = self.c.get("/api/common/data-integrity/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["issues"], [])
+
+
+class ExportDatasetTests(TestCase):
+    """Read-only multi-format exports (CSV / XLSX / PDF / DOCX)."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        auth(self.c, self.mgr)
+
+    def test_employees_csv(self):
+        res = self.c.get("/api/common/exports/employees/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("text/csv", res["Content-Type"])
+        self.assertIn("attachment", res["Content-Disposition"])
+        self.assertIn("employees_", res["Content-Disposition"])
+        self.assertTrue(res.content)
+
+    def test_assets_xlsx(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="Laptops")
+        Asset.objects.create(asset_tag="A1", name="n", category=cat)
+        res = self.c.get("/api/common/exports/assets/?format=xlsx")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument"
+            ".spreadsheetml.sheet", res["Content-Type"])
+
+    def test_tickets_pdf(self):
+        res = self.c.get("/api/common/exports/tickets/?format=pdf")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("application/pdf", res["Content-Type"])
+
+    def test_departments_docx(self):
+        res = self.c.get("/api/common/exports/departments/?format=docx")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument"
+            ".wordprocessingml.document", res["Content-Type"])
+
+    def test_unknown_dataset_404(self):
+        res = self.c.get("/api/common/exports/nope/?format=csv")
+        self.assertEqual(res.status_code, 404)
+
+    def test_unsupported_format_is_rejected(self):
+        res = self.c.get("/api/common/exports/assets/?format=exe")
+        self.assertNotEqual(res.status_code, 200)
+
+    def test_employee_forbidden_on_employees_export(self):
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/employees/?format=csv")
+        self.assertEqual(res.status_code, 403)
+
+    def test_selected_scope_returns_only_requested_rows(self):
+        from accounts.models import User
+        extra = User.objects.create_user(
+            username="e9@x", email="e9@example.com", employee_id="E9",
+            password="pw12345678", home_department=self.dep)
+        res = self.c.get(
+            f"/api/common/exports/employees/?format=csv&scope=selected&ids={extra.pk},{self.emp.pk}")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("e9@example.com", blob)
+        self.assertIn("E9", blob)
+
+    def test_export_writes_audit_log(self):
+        from common.models import AuditLog
+        before = AuditLog.objects.filter(action="export").count()
+        res = self.c.get("/api/common/exports/tickets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        after = AuditLog.objects.filter(action="export").count()
+        self.assertEqual(after, before + 1)
+
+    def test_employee_forbidden_on_assignments_export(self):
+        """Assignments carry employee_email/assigned_by_email (PII); export
+        must require IT staff, matching the employees dataset."""
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/assignments/?format=csv")
+        self.assertEqual(res.status_code, 403)
+
+    def test_it_staff_can_export_assignments(self):
+        res = self.c.get("/api/common/exports/assignments/?format=csv")
+        self.assertEqual(res.status_code, 200)
+
+    def test_employee_asset_export_limited_to_visible_assets(self):
+        """The assets export must not bypass the asset list API's employee
+        scope (assigned to the employee or in their home department)."""
+        from accounts.models import Department
+        from assets.models import Asset, AssetCategory
+        other_dep = Department.objects.create(name="Other", code="OTHR")
+        visible_cat = AssetCategory.objects.create(name="Visible")
+        hidden_cat = AssetCategory.objects.create(name="Hidden")
+        visible = Asset.objects.create(
+            asset_tag="VISIBLE-1", name="visible", category=visible_cat,
+            department=self.dep, assigned_to=self.emp, status="assigned")
+        hidden = Asset.objects.create(
+            asset_tag="HIDDEN-1", name="hidden", category=hidden_cat,
+            department=other_dep)
+
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/assets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("VISIBLE-1", blob)
+        self.assertNotIn("HIDDEN-1", blob)
+
+    def test_it_staff_asset_export_sees_all_assets(self):
+        from accounts.models import Department
+        from assets.models import Asset, AssetCategory
+        other_dep = Department.objects.create(name="Other2", code="OT2")
+        hidden_cat = AssetCategory.objects.create(name="Hidden2")
+        hidden = Asset.objects.create(
+            asset_tag="HIDDEN-2", name="hidden", category=hidden_cat,
+            department=other_dep)
+        res = self.c.get("/api/common/exports/assets/?format=csv")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("HIDDEN-2", blob)
+
+
+
+class UserNotificationPreferenceTests(TestCase):
+    """Notification preference API permissions + centralized enforcement."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="AT")
+
+    # ---------- API: own-only access ----------
+
+    def test_employee_creates_own_preference_record(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/common/notification-preferences/",
+                          {"email_enabled": True,
+                           "categories": {"ticket_assignment": False}},
+                          format="json")
+        self.assertEqual(res.status_code, 201)
+        from common.models import UserNotificationPreference
+        self.assertTrue(UserNotificationPreference.objects.filter(
+            user=self.emp).exists())
+
+    def test_employee_cannot_read_others_preferences(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o@x", email="o@example.com", employee_id="O1",
+            password="pw12345678")
+        prefs = UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.get(
+            f"/api/common/notification-preferences/{prefs.pk}/")
+        self.assertEqual(res.status_code, 404)
+
+    def test_employee_cannot_update_others_preferences(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o2@x", email="o2@example.com", employee_id="O2",
+            password="pw12345678")
+        prefs = UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.patch(
+            f"/api/common/notification-preferences/{prefs.pk}/",
+            {"email_enabled": True}, format="json")
+        self.assertEqual(res.status_code, 404)
+        prefs.refresh_from_db()
+        self.assertFalse(prefs.email_enabled)
+
+    def test_it_staff_can_view_all_preferences_for_auditing(self):
+        from common.models import UserNotificationPreference
+        other = User.objects.create_user(
+            username="o3@x", email="o3@example.com", employee_id="O3",
+            password="pw12345678")
+        UserNotificationPreference.objects.create(
+            user=other, email_enabled=False, categories={})
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=True, categories={})
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/notification-preferences/")
+        self.assertEqual(res.status_code, 200)
+        rows = res.data["results"] if isinstance(res.data, dict) else res.data
+        self.assertEqual(len(rows), 2)
+
+    def test_invalid_category_value_rejected(self):
+        auth(self.c, self.emp)
+        res = self.c.post("/api/common/notification-preferences/",
+                          {"email_enabled": True, "categories": {"bogus": True}},
+                          format="json")
+        self.assertEqual(res.status_code, 400)
+
+    # ---------- Enforcement: enabled / disabled / missing / category ----------
+
+    def _create_ticket(self, requester=None, assignee=None):
+        return Ticket.objects.create(
+            title="t", description="d", category=self.tcat,
+            requester=requester or self.emp, department=self.dep,
+            assignee=assignee)
+
+    def test_missing_preference_record_defaults_to_enabled(self):
+        # No UserNotificationPreference row exists for emp -> default opt-in.
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 2)  # requester + assignee
+
+    def test_global_master_switch_off_suppresses_ticket_emails(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        # Creation mail goes to the requester (master on); the opted-out
+        # assignee (emp) receives nothing.
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.mgr.email])
+
+    def test_category_opt_out_only_affects_that_category(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=True,
+            categories={"ticket_status_change": False})
+        # emp creates a ticket -> creation email (master switch) flows.
+        auth(self.c, self.emp)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), 1)  # creation to emp (master) flows
+        t = Ticket.objects.get(title="t")
+        # Status change -> requester (emp) opted out of ticket_status_change
+        # -> suppressed, while creation (master) still delivered.
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.patch(f"/api/tickets/{t.pk}/",
+                               {"status": "in_progress"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)  # no status email
+
+        # The opt-out did not block the unrelated ticket_assignment category:
+        # a staff-created ticket assigned to emp still delivers the assignee.
+        before = len(mail.outbox)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t2", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(mail.outbox), before + 2)  # creation + assignment
+
+    def test_essential_security_emails_not_suppressed(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.emp)
+        res = self.c.post("/api/accounts/verify-email/request/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        mail.outbox.clear()
+        res = self.c.post("/api/accounts/password-reset/request/",
+                          {"email": "e@x"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_in_app_notification_independent_of_email_preferences(self):
+        from common.models import UserNotificationPreference
+        UserNotificationPreference.objects.create(
+            user=self.emp, email_enabled=False, categories={})
+        auth(self.c, self.mgr)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.c.post("/api/tickets/",
+                              {"title": "t", "description": "d",
+                               "category": self.tcat.pk,
+                               "department": self.dep.pk,
+                               "assignee": self.emp.pk}, format="json")
+        self.assertEqual(res.status_code, 201)
+        # Creation mail to the requester (staff) still goes out; the opted-out
+        # assignee (emp) is email-suppressed ...
+        self.assertEqual(len(mail.outbox), 1)
+        # ... but the in-app notification for the assignee is unaffected.
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.emp).exists())
+
+
+@override_settings(**LOC)
 class TicketNotificationTransactionTests(TestCase):
     """Regression coverage for accounts.email_utils._notify_user.
 
@@ -3746,4 +5609,181 @@ class CommonNotificationsTests(TransactionTestCase):
         # In-app notification created even though email is fully disabled.
         n = Notification.objects.get()
         self.assertEqual(n.recipient, self.mgr)
+
+
+@override_settings(**LOC)
+class TicketNotificationTransactionTests(TestCase):
+    """Regression coverage for accounts.email_utils._notify_user.
+
+    The in-app notification must be created only after the surrounding
+    transaction commits, so a rolled-back ticket creation or state change
+    never leaves an orphaned notification pointing at a non-existent or
+    reverted record.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="EM")
+        self.ticket = Ticket.objects.create(
+            case_number="ONB-2026-00001", case_type="onboarding",
+            employee=self.emp, status="open")
+
+    def _notify(self):
+        from accounts.email_utils import _notify_user
+        return _notify_user(
+            self.mgr, self.emp,
+            "Ticket status changed", f"Ticket {self.ticket.pk} moved.",
+            self.ticket)
+
+    def test_notify_user_created_after_commit(self):
+        with transaction.atomic():
+            self._notify()
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.title, "Ticket status changed")
+
+    def test_notify_user_rolled_back_with_transaction(self):
+        try:
+            with transaction.atomic():
+                self._notify()
+                raise IntegrityError("boom")
+        except IntegrityError:
+            pass
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_notify_user_outside_transaction(self):
+        self.assertEqual(Notification.objects.count(), 0)
+        self._notify_user()
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.object_id, str(self.ticket.pk))
+
+    def test_notify_user_returns_none(self):
+        self.assertIsNone(self._notify_user())
+
+    def test_notify_user_skips_invalid_recipients(self):
+        self._notify_user(None, self.emp, "t", "b", self.ticket)
+        self._notify_user(self.mgr, None, "t", "b", self.ticket)
+        self.assertEqual(Notification.objects.count(), 0)
+
+
+@override_settings(**LOC)
+class TicketNotificationTransactionTests(TestCase):
+    """Regression coverage for accounts.email_utils._notify_user.
+
+    The in-app notification must be created only after the surrounding
+    transaction commits, so a rolled-back ticket creation or state change
+    never leaves an orphaned notification pointing at a non-existent or
+    reverted record.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="EM")
+        self.ticket = Ticket.objects.create(
+            case_number="ONB-2026-00001", case_type="onboarding",
+            employee=self.emp, status="open")
+
+    def _notify(self):
+        from accounts.email_utils import _notify_user
+        return _notify_user(
+            self.mgr, self.emp,
+            "Ticket status changed", f"Ticket {self.ticket.pk} moved.",
+            self.ticket)
+
+    def test_notify_user_created_after_commit(self):
+        with transaction.atomic():
+            self._notify()
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.title, "Ticket status changed")
+
+    def test_notify_user_rolled_back_with_transaction(self):
+        try:
+            with transaction.atomic():
+                self._notify()
+                raise IntegrityError("boom")
+        except IntegrityError:
+            pass
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_notify_user_outside_transaction(self):
+        self.assertEqual(Notification.objects.count(), 0)
+        self._notify_user()
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.object_id, str(self.ticket.pk))
+
+    def test_notify_user_returns_none(self):
+        self.assertIsNone(self._notify_user())
+
+    def test_notify_user_skips_invalid_recipients(self):
+        self._notify_user(None, self.emp, "t", "b", self.ticket)
+        self._notify_user(self.mgr, None, "t", "b", self.ticket)
+        self.assertEqual(Notification.objects.count(), 0)
+
+
+@override_settings(**LOC)
+class TicketNotificationTransactionTests(TestCase):
+    """Regression coverage for accounts.email_utils._notify_user.
+
+    The in-app notification must be created only after the surrounding
+    transaction commits, so a rolled-back ticket creation or state change
+    never leaves an orphaned notification pointing at a non-existent or
+    reverted record.
+    """
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="EM")
+        self.ticket = Ticket.objects.create(
+            case_number="ONB-2026-00001", case_type="onboarding",
+            employee=self.emp, status="open")
+
+    def _notify(self):
+        from accounts.email_utils import _notify_user
+        return _notify_user(
+            self.mgr, self.emp,
+            "Ticket status changed", f"Ticket {self.ticket.pk} moved.",
+            self.ticket)
+
+    def test_notify_user_created_after_commit(self):
+        with transaction.atomic():
+            self._notify()
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.title, "Ticket status changed")
+
+    def test_notify_user_rolled_back_with_transaction(self):
+        try:
+            with transaction.atomic():
+                self._notify()
+                raise IntegrityError("boom")
+        except IntegrityError:
+            pass
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_notify_user_outside_transaction(self):
+        self.assertEqual(Notification.objects.count(), 0)
+        self._notify_user()
+        self.assertEqual(Notification.objects.count(), 1)
+        n = Notification.objects.get()
+        self.assertEqual(n.recipient, self.mgr)
+        self.assertEqual(n.object_id, str(self.ticket.pk))
+
+    def test_notify_user_returns_none(self):
+        self.assertIsNone(self._notify_user())
+
+    def test_notify_user_skips_invalid_recipients(self):
+        self._notify_user(None, self.emp, "t", "b", self.ticket)
+        self._notify_user(self.mgr, None, "t", "b", self.ticket)
+        self.assertEqual(Notification.objects.count(), 0)
 

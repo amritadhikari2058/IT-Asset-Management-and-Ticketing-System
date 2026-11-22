@@ -938,7 +938,11 @@ class TicketCreateAtomicityTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
 
     def test_email_failure_leaves_commit(self):
-        with patch("accounts.email_utils.send_ticket_notification",
+        # Phase 66: outbound email now flows through the transactional outbox
+        # and is delivered by the worker via accounts.email_utils._send. A
+        # transport failure must be isolated to the outbox row (retried later)
+        # and never roll back the committed ticket.
+        with patch("accounts.email_utils.send_mail",
                    side_effect=RuntimeError("smtp down")):
             with self.captureOnCommitCallbacks(execute=True):
                 res = self._create(assignee=self.emp.pk)

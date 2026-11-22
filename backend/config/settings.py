@@ -163,6 +163,14 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'common.tasks.evaluate_retention_policies',
         'schedule': 3600.0,  # hourly
     },
+    'process-notification-outbox': {
+        'task': 'common.tasks.process_notification_outbox',
+        'schedule': 30.0,  # every 30 seconds: durable safety net + retries
+    },
+    'cleanup-notification-outbox': {
+        'task': 'common.tasks.cleanup_notification_outbox',
+        'schedule': crontab(hour=3, minute=0),  # daily at 03:00
+    },
     'evaluate-component-health': {
         'task': 'common.monitoring_tasks.evaluate_component_health',
         'schedule': 300.0,  # every 5 minutes
@@ -402,6 +410,30 @@ INBOUND_ALLOWED_SENDER_DOMAINS = [
 INBOUND_MAILBOX_POLL_SECONDS = float(os.environ.get('INBOUND_MAILBOX_POLL_SECONDS', '60') or '60')
 # Dedup window for outbound ticket emails (per ticket + subject + recipient).
 EMAIL_DEDUP_TTL_SECONDS = float(os.environ.get('EMAIL_DEDUP_TTL_SECONDS', '3600') or '3600')
+
+# ---------- Transactional notification outbox (Phase 66) ----------
+# Durable, database-backed delivery queue for outbound notification email. The
+# outbox row is committed atomically with the business change; a Celery worker
+# delivers it with bounded retries. These knobs tune throughput and recovery
+# without code changes.
+NOTIFICATION_OUTBOX_BATCH_SIZE = int(
+    os.environ.get('NOTIFICATION_OUTBOX_BATCH_SIZE', '100'))
+NOTIFICATION_OUTBOX_MAX_ATTEMPTS = int(
+    os.environ.get('NOTIFICATION_OUTBOX_MAX_ATTEMPTS', '5'))
+NOTIFICATION_OUTBOX_LEASE_SECONDS = int(
+    os.environ.get('NOTIFICATION_OUTBOX_LEASE_SECONDS', '120'))
+NOTIFICATION_OUTBOX_RETRY_BASE_SECONDS = int(
+    os.environ.get('NOTIFICATION_OUTBOX_RETRY_BASE_SECONDS', '30'))
+NOTIFICATION_OUTBOX_RETRY_MAX_SECONDS = int(
+    os.environ.get('NOTIFICATION_OUTBOX_RETRY_MAX_SECONDS', '3600'))
+# When true, the on_commit wake-up runs delivery inline (no broker required).
+# Enabled only in the test settings; production uses the async Celery path.
+NOTIFICATION_OUTBOX_EAGER = (
+    os.environ.get('NOTIFICATION_OUTBOX_EAGER', 'false').lower() == 'true')
+# Retention for terminal outbox rows (delivered/failed/cancelled). Cleanup
+# never removes pending/retry/processing rows.
+NOTIFICATION_OUTBOX_RETENTION_DAYS = int(
+    os.environ.get('NOTIFICATION_OUTBOX_RETENTION_DAYS', '30'))
 
 # ---------- Email (console dev/test, SMTP prod via env; provider-agnostic) ----------
 EMAIL_BACKEND = os.environ.get(

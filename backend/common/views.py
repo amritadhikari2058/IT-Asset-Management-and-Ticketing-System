@@ -522,6 +522,13 @@ def operations_status(request):
     except Exception:
         celery_healthy = False
 
+    notification_outbox = None
+    try:
+        from common.outbox import get_outbox_stats
+        notification_outbox = get_outbox_stats()
+    except Exception:
+        notification_outbox = None
+
     return Response({
         "email": {
             "last_successful_processing_at": last_success,
@@ -534,6 +541,7 @@ def operations_status(request):
             "celery_healthy": celery_healthy,
             "recent_runs": runs,
         },
+        "notification_outbox": notification_outbox,
         "inbound": {
             "enabled": getattr(settings, "INBOUND_MAILBOX_ENABLED", True),
             "mailbox": getattr(settings, "INBOUND_MAILBOX_NAME", "INBOX"),

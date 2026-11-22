@@ -14,6 +14,7 @@ from celery import shared_task
 from django.utils import timezone
 
 from common.models import BackgroundTaskRun, Notification
+from common.notifications import SYSTEM_CATEGORY, notify_user
 
 logger = logging.getLogger(__name__)
 
@@ -197,10 +198,11 @@ def check_ci_verification_age_task(self=None, batch_size=200, notify=True):
                         created_at__gte=cutoff,
                     ).exists()
                     if not already:
-                        Notification.objects.create(
-                            recipient=user,
-                            title=f"CMDB verification overdue: {ci.ci_number}",
-                            body=(
+                        created = notify_user(
+                            user,
+                            SYSTEM_CATEGORY,
+                            f"CMDB verification overdue: {ci.ci_number}",
+                            (
                                 f"{ci.ci_number} ({ci.name}) has not been "
                                 f"verified within "
                                 f"{VERIFICATION_THRESHOLD_DAYS} days. "
@@ -208,8 +210,11 @@ def check_ci_verification_age_task(self=None, batch_size=200, notify=True):
                             ),
                             entity_type="cmdb.ConfigurationItem",
                             object_id=str(ci.pk),
+                            dedupe=False,
+                            post_commit=False,
                         )
-                        notified += 1
+                        if created is not None:
+                            notified += 1
 
         run.status = "succeeded"
         run.success = True

@@ -14,6 +14,7 @@ from django.conf import settings
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
+import uuid
 
 
 class SoftDeleteQuerySet(models.QuerySet):
@@ -207,6 +208,148 @@ class Notification(SoftDeleteModel):
     def __str__(self):
         return f"To {self.recipient_id}: {self.title[:60]}"
 
+
+class NotificationOutboxEvent(models.Model):
+    """Transactional outbox row for durable asynchronous notification delivery.
+
+    Phase 66. A row is inserted inside the *same* database transaction as the
+    business change that triggered it (ticket creation, status change, ...).
+    It therefore commits or rolls back atomically with that change: a crash
+    after commit can never erase a queued delivery, and a rolled-back business
+    transaction can never leave an orphaned delivery.
+
+    A Celery worker (``common.tasks.process_notification_outbox``) and a
+    low-latency ``on_commit`` wake-up (``common.tasks.deliver_outbox_event``)
+    claim pending rows, attempt the external delivery (SMTP), and persist the
+    outcome. Correctness does NOT depend on the wake-up: the periodic scanner
+    re-discovers any row the wake-up missed.
+
+    Delivery semantics are **at-least-once**. A worker can hand a message to
+    SMTP and crash before recording success; a retry then sends it again. The
+    ``dedupe_key`` collapses duplicate *event registration* (the same logical
+    email enqueued repeatedly while still active) but cannot make the external
+    SMTP hand-off exactly-once.
+
+    State machine::
+
+        pending ──claim──▶ processing ──success──▶ delivered (terminal)
+           ▲                    │
+           │                 failure, attempts < max
+           └──── retry ◀────────┘
+                                │ failure, attempts >= max
+                                ▼
+                             failed (terminal)
+        pending/retry ──admin cancel──▶ cancelled (terminal)
+
+    An abandoned ``processing`` row whose lease has expired is recovered back
+    to ``retry`` (or ``failed`` once attempts are exhausted) by the scanner.
+    """
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("retry", "Retry scheduled"),
+        ("processing", "Processing"),
+        ("delivered", "Delivered"),
+        ("failed", "Failed"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    #: Statuses from which a worker may claim the row for delivery.
+    CLAIMABLE_STATUSES = ("pending", "retry")
+    #: Terminal statuses (no further automatic delivery attempts).
+    TERMINAL_STATUSES = ("delivered", "failed", "cancelled")
+
+    CHANNEL_CHOICES = [
+        ("email", "Email"),
+    ]
+
+    #: Upper bound for the structured payload (bytes, serialized JSON). Email
+    #: subjects/bodies are small; an oversized payload indicates a misuse and
+    #: is rejected at enqueue time rather than silently bloating the row.
+    MAX_PAYLOAD_BYTES = 16 * 1024
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event_type = models.CharField(
+        max_length=100, db_index=True,
+        help_text="Logical event/channel discriminator, e.g. "
+                  "'ticket.email.created'.")
+    channel = models.CharField(
+        max_length=20, choices=CHANNEL_CHOICES, default="email", db_index=True)
+    # Recipient reference. SET_NULL so a deleted account never blocks retention
+    # or row deletion; the snapshot email below preserves deliverability.
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="outbox_events")
+    recipient_email = models.EmailField(
+        max_length=254, blank=True, default="",
+        help_text="Recipient address snapshot captured at enqueue time.")
+    notification = models.ForeignKey(
+        "common.Notification", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="outbox_events",
+        help_text="Related in-app notification, when one was created.")
+    category = models.CharField(
+        max_length=50, blank=True, default="",
+        help_text="Notification preference category re-checked at delivery "
+                  "(empty = global master switch only).")
+    payload = models.JSONField(
+        default=dict, blank=True,
+        help_text="Structured, versionable delivery payload (subject, body, "
+                  "template, context). Never secrets or credentials.")
+    dedupe_key = models.CharField(
+        max_length=64, null=True, blank=True,
+        help_text="Idempotency fingerprint collapsing duplicate registration "
+                  "of the same logical delivery while a row is still active.")
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default="pending", db_index=True)
+    attempts = models.PositiveIntegerField(
+        default=0, help_text="Delivery attempts started (incremented on claim).")
+    max_attempts = models.PositiveIntegerField(
+        default=5, help_text="Attempt ceiling before the row becomes 'failed'.")
+    next_attempt_at = models.DateTimeField(
+        null=True, blank=True, db_index=True,
+        help_text="Earliest time the row may be claimed (retry backoff).")
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    lease_expires_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Processing lease deadline; an expired lease is recoverable.")
+    claimed_by = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="Worker identifier owning the active claim.")
+    last_error = models.TextField(
+        blank=True, default="",
+        help_text="Sanitized failure summary (exception type, no PII/secrets).")
+    cancel_reason = models.CharField(
+        max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        constraints = [
+            # Collapse duplicate registration of the same logical delivery while
+            # a row is still active. Delivered/failed/cancelled rows keep their
+            # dedupe_key (audit trail) but no longer block a future, legitimate
+            # re-send of the same logical event.
+            models.UniqueConstraint(
+                fields=["dedupe_key"],
+                condition=~Q(status__in=("delivered", "failed", "cancelled")),
+                name="unique_active_outbox_dedupe"),
+        ]
+        indexes = [
+            models.Index(fields=["status", "next_attempt_at"],
+                         name="outbox_claim_idx"),
+            models.Index(fields=["status", "lease_expires_at"],
+                         name="outbox_lease_idx"),
+            models.Index(fields=["recipient"],
+                         name="outbox_recipient_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.event_type} -> {self.recipient_email or self.recipient_id} [{self.status}]"
+
+    def is_terminal(self):
+        return self.status in self.TERMINAL_STATUSES
 
 
 class PrivacyErasureRequest(models.Model):

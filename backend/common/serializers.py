@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from common.models import (AuditLog, DataRetentionExecution,
                            DataRetentionPolicy, HealthCheckResult,
+                           NotificationOutboxEvent,
                            OperationalAlert, OperationalErrorEvent,
                            OperationalIncident, Notification,
                            PrivacyErasureRequest,
@@ -305,6 +306,28 @@ class OperationalAlertSerializer(serializers.ModelSerializer):
             "occurrence_count", "acknowledged", "acknowledged_at",
             "acknowledged_by", "acknowledged_by_email", "resolved",
             "resolved_at", "resolved_by", "resolved_by_email", "details",
+        ]
+        read_only_fields = fields
+
+
+class NotificationOutboxEventSerializer(serializers.ModelSerializer):
+    """Read-only serializer for outbox delivery events.
+
+    ``payload`` is intentionally excluded from list output: it may contain email
+    bodies (user content). It is exposed only through the dedicated detail
+    action, which is gated to administrators.
+    """
+
+    recipient_email = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = NotificationOutboxEvent
+        fields = [
+            "id", "event_type", "channel", "recipient", "recipient_email",
+            "category", "status", "attempts", "max_attempts",
+            "next_attempt_at", "last_attempt_at", "delivered_at",
+            "lease_expires_at", "claimed_by", "last_error", "cancel_reason",
+            "created_at", "updated_at",
         ]
         read_only_fields = fields
 

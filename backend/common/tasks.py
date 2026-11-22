@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 TASK_NAME = "common.tasks.process_inbound_mailbox"
 RETENTION_EVAL_TASK = "common.tasks.evaluate_retention_policies"
 RETENTION_EXECUTE_TASK = "common.tasks.execute_retention_policy"
+OUTBOX_DELIVER_TASK = "common.tasks.deliver_outbox_event"
+OUTBOX_BATCH_TASK = "common.tasks.process_notification_outbox"
+OUTBOX_CLEANUP_TASK = "common.tasks.cleanup_notification_outbox"
 
 # How far ahead a retention policy is claimed when it is dispatched. A policy
 # is evaluated at most once per interval, even if Celery Beat runs
@@ -310,6 +313,84 @@ def _render_report(payload, fmt):
     # Fallback to CSV.
     from common.exports import _csv_bytes
     return _csv_bytes(rows, fields)
+
+
+@shared_task(name=OUTBOX_DELIVER_TASK, max_retries=0)
+def deliver_outbox_event(event_id):
+    """Deliver a single outbox event (low-latency ``on_commit`` wake-up).
+
+    Delivery success/failure is recorded on the outbox row itself; the task
+    never raises so a failed SMTP hand-off cannot surface as a Celery failure
+    (the row is retried by the scanner under bounded backoff instead).
+    """
+    from common.outbox import deliver_event_core
+
+    return deliver_event_core(str(event_id))
+
+
+@shared_task(bind=True, name=OUTBOX_BATCH_TASK, max_retries=0)
+def process_notification_outbox(self, batch_size=None):
+    """Periodic scanner: recover expired leases and deliver a bounded batch.
+
+    This is the durable safety net for the transactional outbox. It re-discovers
+    any event the best-effort ``on_commit`` wake-up missed (broker outage, crash
+    after commit) and drives retries to completion. One ``BackgroundTaskRun``
+    row records each sweep for operational visibility.
+    """
+    from common.outbox import process_pending_batch
+
+    run = BackgroundTaskRun.objects.create(
+        task_name=OUTBOX_BATCH_TASK, status="running", success=False,
+        payload={"action": "process_notification_outbox"})
+    try:
+        summary = process_pending_batch(batch_size=batch_size)
+        run.status = "succeeded"
+        run.success = True
+        run.payload = summary
+        run.finished_at = timezone.now()
+        run.save(update_fields=["status", "success", "payload", "finished_at"])
+        return summary
+    except Exception as exc:  # noqa: BLE001 - defensive: never hot-loop
+        logger.exception("Outbox batch delivery failed")
+        run.status = "failed"
+        run.success = False
+        run.error_summary = type(exc).__name__
+        run.finished_at = timezone.now()
+        run.save(update_fields=["status", "success", "error_summary",
+                                "finished_at"])
+        return {"error": type(exc).__name__}
+
+
+@shared_task(bind=True, name=OUTBOX_CLEANUP_TASK, max_retries=1,
+             default_retry_delay=300)
+def cleanup_notification_outbox(self, retention_days=None):
+    """Periodic retention: delete terminal outbox rows past the cutoff.
+
+    Only delivered/failed/cancelled rows are eligible; in-flight rows are never
+    removed. One ``BackgroundTaskRun`` row records each cleanup for visibility.
+    """
+    from common.outbox import cleanup_outbox_events
+
+    run = BackgroundTaskRun.objects.create(
+        task_name=OUTBOX_CLEANUP_TASK, status="running", success=False,
+        payload={"action": "cleanup_notification_outbox"})
+    try:
+        deleted = cleanup_outbox_events(retention_days=retention_days)
+        run.status = "succeeded"
+        run.success = True
+        run.payload = {"deleted": deleted}
+        run.finished_at = timezone.now()
+        run.save(update_fields=["status", "success", "payload", "finished_at"])
+        return {"deleted": deleted}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Outbox cleanup failed")
+        run.status = "failed"
+        run.success = False
+        run.error_summary = type(exc).__name__
+        run.finished_at = timezone.now()
+        run.save(update_fields=["status", "success", "error_summary",
+                                "finished_at"])
+        return {"error": type(exc).__name__}
 
 
 @shared_task(bind=True, max_retries=2, retry_backoff=300)

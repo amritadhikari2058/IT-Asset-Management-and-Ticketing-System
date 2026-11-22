@@ -502,65 +502,79 @@ class TicketViewSet(viewsets.ModelViewSet):
             _notify_user(obj.assignee, user,
                          f"Ticket #{obj.pk} assigned to you",
                          f"{obj.title}\nPriority: {obj.priority}", obj)
-        # Email AFTER the outer transaction commits. on_commit() respects the
-        # outermost transaction, so a rolled-back enclosing transaction cannot
-        # send mail. Callbacks are best-effort: failures are swallowed so they
-        # never affect the committed ticket, and in TestCase they run when the
-        # test transaction commits/captureOnCommit is used.
+            # Phase 66: enqueue durable email deliveries in THIS transaction so
+            # they commit atomically with the ticket (a crash after commit can
+            # never lose the queued email; a rollback removes them). Each
+            # enqueue registers a best-effort on_commit wake-up.
+            from common.outbox import enqueue_email
+            from accounts.email_utils import ticket_links as _ticket_links
+            ticket_pk = obj.pk
+            ticket_title = obj.title
+            ticket_status = obj.status
+            ticket_priority = obj.priority
+            ticket_asset_id = obj.asset_id
+            requester_email = getattr(user, "email", "")
+            requester_wants = _wants_ticket_email(user)
+            assignee = obj.assignee
+            assignee_email = getattr(assignee, "email", "") if assignee else ""
+            assignee_wants = bool(
+                assignee and assignee_email
+                and _wants_ticket_email(assignee,
+                                        category=TICKET_ASSIGNMENT_CATEGORY))
+            if requester_wants and requester_email:
+                _fe, _ = _ticket_links(ticket_pk)
+                enqueue_email(
+                    event_type="ticket.email.created",
+                    to_email=requester_email,
+                    subject=f"Ticket #{ticket_pk} created: {ticket_title}",
+                    body=(f"Your ticket was created.\nStatus: {ticket_status}\n"
+                          f"View: {_fe}"),
+                    recipient=user, category="", ticket_id=ticket_pk)
+            if assignee_wants:
+                _fe, _ = _ticket_links(ticket_pk)
+                enqueue_email(
+                    event_type="ticket.email.assigned",
+                    to_email=assignee_email,
+                    subject=f"Ticket #{ticket_pk} assigned to you",
+                    body=f"{ticket_title}\nPriority: {ticket_priority}\n"
+                         f"View: {_fe}",
+                    recipient=assignee,
+                    category=TICKET_ASSIGNMENT_CATEGORY, ticket_id=ticket_pk)
+        # SLA / maintenance side-effects still run AFTER the outer commit via
+        # on_commit (unchanged behaviour): they are secondary notifications,
+        # best-effort, and never affect the committed ticket.
         from accounts.email_utils import (
-            send_ticket_notification, ticket_links,
             _notify_sla_approaching, _notify_sla_breached,
             _notify_maintenance_reminder
         )
-        ticket_pk = obj.pk
-        ticket_title = obj.title
-        ticket_status = obj.status
-        ticket_priority = obj.priority
-        ticket_asset_id = obj.asset_id
-        requester_email = getattr(user, "email", "")
-        requester_wants = _wants_ticket_email(user)
-        assignee = obj.assignee
-        assignee_email = getattr(assignee, "email", "") if assignee else ""
-        assignee_wants = bool(
-            assignee and assignee_email
-            and _wants_ticket_email(assignee,
-                                    category=TICKET_ASSIGNMENT_CATEGORY))
 
-        def _send_create_emails():
+        def _send_followup_notifications():
             try:
                 ticket = Ticket.objects.filter(pk=ticket_pk).first()
                 if ticket is None:
                     return
-                fe, _ = ticket_links(ticket_pk)
-                if requester_wants and requester_email:
-                    send_ticket_notification(
-                        requester_email,
-                        f"Ticket #{ticket_pk} created: {ticket_title}",
-                        f"Your ticket was created.\nStatus: {ticket_status}\n"
-                        f"View: {fe}")
+                if requester_wants:
                     _notify_sla_approaching(ticket)
                     _notify_sla_breached(ticket)
                     if ticket_asset_id:
                         from assets.models import Maintenance
-                        maint = Maintenance.objects.filter(asset=ticket_asset_id).first()
+                        maint = Maintenance.objects.filter(
+                            asset=ticket_asset_id).first()
                         if maint:
                             _notify_maintenance_reminder(maint)
                 if assignee_wants:
-                    send_ticket_notification(
-                        assignee_email,
-                        f"Ticket #{ticket_pk} assigned to you",
-                        f"{ticket_title}\nPriority: {ticket_priority}\nView: {fe}")
                     _notify_sla_approaching(ticket)
                     _notify_sla_breached(ticket)
                     if ticket_asset_id:
                         from assets.models import Maintenance
-                        maint = Maintenance.objects.filter(asset=ticket_asset_id).first()
+                        maint = Maintenance.objects.filter(
+                            asset=ticket_asset_id).first()
                         if maint:
                             _notify_maintenance_reminder(maint)
             except Exception:
                 pass
 
-        transaction.on_commit(_send_create_emails)
+        transaction.on_commit(_send_followup_notifications)
 
     def perform_update(self, serializer):
         # select_for_update() inside the transaction boundary prevents
@@ -647,6 +661,31 @@ class TicketViewSet(viewsets.ModelViewSet):
                              f"Ticket #{updated.pk} status: {new_status}",
                              f"{updated.title}\nChanged {old['status']} -> "
                              f"{new_status}", updated)
+                # Phase 66: enqueue the durable status-change email in THIS
+                # transaction so it commits atomically with the status change.
+                from common.outbox import enqueue_email
+                from accounts.email_utils import ticket_links as _ticket_links
+                ticket_pk = updated.pk
+                old_status = old["status"]
+                ticket_title = updated.title
+                ticket_asset_id = updated.asset_id
+                requester = updated.requester
+                requester_email = (getattr(requester, "email", "")
+                                   if requester else "")
+                requester_wants = bool(
+                    requester and requester_email
+                    and _wants_ticket_email(
+                        requester, category=TICKET_STATUS_CATEGORY))
+                if requester_wants:
+                    _fe, _ = _ticket_links(ticket_pk)
+                    enqueue_email(
+                        event_type="ticket.email.status_change",
+                        to_email=requester_email,
+                        subject=f"Ticket #{ticket_pk} status: {new_status}",
+                        body=(f"{ticket_title}\nChanged {old_status} -> "
+                              f"{new_status}\nView: {_fe}"),
+                        recipient=requester,
+                        category=TICKET_STATUS_CATEGORY, ticket_id=ticket_pk)
             # Automation rules (workflows app): fire the trigger(s)
             # matching the real change(s) made in this update. Executions
             # are recorded inside the transaction, same fate as the
@@ -660,39 +699,21 @@ class TicketViewSet(viewsets.ModelViewSet):
                 run_rules("status_changed", updated)
             log_action(actor=self.request.user, action="update",
                        instance=updated, details={"changes": str(changes)})
-        # Email AFTER the outer transaction commits. on_commit() respects the
-        # outermost transaction, so a rolled-back enclosing transaction cannot
-        # send mail. Callbacks are best-effort and never affect the committed
-        # update.
+        # SLA / maintenance side-effects still run AFTER the outer commit via
+        # on_commit (unchanged behaviour). The primary status-change email was
+        # already enqueued durably inside the transaction above.
         if new_status and new_status != old["status"]:
             from accounts.email_utils import (
-                send_ticket_notification, ticket_links,
                 _notify_sla_approaching, _notify_sla_breached,
                 _notify_maintenance_reminder
             )
-            ticket_pk = updated.pk
-            ticket_title = updated.title
-            old_status = old["status"]
-            ticket_asset_id = updated.asset_id
-            requester = updated.requester
-            requester_email = getattr(requester, "email", "") if requester else ""
-            requester_wants = bool(
-                requester and requester_email
-                and _wants_ticket_email(requester,
-                                        category=TICKET_STATUS_CATEGORY))
 
-            def _send_status_emails():
+            def _send_followup_notifications():
                 try:
                     ticket = Ticket.objects.filter(pk=ticket_pk).first()
                     if ticket is None:
                         return
-                    fe, _ = ticket_links(ticket_pk)
                     if requester_wants:
-                        send_ticket_notification(
-                            requester_email,
-                            f"Ticket #{ticket_pk} status: {new_status}",
-                            f"{ticket_title}\nChanged {old_status} -> "
-                            f"{new_status}\nView: {fe}")
                         _notify_sla_approaching(ticket)
                         _notify_sla_breached(ticket)
                         if ticket_asset_id:
@@ -703,7 +724,7 @@ class TicketViewSet(viewsets.ModelViewSet):
                 except Exception:
                     pass
 
-            transaction.on_commit(_send_status_emails)
+            transaction.on_commit(_send_followup_notifications)
 
     def destroy(self, request, *args, **kwargs):
         obj = self.get_object()
@@ -1402,6 +1423,48 @@ class TicketViewSet(viewsets.ModelViewSet):
                             obj.assignee, user,
                             f"Ticket #{obj.pk} assigned to you",
                             f"{obj.title}\nPriority: {obj.priority}", obj)
+                        # Phase 66: enqueue durable create/assignment emails in
+                        # THIS row transaction (atomic with the ticket). The
+                        # per-row enqueue uses current values, so there is no
+                        # loop-variable capture hazard.
+                        from common.outbox import enqueue_email
+                        from accounts.email_utils import ticket_links as _tl
+                        ticket_pk = obj.pk
+                        ticket_title = obj.title
+                        ticket_status = obj.status
+                        ticket_priority = obj.priority
+                        ticket_asset_id = obj.asset_id
+                        requester_email = getattr(user, "email", "")
+                        requester_wants = _wants_ticket_email(user)
+                        assignee = obj.assignee
+                        assignee_email = (getattr(assignee, "email", "")
+                                          if assignee else "")
+                        assignee_wants = bool(
+                            assignee and assignee_email
+                            and _wants_ticket_email(
+                                assignee,
+                                category=TICKET_ASSIGNMENT_CATEGORY))
+                        if requester_wants and requester_email:
+                            _fe, _ = _tl(ticket_pk)
+                            enqueue_email(
+                                event_type="ticket.email.created",
+                                to_email=requester_email,
+                                subject=(f"Ticket #{ticket_pk} created: "
+                                         f"{ticket_title}"),
+                                body=(f"Your ticket was created.\n"
+                                      f"Status: {ticket_status}\nView: {_fe}"),
+                                recipient=user, category="", ticket_id=ticket_pk)
+                        if assignee_wants:
+                            _fe, _ = _tl(ticket_pk)
+                            enqueue_email(
+                                event_type="ticket.email.assigned",
+                                to_email=assignee_email,
+                                subject=f"Ticket #{ticket_pk} assigned to you",
+                                body=(f"{ticket_title}\nPriority: "
+                                      f"{ticket_priority}\nView: {_fe}"),
+                                recipient=assignee,
+                                category=TICKET_ASSIGNMENT_CATEGORY,
+                                ticket_id=ticket_pk)
                         # Durable row-level outcome: must commit atomically with the
                         # ticket and required transactional writes for tokenized ops.
                         if operation is not None:
@@ -1414,41 +1477,20 @@ class TicketViewSet(viewsets.ModelViewSet):
                                 ticket=obj,
                                 error_message="",
                             )
-                    # Email AFTER the row/outer transaction commits. on_commit()
-                    # respects outermost transaction; per-row atomic commits
-                    # trigger immediately when no outer transaction is active.
-                    ticket_pk = obj.pk
-                    ticket_title = obj.title
-                    ticket_status = obj.status
-                    ticket_priority = obj.priority
-                    ticket_asset_id = obj.asset_id
-                    requester_email = getattr(user, "email", "")
-                    requester_wants = _wants_ticket_email(user)
-                    assignee = obj.assignee
-                    assignee_email = getattr(assignee, "email", "") if assignee else ""
-                    assignee_wants = bool(
-                        assignee and assignee_email
-                        and _wants_ticket_email(
-                            assignee, category=TICKET_ASSIGNMENT_CATEGORY))
-
-                    def _send_bulk_create_emails(
-                        _pk=ticket_pk, _title=ticket_title, _status=ticket_status,
-                        _priority=ticket_priority, _asset_id=ticket_asset_id,
-                        _req_email=requester_email, _req_wants=requester_wants,
-                        _assignee_email=assignee_email, _assignee_wants=assignee_wants,
+                    # SLA / maintenance follow-ups after the row commit (the
+                    # primary create/assignment emails were already enqueued
+                    # durably inside the row transaction above).
+                    def _send_bulk_followups(
+                        _pk=ticket_pk, _asset_id=ticket_asset_id,
+                        _req_wants=requester_wants,
+                        _assignee_wants=assignee_wants,
                         _maint_cache=maint_cache,
                     ):
                         try:
                             ticket = Ticket.objects.filter(pk=_pk).first()
                             if ticket is None:
                                 return
-                            fe, _ = ticket_links(_pk)
-                            if _req_wants and _req_email:
-                                send_ticket_notification(
-                                    _req_email,
-                                    f"Ticket #{_pk} created: {_title}",
-                                    f"Your ticket was created.\nStatus: {_status}\n"
-                                    f"View: {fe}")
+                            if _req_wants:
                                 _notify_sla_approaching(ticket)
                                 _notify_sla_breached(ticket)
                                 if _asset_id:
@@ -1460,10 +1502,6 @@ class TicketViewSet(viewsets.ModelViewSet):
                                     if maint:
                                         _notify_maintenance_reminder(maint)
                             if _assignee_wants:
-                                send_ticket_notification(
-                                    _assignee_email,
-                                    f"Ticket #{_pk} assigned to you",
-                                    f"{_title}\nPriority: {_priority}\nView: {fe}")
                                 _notify_sla_approaching(ticket)
                                 _notify_sla_breached(ticket)
                                 if _asset_id:
@@ -1477,7 +1515,7 @@ class TicketViewSet(viewsets.ModelViewSet):
                         except Exception:
                             pass
 
-                    transaction.on_commit(_send_bulk_create_emails)
+                    transaction.on_commit(_send_bulk_followups)
                     ok.append({"row": i, "id": obj.pk, "title": obj.title})
                 except Exception as exc:
                     failed.append({"row": i, "errors": str(exc)})

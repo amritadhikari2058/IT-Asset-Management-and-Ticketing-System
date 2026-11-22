@@ -588,6 +588,36 @@ class CMDBBaselineDriftTests(TestCase):
         self.assertEqual(ip_findings[0].expected_value, "[masked]")
         self.assertEqual(ip_findings[0].actual_value, "[masked]")
 
+    def test_drift_notification_uses_central_contract(self):
+        from common.models import Notification
+
+        owner = make_user("it_support")
+        self.ci.owner = owner
+        self.ci.criticality = "critical"
+        self.ci.save(update_fields=["owner", "criticality", "updated_at"])
+
+        data = self._create_baseline("BL-notify")
+        api_client(self.manager).post(
+            f"/api/cmdb/baselines/{data['id']}/approve/", {}, format="json",
+        )
+        self.ci.refresh_from_db()
+        baseline = self.ci.baselines.filter(status="approved").first()
+
+        self.ci.name = "CI-renamed"
+        self.ci.save(update_fields=["name", "updated_at"])
+
+        with self.captureOnCommitCallbacks(execute=True):
+            findings = evaluate_configuration_drift(self.ci, baseline=baseline)
+        self.assertGreaterEqual(len(findings), 1)
+
+        notif = Notification.objects.get(
+            recipient=owner,
+            entity_type="cmdb.ConfigurationDriftFinding",
+            object_id=str(findings[0].pk),
+        )
+        self.assertIn("CMDB drift", notif.title)
+        self.assertIsNone(notif.dedupe_key)
+
     def test_drift_list_filters(self):
         ConfigurationDriftFinding.objects.create(
             configuration_item=self.ci,

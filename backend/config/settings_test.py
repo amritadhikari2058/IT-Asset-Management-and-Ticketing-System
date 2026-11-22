@@ -16,3 +16,10 @@ from .settings import *  # noqa: F401,F403
 PASSWORD_HASHERS = [
     "django.contrib.auth.hashers.MD5PasswordHasher",
 ]
+
+# Phase 66: the notification outbox wake-up normally enqueues a Celery task.
+# There is no broker in the test environment, so delivery is executed inline
+# on commit. This keeps the existing "email sent after commit" guarantees
+# intact (TransactionTestCase) without requiring Redis/Celery, and exercises
+# the real outbox delivery code path end-to-end.
+NOTIFICATION_OUTBOX_EAGER = True

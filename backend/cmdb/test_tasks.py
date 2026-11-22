@@ -120,3 +120,35 @@ class VerificationAgeTaskTests(TestCase):
         ).order_by("-id").first()
         self.assertEqual(run.status, "succeeded")
         self.assertTrue(run.success)
+
+    def test_verification_age_notification_contract(self):
+        """Migrated verification notification uses central contract; time-windowed repeat."""
+        ci = ConfigurationItem.objects.create(
+            name="OverdueCI", ci_type=self.t, status="active", source="manual",
+            owner=self.admin, criticality="high",
+        )
+        with patch("cmdb.tasks.check_ci_verification_age_task.retry", side_effect=Exception("retry")):
+            r1 = check_ci_verification_age_task(batch_size=50, notify=True)
+        self.assertGreaterEqual(r1["notifications_sent"], 1)
+
+        notif = Notification.objects.get(
+            recipient=self.admin,
+            entity_type="cmdb.ConfigurationItem",
+            object_id=str(ci.pk),
+        )
+        self.assertIn(ci.ci_number, notif.title)
+        self.assertIn("verified within", notif.body)
+        self.assertIsNone(notif.dedupe_key)
+
+        # Existing open finding is idempotent; no duplicate notification.
+        with patch("cmdb.tasks.check_ci_verification_age_task.retry", side_effect=Exception("retry")):
+            r2 = check_ci_verification_age_task(batch_size=50, notify=True)
+        self.assertEqual(r2["notifications_sent"], 0)
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient=self.admin,
+                entity_type="cmdb.ConfigurationItem",
+                object_id=str(ci.pk),
+            ).count(),
+            1,
+        )
