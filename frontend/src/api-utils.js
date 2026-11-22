@@ -71,14 +71,24 @@ export async function fetchPage(url, options) {
 
 /** Trigger a browser download for a Blob with a filename. */
 export function downloadBlob(blob, filename) {
+  // Revoke the old object URL from any previous call in this tab so
+  // temporary blobs do not accumulate across repeated downloads.
+  if (downloadBlob._lastUrl) {
+    try { URL.revokeObjectURL(downloadBlob._lastUrl); } catch { /* ignore */ }
+  }
   const url = URL.createObjectURL(blob);
+  downloadBlob._lastUrl = url;
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  a.rel = 'noopener';
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  setTimeout(() => {
+    try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+    if (downloadBlob._lastUrl === url) downloadBlob._lastUrl = null;
+  }, 5000);
 }
 
 /** Minimal CSV parser honoring quotes/escaped quotes/commas/newlines. */

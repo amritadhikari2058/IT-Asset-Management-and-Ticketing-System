@@ -130,6 +130,29 @@ class Asset(SoftDeleteModel):
             models.Index(fields=["department"], name="asset_department_idx"),
             models.Index(fields=["category"], name="asset_category_idx"),
             models.Index(fields=["vendor"], name="asset_vendor_idx"),
+            # Composite index for assignment queries: status + assigned_to
+            models.Index(
+                fields=["status", "assigned_to"],
+                name="asset_status_assigned_to_idx",
+# Partial unique index on serial_number for active (non-deleted) assets
+            # to prevent collisions during restoration. Soft-deleted assets may have
+            # duplicate serials to preserve historical data (see migration 0003 report).
+            models.Index(
+                fields=["serial_number"],
+                name="asset_serial_number_active_unique",
+                condition=~models.Q(is_deleted=True),
+            ),
+            ),
+            # Composite index for category-based queries: status + category
+            models.Index(
+                fields=["status", "category"],
+                name="asset_status_category_idx",
+            ),
+            # Composite index for department-based queries: status + department
+            models.Index(
+                fields=["status", "department"],
+                name="asset_status_department_idx",
+            ),
         ]
         permissions = [
             ("hard_delete_asset", "Can permanently delete assets"),

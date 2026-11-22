@@ -595,6 +595,10 @@ class TicketViewSet(viewsets.ModelViewSet):
                "resolution_notes": obj.resolution_notes,
                "asset": obj.asset_id}
         if not _is_ticket_staff(self.request.user):
+            if obj.requester_id != self.request.user.pk:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied(
+                    "You can only modify tickets you requested.")
             _reject_staff_only_changes(old, serializer.validated_data)
         new_status = serializer.validated_data.get("status")
         if new_status and not Ticket.can_transition(obj.status, new_status):
