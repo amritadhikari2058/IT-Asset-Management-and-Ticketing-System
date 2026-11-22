@@ -196,6 +196,21 @@ class Ticket(SoftDeleteModel):
             models.Index(fields=["resolved_at"], name="ticket_resolved_at_idx"),
             models.Index(fields=["closed_at"], name="ticket_closed_at_idx"),
             models.Index(fields=["reopened_at"], name="ticket_reopened_at_idx"),
+            # Composite index for dashboard summary queries: status + priority + assignee
+            models.Index(
+                fields=["status", "priority", "assignee"],
+                name="ticket_status_priority_assignee_idx",
+            ),
+            # Composite index for recent ticket queries: status + created_at
+            models.Index(
+                fields=["status", "created_at"],
+                name="ticket_status_created_at_idx",
+            ),
+            # Composite index for requester-scoped queries
+            models.Index(
+                fields=["requester", "status"],
+                name="ticket_requester_status_idx",
+            ),
         ]
         permissions = [
             ("hard_delete_ticket", "Can permanently delete tickets"),

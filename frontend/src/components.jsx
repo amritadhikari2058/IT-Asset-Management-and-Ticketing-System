@@ -326,7 +326,7 @@ export function TableControls({ tableVisible, onToggleTable, columns, visible, o
   const [open, setOpen] = useState(false);
   return (
     <div className="panel-title">
-      <h4>Inventory</h4>
+      <h4 className="panel-title-text">{columns[0]?.label ?? 'Table'}</h4>
       <div className="panel-actions">
         {open && (
           <div className="column-chooser">
@@ -553,7 +553,10 @@ export function ExportDialog({
       }
       const r = await api.get(
         `/common/exports/${dataset}/?${p.toString()}`,
-        { responseType: 'blob' },
+        {
+          responseType: 'blob',
+          headers: { Accept: 'application/octet-stream, */*' },
+        },
       );
       const cd = r.headers?.['content-disposition'] || '';
       const m = cd.match(/filename="([^"]+)"/);
@@ -889,32 +892,26 @@ export function Form({ children }) {
 
 export function Textarea({ rows, placeholder, ...props }) {
   return <textarea rows={rows} placeholder={placeholder} {...props} />;
+}export function Row({ children, className }) {
+  return <div className={`row${className ? ` ${className}` : ''}`}>{children}</div>;
 }
-
-export function Row({ children, className }) {
-  return <div className="row {className || ''}">{children}</div>;
-}
-
 export function Col({ children, sm, md, lg, xl, className }) {
   const size = { sm: 'sm-', md: 'md-', lg: 'lg-', xl: 'xl-' };
   const cls = size[sm] ? `${size[sm]}${sm}` : '';
   const cls2 = size[md] ? `${size[md]}${md}` : '';
   const cls3 = size[lg] ? `${size[lg]}${lg}` : '';
   const cls4 = size[xl] ? `${size[xl]}${xl}` : '';
-  return <div className="col ${cls2} ${cls3} ${cls4} ${className || ''}">{children}</div>;
+  return <div className={`col ${cls2} ${cls3} ${cls4}${className ? ` ${className}` : ''}`}>{children}</div>;
 }
-
 export function Card({ children, className }) {
-  return <div className="card {className || ''}">{children}</div>;
+  return <div className={`card${className ? ` ${className}` : ''}`}>{children}</div>;
 }
-
 export function Input({ label, ...props }) {
   const el = (props.rows || props.type === 'textarea')
     ? <textarea className="input" {...props} rows={props.rows || 3} />
     : <input className="input" {...props} />;
   return label ? <label className="field"><span>{label}</span>{el}</label> : el;
 }
-
 export function Select({ label, children, ...props }) {
   const el = <select className="input" {...props}>{children}</select>;
   return label ? <label className="field"><span>{label}</span>{el}</label> : el;

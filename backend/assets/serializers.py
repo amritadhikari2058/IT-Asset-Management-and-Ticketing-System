@@ -45,6 +45,15 @@ class AssetAttachmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = AssetAttachment
         fields = ["id", "asset", "file", "uploaded_by", "created_at", "is_deleted"]
+        read_only_fields = ["id", "uploaded_by", "created_at", "is_deleted"]
+
+    def get_fields(self):
+        # asset is writable at creation (perform_create validates visibility)
+        # but read-only on updates to prevent attachment reassignment.
+        fields = super().get_fields()
+        if self.instance is not None:
+            fields["asset"].read_only = True
+        return fields
 
     def validate_file(self, f):
         return validate_attachment_file(f)

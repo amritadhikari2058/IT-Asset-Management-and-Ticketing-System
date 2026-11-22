@@ -420,7 +420,10 @@ class TicketViewSet(viewsets.ModelViewSet):
         # employees can edit their own tickets, but staff-only *fields*
         # are guarded per-change in perform_update. Deletion (single +
         # bulk) is staff-only: employees cannot soft-delete tickets.
-        if self.action in ("bulk_update", "destroy", "bulk_delete"):
+        # Resolution/merge are IT-staff workflows; services enforce the
+        # same rule as defense in depth.
+        if self.action in ("bulk_update", "destroy", "bulk_delete",
+                           "resolve", "close", "merge"):
             return [IsITStaff()]
         return super().get_permissions()
 
@@ -1781,71 +1784,6 @@ class TicketHistoryViewSet(viewsets.ReadOnlyModelViewSet):
             return qs
         return qs.none()
 
-    @action(detail=True, methods=["post"])
-    def claim(self, request, pk=None):
-        from tickets.queue_services import claim_ticket
-        ticket = self.get_object()
-        try:
-            ticket = claim_ticket(ticket, request.user)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response(TicketSerializer(ticket).data)
-
-    @action(detail=True, methods=["post"])
-    def unclaim(self, request, pk=None):
-        from tickets.queue_services import unclaim_ticket
-        ticket = self.get_object()
-        reason = request.data.get("reason", "")
-        if not reason:
-            return Response({"detail": "reason is required."}, status=400)
-        try:
-            ticket = unclaim_ticket(ticket, request.user, reason)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response(TicketSerializer(ticket).data)
-
-    @action(detail=True, methods=["post"])
-    def reassign(self, request, pk=None):
-        from tickets.queue_services import reassign_ticket
-        from accounts.models import User
-        ticket = self.get_object()
-        target_id = request.data.get("assignee") or request.data.get("target_user")
-        reason = request.data.get("reason", "")
-        if not target_id:
-            return Response({"detail": "assignee is required."}, status=400)
-        if not reason:
-            return Response({"detail": "reason is required."}, status=400)
-        try:
-            target = User.objects.get(pk=target_id)
-        except User.DoesNotExist:
-            return Response({"detail": "Target user not found."}, status=404)
-        try:
-            ticket = reassign_ticket(ticket, target, request.user, reason)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response(TicketSerializer(ticket).data)
-
-    @action(detail=True, methods=["post"])
-    def move_queue(self, request, pk=None):
-        from tickets.queue_services import move_queue
-        from tickets.models import TicketQueue
-        ticket = self.get_object()
-        queue_id = request.data.get("queue")
-        reason = request.data.get("reason", "")
-        if not queue_id:
-            return Response({"detail": "queue is required."}, status=400)
-        if not reason:
-            return Response({"detail": "reason is required."}, status=400)
-        try:
-            target_queue = TicketQueue.objects.get(pk=queue_id, is_deleted=False)
-        except TicketQueue.DoesNotExist:
-            return Response({"detail": "Queue not found."}, status=404)
-        try:
-            ticket = move_queue(ticket, target_queue, request.user, reason)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response(TicketSerializer(ticket).data)
-
 
 
 class TicketAttachmentViewSet(viewsets.ModelViewSet):
@@ -2448,7 +2386,8 @@ class TicketBulkImportOperationViewSet(viewsets.ReadOnlyModelViewSet):
         ser.is_valid(raise_exception=True)
         duplicate_id = ser.validated_data["duplicate_ticket_id"]
         try:
-            duplicate = Ticket.objects.get(pk=duplicate_id, is_deleted=False)
+            duplicate = _ticket_visible_qs(request.user).get(
+                pk=duplicate_id, is_deleted=False)
         except Ticket.DoesNotExist:
             return Response({"detail": "Duplicate ticket not found."}, status=404)
         options = {"transfer_watchers": ser.validated_data.get(
