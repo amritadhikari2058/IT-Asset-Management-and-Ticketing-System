@@ -343,7 +343,7 @@ def export_dataset(request, dataset):
         rows = build_rows(dataset, request.user)
     if scope == "selected":
         id_set = set(ids)
-        rows = [r for r in rows if str(r.get("id")) in id_set]
+        rows = (r for r in rows if str(r.get("id")) in id_set)
     response = render_response(dataset, rows, fmt, request.user, request)
     AuditLog.objects.create(
         actor=request.user,
@@ -356,7 +356,7 @@ def export_dataset(request, dataset):
             "dataset": dataset,
             "format": fmt,
             "scope": scope,
-            "rows": len(rows),
+            "rows": response.export_row_count,
         },
     )
     return response

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from django.core import mail
 from django.core.cache import cache
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -1713,8 +1713,12 @@ class TicketCategoryEditTests(TestCase):
         self.assertIn("name", res.data)
 
 
-class TicketAttachmentSecurityTests(TestCase):
-    """Ticket attachment download security: authentication, scoping, IDOR."""
+class TicketAttachmentSecurityTests(TransactionTestCase):
+    """Ticket attachment download security: authentication, scoping, IDOR.
+
+    Download-response cleanup fires request_finished; autocommit must remain
+    active so the PostgreSQL connection can be reused between test methods.
+    """
 
     def setUp(self):
         self.dep, self.admin, self.mgr, self.emp = make_users()
@@ -1747,6 +1751,7 @@ class TicketAttachmentSecurityTests(TestCase):
         aid = self._upload().data["id"]
         dl = self.c.get(f"/api/tickets/attachments/{aid}/download/")
         self.assertEqual(dl.status_code, 200)
+        self.assertEqual(b"".join(dl.streaming_content), b"hello")
         dl.close()
 
     def test_staff_downloads_visible_attachment(self):
@@ -1754,6 +1759,7 @@ class TicketAttachmentSecurityTests(TestCase):
         aid = self._upload().data["id"]
         dl = self.c.get(f"/api/tickets/attachments/{aid}/download/")
         self.assertEqual(dl.status_code, 200)
+        self.assertEqual(b"".join(dl.streaming_content), b"hello")
         dl.close()
 
     def test_employee_cannot_download_other_employee_ticket_attachment(self):
@@ -1792,6 +1798,7 @@ class TicketAttachmentSecurityTests(TestCase):
         # No CRLF in the header value.
         self.assertNotIn("\r", dl["Content-Disposition"])
         self.assertNotIn("\n", dl["Content-Disposition"])
+        self.assertEqual(b"".join(dl.streaming_content), b"hello")
         dl.close()
 
     def test_download_sanitizes_crlf_filename(self):

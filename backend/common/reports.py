@@ -25,23 +25,26 @@ def _status_counts(queryset, field, choices):
     return counts
 
 
-def _sla_metrics(tickets, now=None):
-    """Return overdue/breached counts + compliance from an in-memory list.
-
-    - overdue: still open (not resolved/closed/archived) and past due.
-    - breached: resolved after its due date, or open and past due.
-    - compliance: resolved-with-due-date tickets resolved on time, as a %.
-    """
+def _ticket_metrics(tickets, now=None):
+    """Calculate SLA and average-resolution metrics in a single pass."""
     now = now or timezone.now()
     overdue = 0
     breached = 0
     resolved_with_sla = 0
     resolved_on_time = 0
+    resolution_total = 0
+    resolution_count = 0
     for t in tickets:
+        resolved_at = getattr(t, "resolved_at", None)
+        created_at = getattr(t, "created_at", None)
+        if resolved_at and created_at:
+            resolution_total += (
+                resolved_at - created_at).total_seconds() / 3600
+            resolution_count += 1
+
         due = getattr(t, "sla_due_at", None)
         if not due:
             continue
-        resolved_at = getattr(t, "resolved_at", None)
         status = getattr(t, "status", "")
         # Paused tickets are not overdue while their SLA clock is stopped.
         if status in ("waiting_requester", "waiting_third_party"):
@@ -65,16 +68,10 @@ def _sla_metrics(tickets, now=None):
         "resolved_with_sla": resolved_with_sla,
         "resolved_on_time": resolved_on_time,
         "compliance_pct": compliance,
-    }
-
-
-def _avg_resolution_hours(tickets):
-    deltas = [
-        (t.resolved_at - t.created_at).total_seconds() / 3600
-        for t in tickets
-        if getattr(t, "resolved_at", None) and getattr(t, "created_at", None)
-    ]
-    return round(sum(deltas) / len(deltas), 2) if deltas else None
+    }, (
+        round(resolution_total / resolution_count, 2)
+        if resolution_count else None
+    )
 
 
 def _coerce_date(value, end_of_day=False):
@@ -117,56 +114,87 @@ def dashboard_data(date_from=None, date_to=None):
         tickets, "priority", Ticket.PRIORITY_CHOICES)
     asset_status = _status_counts(assets, "status", Asset.STATUS_CHOICES)
 
-    open_tickets = tickets.filter(status__in=OPEN_TICKET_STATUSES)
     # Exclude tickets in SLA paused statuses from overdue calculation,
     # as the SLA clock is paused during these statuses
     paused_statuses = Ticket.SLA_PAUSED_STATUSES
-    overdue_qs = open_tickets.exclude(
-        status__in=paused_statuses
-    ).filter(sla_due_at__lt=now)
-    ticket_list = list(tickets.only(
-        "status", "priority", "sla_due_at", "resolved_at", "created_at"))
-    sla = _sla_metrics(ticket_list, now)
+    ticket_counts = tickets.aggregate(
+        total=Count("pk"),
+        open=Count("pk", filter=Q(status__in=OPEN_TICKET_STATUSES)),
+        overdue=Count(
+            "pk",
+            filter=Q(status__in=OPEN_TICKET_STATUSES)
+            & ~Q(status__in=paused_statuses)
+            & Q(sla_due_at__lt=now),
+        ),
+    )
+    sla, avg_resolution_hours = _ticket_metrics(
+        tickets.only(
+            "status", "sla_due_at", "resolved_at", "created_at"
+        ).iterator(chunk_size=2000),
+        now,
+    )
+
+    employee_counts = employees.aggregate(
+        total=Count("pk"),
+        active=Count("pk", filter=Q(is_active=True)),
+        inactive=Count("pk", filter=Q(is_active=False)),
+    )
+    asset_counts = assets.aggregate(
+        total=Count("pk", distinct=True),
+        under_maintenance=Count(
+            "pk", filter=Q(status="in_repair"), distinct=True),
+        with_open_maintenance=Count(
+            "pk",
+            filter=Q(maintenance__status__in=[
+                "scheduled", "in_progress", "overdue"]),
+            distinct=True,
+        ),
+    )
 
     open_maintenance = Maintenance.objects.select_related(
         "asset").filter(
         status__in=["scheduled", "in_progress", "overdue"])
     upcoming = open_maintenance.filter(
         scheduled_date__gte=now).order_by("scheduled_date", "id")[:8]
-    overdue_maintenance = open_maintenance.filter(scheduled_date__lt=now)
+    maintenance_counts = open_maintenance.aggregate(
+        open=Count("pk"),
+        overdue=Count("pk", filter=Q(scheduled_date__lt=now)),
+    )
 
-    pending_disposals = Disposal.objects.filter(approval_status="pending")
-    approved_disposals = Disposal.objects.filter(
-        approval_status="approved", disposal_date__isnull=True)
+    disposal_counts = Disposal.objects.aggregate(
+        pending_approval=Count(
+            "pk", filter=Q(approval_status="pending")),
+        approved_not_completed=Count(
+            "pk",
+            filter=Q(approval_status="approved", disposal_date__isnull=True),
+        ),
+    )
 
     return {
         "employees": {
-            "total": employees.count(),
-            "active": employees.filter(is_active=True).count(),
-            "inactive": employees.filter(is_active=False).count(),
+            "total": employee_counts["total"],
+            "active": employee_counts["active"],
+            "inactive": employee_counts["inactive"],
             "departments": Department.objects.count(),
         },
         "assets": {
-            "total": assets.count(),
+            "total": asset_counts["total"],
             "by_status": asset_status,
-            "under_maintenance": assets.filter(
-                status="in_repair").count(),
-            "with_open_maintenance": Asset.objects.filter(
-                maintenance__status__in=[
-                    "scheduled", "in_progress", "overdue"]).distinct().count(),
+            "under_maintenance": asset_counts["under_maintenance"],
+            "with_open_maintenance": asset_counts["with_open_maintenance"],
         },
         "tickets": {
-            "total": tickets.count(),
-            "open": open_tickets.count(),
-            "overdue": overdue_qs.count(),
+            "total": ticket_counts["total"],
+            "open": ticket_counts["open"],
+            "overdue": ticket_counts["overdue"],
             "by_status": ticket_status,
             "by_priority": ticket_priority,
             "sla": sla,
-            "avg_resolution_hours": _avg_resolution_hours(ticket_list),
+            "avg_resolution_hours": avg_resolution_hours,
         },
         "maintenance": {
-            "open": open_maintenance.count(),
-            "overdue": overdue_maintenance.count(),
+            "open": maintenance_counts["open"],
+            "overdue": maintenance_counts["overdue"],
             "upcoming": [
                 {
                     "id": m.pk,
@@ -181,8 +209,9 @@ def dashboard_data(date_from=None, date_to=None):
             ],
         },
         "disposals": {
-            "pending_approval": pending_disposals.count(),
-            "approved_not_completed": approved_disposals.count(),
+            "pending_approval": disposal_counts["pending_approval"],
+            "approved_not_completed": disposal_counts[
+                "approved_not_completed"],
             "recent": [
                 {
                     "id": d.pk,
@@ -288,7 +317,7 @@ def department_report_data(date_from=None, date_to=None,
             _AsQuerySet(dept_tickets), "priority", Ticket.PRIORITY_CHOICES)
         asset_counts = _status_counts(
             _AsQuerySet(bucket["assets"]), "status", Asset.STATUS_CHOICES)
-        sla = _sla_metrics(dept_tickets, now)
+        sla, avg_resolution_hours = _ticket_metrics(dept_tickets, now)
         results.append({
             "id": bucket["id"],
             "name": bucket["name"],
@@ -307,7 +336,7 @@ def department_report_data(date_from=None, date_to=None,
             "sla_overdue": sla["overdue"],
             "sla_breached": sla["breached"],
             "sla_compliance_pct": sla["compliance_pct"],
-            "avg_resolution_hours": _avg_resolution_hours(dept_tickets),
+            "avg_resolution_hours": avg_resolution_hours,
         })
 
     # ---- previous-period results (if applicable) ----
@@ -322,7 +351,7 @@ def department_report_data(date_from=None, date_to=None,
                 _AsQuerySet(dept_tickets), "priority", Ticket.PRIORITY_CHOICES)
             asset_counts = _status_counts(
                 _AsQuerySet(bucket["assets"]), "status", Asset.STATUS_CHOICES)
-            sla = _sla_metrics(dept_tickets, now)
+            sla, avg_resolution_hours = _ticket_metrics(dept_tickets, now)
             results_prev.append({
                 "id": bucket["id"],
                 "name": bucket["name"],
@@ -341,7 +370,7 @@ def department_report_data(date_from=None, date_to=None,
                 "sla_overdue": sla["overdue"],
                 "sla_breached": sla["breached"],
                 "sla_compliance_pct": sla["compliance_pct"],
-                "avg_resolution_hours": _avg_resolution_hours(dept_tickets),
+                "avg_resolution_hours": avg_resolution_hours,
             })
 
     return {

@@ -154,7 +154,8 @@ def _exec_action(action, ticket, rule, results):
         raise ValueError(f"Unknown action {t}")
 
 
-def run_rules(trigger, ticket, depth=0, visited=None):
+def run_rules(trigger, ticket, depth=0, visited=None,
+              enabled_rules_cache=None):
     """Evaluate every enabled rule with this trigger against the ticket.
 
     Each rule whose conditions all match (empty conditions always match)
@@ -170,8 +171,16 @@ def run_rules(trigger, ticket, depth=0, visited=None):
     if visited is None:
         visited = set()
     created = 0
-    rules = AutomationRule.objects.filter(
-        is_enabled=True, trigger=trigger).order_by("id")
+    if enabled_rules_cache is None:
+        rules = AutomationRule.objects.filter(
+            is_enabled=True, trigger=trigger).order_by("id")
+    else:
+        cache_key = f"enabled_rules:{trigger}"
+        if cache_key not in enabled_rules_cache:
+            enabled_rules_cache[cache_key] = list(
+                AutomationRule.objects.filter(
+                    is_enabled=True, trigger=trigger).order_by("id"))
+        rules = enabled_rules_cache[cache_key]
     for rule in rules:
         key = (rule.id, ticket.id, trigger)
         if key in visited:

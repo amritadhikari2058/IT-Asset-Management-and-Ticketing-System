@@ -34,13 +34,18 @@ class KnowledgeBaseSearchTests(TestCase):
             "slug": "vpn-reset",
             "summary": "How to reset the VPN client",
             "content": "Step one",
-            "status": "published",
             "category": "networking",
             "tags": ["vpn"],
         }
         payload.update(overrides)
+        requested_status = payload.pop("status", "published")
         res = self.c.post("/api/assets/knowledge-base/", payload, format="json")
         self.assertEqual(res.status_code, 201, res.data)
+        # These tests exercise search visibility, not governance. Create a
+        # valid article through the API, then arrange the persisted lifecycle
+        # state as a fixture instead of bypassing publication in production.
+        KnowledgeBaseArticle.objects.filter(pk=res.data["id"]).update(
+            status=requested_status)
         return res.data
 
     def _search(self, user, params=None):
@@ -148,13 +153,14 @@ class KnowledgeBaseExportTests(TestCase):
             "slug": "vpn-reset",
             "summary": "How to reset the VPN client",
             "content": "Step one",
-            "status": status,
             "category": "networking",
             "tags": ["vpn"],
         }
         payload.update(overrides)
         res = self.c.post("/api/assets/knowledge-base/", payload, format="json")
         self.assertEqual(res.status_code, 201, res.data)
+        KnowledgeBaseArticle.objects.filter(pk=res.data["id"]).update(
+            status=status)
         return res.data
 
     def _export(self, user, fmt="csv", **params):
@@ -248,9 +254,12 @@ class KnowledgeBaseNotificationTests(TransactionTestCase):
         res = self.c.post("/api/assets/knowledge-base/", {
             "title": "VPN reset", "slug": "vpn-reset",
             "summary": "How to reset", "content": "Step one",
-            "status": status, "category": "networking", "tags": ["vpn"],
+            "category": "networking", "tags": ["vpn"],
         }, format="json")
         self.assertEqual(res.status_code, 201, res.data)
+        if status != "draft":
+            KnowledgeBaseArticle.objects.filter(pk=res.data["id"]).update(
+                status=status)
         return res.data
 
     def _version(self, article_id):

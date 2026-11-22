@@ -786,16 +786,85 @@ class ScheduledReportRun(SoftDeleteModel):
     success = models.BooleanField(default=False)
     error_summary = models.TextField(blank=True, default="")
     recipient_count = models.PositiveIntegerField(default=0)
+    execution_token = models.CharField(max_length=64, unique=False, blank=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    last_heartbeat_at = models.DateTimeField(null=True, blank=True)
+    occurrence_id = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        help_text="Stable occurrence identity across replacement execution attempts.",
+    )
 
     class Meta:
         ordering = ["-started_at"]
         indexes = [
             models.Index(fields=["scheduled_report", "status"]),
             models.Index(fields=["started_at"]),
+            models.Index(fields=["occurrence_id"], name="scheduledreportrun_occ_id_idx"),
+        ]
+        constraints = [
+            # At most one in-flight ('running') run per scheduled report so
+            # concurrent scanners cannot double-deliver the same report.
+            models.UniqueConstraint(
+                fields=["scheduled_report"],
+                condition=models.Q(status="running"),
+                name="unique_running_run_per_scheduled_report",
+            ),
         ]
 
     def __str__(self):
         return f"Run {self.status} @ {self.started_at:%Y-%m-%d %H:%M}"
+
+
+class ScheduledReportDelivery(SoftDeleteModel):
+    """Per-recipient delivery record for a scheduled report run.
+
+    Provides durable deduplication so that lease recovery, worker crashes,
+    or retried Celery tasks cannot unintentionally produce duplicate
+    scheduled-report emails to the same recipient within the same run.
+
+    Because an external SMTP hand-off cannot be made atomic with a database
+    transaction, exactly-once external delivery is not guaranteed: a worker
+    that crashes after SMTP acceptance but before recording ``sent`` may
+    cause one duplicate on recovery. That window is minimized by inserting a
+    ``pending`` delivery row before SMTP and flipping to ``sent`` only after
+    acceptance. Cross-run duplicates after a crash are a documented,
+    accepted trade-off (see ``common.tasks.run_scheduled_reports``).
+    """
+
+    STATUS_CHOICES = (
+        ("pending", "Pending"),
+        ("sent", "Sent"),
+        ("failed", "Failed"),
+    )
+
+    scheduled_report_run = models.ForeignKey(
+        ScheduledReportRun, on_delete=models.CASCADE,
+        related_name="deliveries",
+    )
+    recipient_email = models.EmailField()
+    delivery_dedupe_key = models.CharField(max_length=64, unique=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES,
+                              default="pending")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(blank=True, default="")
+    attempts = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["scheduled_report_run", "status"],
+                name="schedreport_run_status_idx"),
+            models.Index(
+                fields=["delivery_dedupe_key"],
+                name="schedreport_dedupe_key_idx"),
+        ]
+
+    def __str__(self):
+        return f"Delivery {self.status} -> {self.recipient_email}"
 
 
 class UserNotificationPreference(SoftDeleteModel):

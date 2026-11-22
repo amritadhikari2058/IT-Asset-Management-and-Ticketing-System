@@ -17,6 +17,7 @@ from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
+from rest_framework.test import APIClient
 
 from accounts.models import Department
 from accounts.tests import make_users
@@ -104,6 +105,8 @@ class _Fixture:
         self.r1b.returned_at = timezone.now()
         self.r1b.save(update_fields=["returned_at"])
         self.r1c = Assignment.objects.create(asset=self.a1, assigned_to=self.emp)
+        self.r1c.returned_at = timezone.now()
+        self.r1c.save(update_fields=["returned_at"])
         self.a2 = Asset.objects.create(
             asset_tag="A2", name="n2", category=self.acat,
             status="available", assigned_to=None, department=self.dep,
@@ -115,44 +118,64 @@ class _Fixture:
         self.r2b.returned_at = timezone.now()
         self.r2b.save(update_fields=["returned_at"])
         self.r2c = Assignment.objects.create(asset=self.a2, assigned_to=self.emp)
+        self.r2c.returned_at = timezone.now()
+        self.r2c.save(update_fields=["returned_at"])
         self.a3 = Asset.objects.create(
             asset_tag="A3", name="n3", category=self.acat,
             status="available", assigned_to=None, department=self.dep,
         )
         # a3 stays unassigned (sentinel for empty-assignment queries).
         self.assigns1 = [
-            Assignment.objects.create(asset=self.a1, assigned_to=self.emp)
+            Assignment.objects.create(
+                asset=self.a1, assigned_to=self.emp,
+                returned_at=timezone.now(),
+            )
             for _ in range(3)]
-        for a in self.assigns1:
-            a.returned_at = timezone.now()
-            a.save(update_fields=["returned_at"])
         self.assigns2 = [
-            Assignment.objects.create(asset=self.a2, assigned_to=self.emp)
+            Assignment.objects.create(
+                asset=self.a2, assigned_to=self.emp,
+                returned_at=timezone.now(),
+            )
             for _ in range(3)]
-        for a in self.assigns2:
-            a.returned_at = timezone.now()
-            a.save(update_fields=["returned_at"])
         self.maintenance1 = [
-            Maintenance.objects.create(asset=self.a1, status="scheduled")
-            for _ in range(3)]
-        Maintenance.objects.create(asset=self.a1, status="scheduled", assigned_to=None)
+            Maintenance.objects.create(
+                asset=self.a1, title=f"A1 maintenance {index}",
+                status="scheduled", scheduled_date=timezone.now(),
+            )
+            for index in range(3)]
+        Maintenance.objects.create(
+            asset=self.a1, title="A1 maintenance unassigned",
+            status="scheduled", scheduled_date=timezone.now(),
+            assigned_to=None)
         self.maintenance2 = [
-            Maintenance.objects.create(asset=self.a2, status="scheduled")
-            for _ in range(3)]
-        Maintenance.objects.create(asset=self.a2, status="scheduled", assigned_to=None)
+            Maintenance.objects.create(
+                asset=self.a2, title=f"A2 maintenance {index}",
+                status="scheduled", scheduled_date=timezone.now(),
+            )
+            for index in range(3)]
+        Maintenance.objects.create(
+            asset=self.a2, title="A2 maintenance unassigned",
+            status="scheduled", scheduled_date=timezone.now(),
+            assigned_to=None)
 
-        # 1 cmdb item + children for the detail bound.
+        # A source item, distinct relationship targets, and children for the
+        # detail bound.
         self.ctype = ConfigurationItemType.objects.create(
             name="Server", code="SRVP", category="hardware",
-            department=self.dep,
         )
         self.ci = ConfigurationItem.objects.create(
             ci_type=self.ctype, status="active", name="CI1",
             department=self.dep,
         )
-        for _ in range(3):
+        self.ci_targets = [
+            ConfigurationItem.objects.create(
+                ci_type=self.ctype, status="active",
+                name=f"CI{index + 2}", department=self.dep,
+            )
+            for index in range(3)]
+        for target in self.ci_targets:
             ConfigurationItemRelationship.objects.create(
-                source_ci=self.ci, target_ci=self.ci,
+                source_ci=self.ci, target_ci=target,
                 relationship_type="depends_on", status="active")
         for _ in range(3):
             ConfigurationItemHistory.objects.create(
@@ -161,10 +184,17 @@ class _Fixture:
     def _record_counts(self, func):
         with CaptureQueriesContext(connection) as ctx:
             result = func()
-        try:
-            payload = len(result.content)
-        except Exception:
-            payload = "?"
+        if getattr(result, "status_code", 200) != 200:
+            raise AssertionError(
+                f"Expected a successful API response, got "
+                f"{result.status_code}: {getattr(result, 'content', b'')!r}")
+        data = result.json()
+        if isinstance(data, dict) and isinstance(data.get("results"), list):
+            payload = len(data["results"])
+        elif isinstance(data, list):
+            payload = len(data)
+        else:
+            payload = 1
         return len(ctx), payload, result
 
 
@@ -173,38 +203,38 @@ class QueryGrowthTests(TestCase):
 
     def setUp(self):
         self.fixture = _Fixture()
-        self.client = self.fixture.client = self
+        self.client = APIClient()
+        _authenticate(self.client, self.fixture.mgr)
+        self.fixture.client = self.client
 
     # ---- Tickets ----
     def test_ticket_list_growth(self):
         f = self.fixture
 
         def one():
-            return _api(self.client, "/api/tickets/")
+            return _api(self.client, "/api/tickets/?q=T1")
 
         def three():
-            return _api(self.client, "/api/tickets/?page=2")
+            return _api(self.client, "/api/tickets/")
 
         c1, p1, _ = f._record_counts(one)
         c3, p3, _ = f._record_counts(three)
-        self.assertEqual(p1, 2)
-        self.assertEqual(p3, 2)
+        self.assertEqual((p1, p3), (1, 3))
         self.assertLessEqual(c3, c1 + 2)
 
     def test_ticket_list_nested_reverse_relations_closed(self):
         f = self.fixture
 
         def one():
-            return _api(self.client, "/api/tickets/")
+            return _api(self.client, "/api/tickets/?q=T1")
 
         def three():
-            return _api(self.client, "/api/tickets/?page=2")
+            return _api(self.client, "/api/tickets/")
 
         c1, p1, _ = f._record_counts(one)
         c3, p3, _ = f._record_counts(three)
         # Only the detail/retrieve path loads notes/history/attachments.
-        self.assertEqual(p1, 2)
-        self.assertEqual(p3, 2)
+        self.assertEqual((p1, p3), (1, 3))
         self.assertLessEqual(c3, c1)
 
     def test_ticket_retrieve_growth(self):
@@ -218,8 +248,7 @@ class QueryGrowthTests(TestCase):
 
         c1, p1, _ = f._record_counts(one)
         c3, p3, _ = f._record_counts(three)
-        self.assertEqual(p1, 2)
-        self.assertEqual(p3, 2)
+        self.assertEqual((p1, p3), (1, 1))
         self.assertLessEqual(c3, c1)
 
     # ---- Assets ----
@@ -227,15 +256,14 @@ class QueryGrowthTests(TestCase):
         f = self.fixture
 
         def one():
-            return _api(self.client, "/api/assets/",)
+            return _api(self.client, "/api/assets/?q=A1")
 
         def three():
-            return _api(self.client, "/api/assets/?page=2",)
+            return _api(self.client, "/api/assets/")
 
         c1, p1, _ = f._record_counts(one)
         c3, p3, _ = f._record_counts(three)
-        self.assertEqual(p1, 2)
-        self.assertEqual(p3, 2)
+        self.assertEqual((p1, p3), (1, 3))
         self.assertLessEqual(c3, c1 + 2)
 
     def test_asset_retrieve_growth(self):
@@ -249,8 +277,7 @@ class QueryGrowthTests(TestCase):
 
         c1, p1, _ = f._record_counts(one)
         c3, p3, _ = f._record_counts(three)
-        self.assertEqual(p1, 2)
-        self.assertEqual(p3, 2)
+        self.assertEqual((p1, p3), (1, 1))
         self.assertLessEqual(c3, c1 + 2)
 
     # ---- CMDB ----
@@ -258,15 +285,14 @@ class QueryGrowthTests(TestCase):
         f = self.fixture
 
         def one():
-            return _api(self.client, "/api/cmdb/items/",)
+            return _api(self.client, "/api/cmdb/items/?q=CI1")
 
         def three():
-            return _api(self.client, "/api/cmdb/items/?page=2",)
+            return _api(self.client, "/api/cmdb/items/",)
 
         c1, p1, _ = f._record_counts(one)
         c3, p3, _ = f._record_counts(three)
-        self.assertEqual(p1, 2)
-        self.assertEqual(p3, 2)
+        self.assertEqual((p1, p3), (1, 4))
         self.assertLessEqual(c3, c1)
 
     def test_cmdb_item_retrieve_growth(self):
@@ -280,6 +306,7 @@ class QueryGrowthTests(TestCase):
 
         c1, p1, _ = f._record_counts(one)
         c3, p3, _ = f._record_counts(three)
+        self.assertEqual((p1, p3), (1, 1))
         self.assertLessEqual(c3, c1 + 3)
 
 
@@ -288,7 +315,9 @@ class DashboardAndReportingGrowthTests(TestCase):
 
     def setUp(self):
         self.fixture = _Fixture()
-        self.client = self.fixture.client = self
+        self.client = APIClient()
+        _authenticate(self.client, self.fixture.mgr)
+        self.fixture.client = self.client
 
     def _call(self, url):
         return self.client.get(url)

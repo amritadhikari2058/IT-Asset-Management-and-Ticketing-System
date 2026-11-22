@@ -313,6 +313,21 @@ class KnowledgeBaseArticleSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if (user and user.is_authenticated
+                and getattr(user, "role", "") == "employee"):
+            # Published content is public to employees, while governance
+            # metadata (especially rejection/review comments) is not.
+            for field in (
+                    "submitted_at", "reviewed_by", "reviewed_by_name",
+                    "reviewed_at", "review_decision", "review_comment"):
+                data.pop(field, None)
+        return data
+
+
 class KnowledgeBaseArticleCreateUpdateSerializer(serializers.ModelSerializer):
     """Serializer for creating/updating articles (includes tag/category IDs).
 
@@ -352,8 +367,19 @@ class KnowledgeBaseArticleCreateUpdateSerializer(serializers.ModelSerializer):
         validated_data.pop("change_note", None)
         return validated_data
 
+    def validate(self, attrs):
+        # New content always enters the workflow as a draft. Publication is
+        # available only through the explicit approve/publish transitions.
+        if self.instance is None and attrs.get("status", "draft") != "draft":
+            raise serializers.ValidationError({
+                "status": "New articles must start as drafts and complete "
+                          "the review workflow before publication."})
+        return attrs
+
     def create(self, validated_data):
-        return super().create(self._strip_write_only(validated_data))
+        validated_data = self._strip_write_only(validated_data)
+        validated_data.setdefault("status", "draft")
+        return super().create(validated_data)
 
     def update(self, instance, validated_data):
         return super().update(instance, self._strip_write_only(validated_data))
@@ -445,7 +471,11 @@ class KnowledgeBaseFeedbackSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         user = self.context["request"].user
-        article = attrs.get("article")
+        article = attrs.get(
+            "article", self.instance.article if self.instance else None)
+        if article and article.status != "published":
+            raise serializers.ValidationError({
+                "article": "Feedback is only available for published articles."})
         if self.instance is None and article:
             # One row per (article, user) — re-submitting replaces the vote.
             if KnowledgeBaseFeedback.objects.filter(

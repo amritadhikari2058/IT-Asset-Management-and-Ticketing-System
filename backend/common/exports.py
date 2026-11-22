@@ -14,7 +14,7 @@ import csv
 import io
 from datetime import datetime
 
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.http import HttpResponse
 from rest_framework.renderers import BaseRenderer
 
@@ -197,12 +197,10 @@ def employee_rows(user=None, filters=None):
     if is_active is not None:
         wanted = str(is_active).strip().lower() in ("true", "1", "yes")
         qs = qs.filter(is_active=wanted)
-    departments = list(Department.objects.order_by("name"))
-    dept_by_id = {d.id: d for d in departments}
-    rows = []
-    for u in qs.order_by("employee_id"):
-        dept = dept_by_id.get(u.home_department_id)
-        rows.append({
+    qs = qs.select_related("home_department")
+    for u in qs.order_by("employee_id").iterator(chunk_size=1000):
+        dept = u.home_department if u.home_department_id else None
+        yield {
             "id": u.pk,
             "employee_id": u.employee_id,
             "username": u.username,
@@ -216,20 +214,30 @@ def employee_rows(user=None, filters=None):
             "is_active": "true" if u.is_active else "false",
             "created_at": u.date_joined.isoformat() if u.date_joined else "",
             "updated_at": u.last_login.isoformat() if u.last_login else "",
-        })
-    return rows
+        }
 
 
 def department_rows(user=None, filters=None):
     from accounts.models import Department
 
     filters = filters or {}
-    qs = Department.objects.all()
+    qs = Department.objects.annotate(
+        member_count=Count(
+            "members",
+            filter=Q(members__is_deleted=False, members__is_active=True),
+            distinct=True,
+        ),
+        asset_count=Count(
+            "assets",
+            filter=Q(assets__is_deleted=False),
+            distinct=True,
+        ),
+    ).select_related("head")
     q = (filters.get("q") or "").strip()
     if q:
         qs = qs.filter(Q(name__icontains=q) | Q(code__icontains=q))
-    return [
-        {
+    for d in qs.order_by("name").iterator(chunk_size=500):
+        yield {
             "id": d.pk,
             "name": d.name,
             "code": d.code,
@@ -237,13 +245,11 @@ def department_rows(user=None, filters=None):
             "head": d.head_id or "",
             "head_email": (d.head.email if d.head_id and not d.head.is_deleted else ""),
             "is_active": "true" if d.is_active else "false",
-            "member_count": d.members.filter(is_active=True).count(),
-            "asset_count": d.assets.count(),
+            "member_count": d.member_count,
+            "asset_count": d.asset_count,
             "created_at": d.created_at.isoformat() if d.created_at else "",
             "updated_at": d.updated_at.isoformat() if d.updated_at else "",
         }
-        for d in qs.order_by("name")
-    ]
 
 
 def asset_rows(user=None, filters=None):
@@ -279,8 +285,10 @@ def asset_rows(user=None, filters=None):
     department = filters.get("department")
     if department:
         qs = qs.filter(department_id=department)
-    return [
-        {
+    for a in qs.select_related(
+            "category", "department").order_by("asset_tag").iterator(
+                chunk_size=1000):
+        yield {
             "id": a.pk,
             "asset_tag": a.asset_tag,
             "name": a.name,
@@ -295,8 +303,6 @@ def asset_rows(user=None, filters=None):
             "created_at": a.created_at.isoformat() if a.created_at else "",
             "updated_at": a.updated_at.isoformat() if a.updated_at else "",
         }
-        for a in qs.order_by("asset_tag")
-    ]
 
 
 def assignment_rows(user=None, filters=None):
@@ -311,9 +317,8 @@ def assignment_rows(user=None, filters=None):
     assigned_to = filters.get("assigned_to")
     if assigned_to:
         qs = qs.filter(assigned_to_id=assigned_to)
-    rows = []
-    for a in qs.order_by("id"):
-        rows.append({
+    for a in qs.order_by("id").iterator(chunk_size=1000):
+        yield {
             "id": a.pk,
             "asset_tag": a.asset.asset_tag if a.asset_id else "",
             "employee_id": a.assigned_to.employee_id if a.assigned_to_id else "",
@@ -322,8 +327,7 @@ def assignment_rows(user=None, filters=None):
             "returned_at": a.returned_at.isoformat() if a.returned_at else "",
             "note": a.note or "",
             "assigned_by_email": a.assigned_by.email if a.assigned_by_id else "",
-        })
-    return rows
+        }
 
 
 def ticket_rows(user=None, filters=None):
@@ -352,8 +356,10 @@ def ticket_rows(user=None, filters=None):
     assignee = filters.get("assignee")
     if assignee:
         qs = qs.filter(assignee_id=assignee)
-    return [
-        {
+    for t in qs.select_related(
+            "category", "department").order_by(
+                "-created_at").iterator(chunk_size=1000):
+        yield {
             "id": t.pk,
             "ticket_no": str(t.pk),
             "title": t.title,
@@ -366,8 +372,6 @@ def ticket_rows(user=None, filters=None):
             "created_at": t.created_at.isoformat() if t.created_at else "",
             "updated_at": t.updated_at.isoformat() if t.updated_at else "",
         }
-        for t in qs.order_by("-created_at")
-    ]
 
 
 def category_rows(model, filters=None):
@@ -380,8 +384,8 @@ def category_rows(model, filters=None):
     if is_active is not None:
         wanted = str(is_active).strip().lower() in ("true", "1", "yes")
         qs = qs.filter(is_active=wanted)
-    return [
-        {
+    for c in qs.order_by("name").iterator(chunk_size=1000):
+        yield {
             "id": c.pk,
             "name": c.name,
             "description": c.description or "",
@@ -389,8 +393,6 @@ def category_rows(model, filters=None):
             "created_at": c.created_at.isoformat() if c.created_at else "",
             "updated_at": c.updated_at.isoformat() if c.updated_at else "",
         }
-        for c in qs.order_by("name")
-    ]
 
 
 def ticket_history_rows(user=None, filters=None):
@@ -404,8 +406,10 @@ def ticket_history_rows(user=None, filters=None):
     action = filters.get("action")
     if action:
         qs = qs.filter(action=action)
-    return [
-        {
+    for h in qs.order_by(
+            "ticket_id", "-timestamp", "-id")[:5000].iterator(
+                chunk_size=1000):
+        yield {
             "id": h.pk,
             "ticket_no": str(h.ticket_id),
             "action": h.action,
@@ -415,8 +419,6 @@ def ticket_history_rows(user=None, filters=None):
             "new_values": str(h.new_values or {}),
             "note": h.note or "",
         }
-        for h in qs.order_by("ticket_id", "-timestamp", "-id")[:5000]
-    ]
 
 
 def kb_rows(user=None, filters=None):
@@ -457,9 +459,9 @@ def kb_rows(user=None, filters=None):
     if tag:
         qs = qs.filter(tags__slug=tag)
 
-    rows = []
-    for a in qs.distinct().order_by("-updated_at", "-id"):
-        rows.append({
+    for a in qs.distinct().order_by(
+            "-updated_at", "-id").iterator(chunk_size=500):
+        yield {
             "id": a.pk,
             "title": a.title,
             "slug": a.slug,
@@ -472,8 +474,7 @@ def kb_rows(user=None, filters=None):
             "created_at": a.created_at.isoformat() if a.created_at else "",
             "updated_at": a.updated_at.isoformat() if a.updated_at else "",
             "revision_number": a.revision_number,
-        })
-    return rows
+        }
 
 
 BUILDERS = {
@@ -538,32 +539,41 @@ def _escape(value):
 
 
 def _csv_bytes(rows, fields):
-    buf = io.StringIO(newline="")
-    writer = csv.writer(buf)
+    buf = io.BytesIO()
+    stream = io.TextIOWrapper(buf, encoding="utf-8", newline="")
+    writer = csv.writer(stream)
     writer.writerow([_escape(f) for f in fields])
     for row in rows:
         writer.writerow([_escape(_cell(row, f)) for f in fields])
-    return buf.getvalue().encode("utf-8")
+    stream.flush()
+    return buf.getvalue()
 
 
 def _xlsx_bytes(rows, fields, title):
     from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
     from openpyxl.styles import Font
     from openpyxl.utils import get_column_letter
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = (title or "Export")[:31]
-    ws.append(list(fields))
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-    for row_index, row in enumerate(rows, start=2):
-        for col_index, field in enumerate(fields, start=1):
-            ws.cell(row=row_index, column=col_index, value=_cell(row, field))
-    last_row = max(len(rows) + 2, 2)
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet(title=(title or "Export")[:31])
     ws.freeze_panes = "A2"
-    if last_row >= 2:
-        ws.auto_filter.ref = "A1:" + get_column_letter(len(fields)) + str(last_row)
+    header = []
+    for field in fields:
+        cell = WriteOnlyCell(ws, value=field)
+        cell.font = Font(bold=True)
+        header.append(cell)
+    ws.append(header)
+    row_count = 0
+    for row in rows:
+        values = [_cell(row, field) for field in fields]
+        ws.append([
+            _escape(value) if isinstance(value, str) else value
+            for value in values
+        ])
+        row_count += 1
+    last_row = max(row_count + 2, 2)
+    ws.auto_filter.ref = "A1:" + get_column_letter(len(fields)) + str(last_row)
     for col_index, field in enumerate(fields, start=1):
         ws.column_dimensions[get_column_letter(col_index)].width = max(
             12, len(str(field)) + 4)
@@ -647,28 +657,41 @@ def render_response(dataset, rows, fmt, user, request):
     title = DATASETS.get(dataset, {}).get("title") or dataset
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     base = "%s_%s" % (dataset, stamp)
+
+    row_count = 0
+
+    def counted_rows():
+        nonlocal row_count
+        for row in rows:
+            row_count += 1
+            yield row
+
     if fmt == "csv":
         resp = HttpResponse(
-            _csv_bytes(rows, fields), content_type="text/csv")
+            _csv_bytes(counted_rows(), fields), content_type="text/csv")
         resp["Content-Disposition"] = 'attachment; filename="%s.csv"' % base
+        resp.export_row_count = row_count
         return resp
     if fmt == "xlsx":
-        data = _xlsx_bytes(rows, fields, title)
+        data = _xlsx_bytes(counted_rows(), fields, title)
         resp = HttpResponse(
             data,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         resp["Content-Disposition"] = 'attachment; filename="%s.xlsx"' % base
+        resp.export_row_count = row_count
         return resp
     if fmt == "pdf":
-        data = _pdf_bytes(rows, fields, title)
+        data = _pdf_bytes(counted_rows(), fields, title)
         resp = HttpResponse(data, content_type="application/pdf")
         resp["Content-Disposition"] = 'attachment; filename="%s.pdf"' % base
+        resp.export_row_count = row_count
         return resp
     if fmt == "docx":
-        data = _docx_bytes(rows, fields, title)
+        data = _docx_bytes(counted_rows(), fields, title)
         resp = HttpResponse(
             data,
             content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         resp["Content-Disposition"] = 'attachment; filename="%s.docx"' % base
+        resp.export_row_count = row_count
         return resp
     return None

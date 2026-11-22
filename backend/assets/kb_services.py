@@ -1,5 +1,9 @@
 """Knowledge Base revision, comparison, restore and review helpers.
 
+Outbox-integrated KB notification email sending. In-app notifications
+use the centralized ``notify_user`` helper (with deduplication); email
+delivery is gated by ``kb_review`` category preference and cache-deduped.
+
 All revision writes live here so article updates and their snapshot always
 share one database transaction (callers use ``transaction.atomic`` and lock
 the article row). Revisions are append-only: this module never updates or
@@ -14,7 +18,10 @@ from django.db.models import Max
 from accounts import email_utils
 from assets.models import KnowledgeBaseArticle, KnowledgeBaseArticleRevision
 from common.audit import log_action
+from common.models import Notification
 from common.notifications import notify_user
+from common.outbox import enqueue_email
+from common.notifications import KB_REVIEW_CATEGORY
 
 # Fields whose change creates a new content revision. Status-only workflow
 # transitions bump ``version`` but deliberately do not add revision noise.
@@ -313,41 +320,128 @@ def notify_submitted_for_review(article, actor, note=""):
 
 
 def notify_article_approved(article, actor, reviewer, comment=""):
-    """Notify the article author that their article was approved."""
+    """Notify the article author that their article was approved.
+
+    In-app notification via the centralized ``notify_user`` helper (with
+    deduplication).  Outbox event registration is performed via
+    ``enqueue_email()`` in the caller's ambient transaction — the event
+    commits or rolls back atomically with the business change.  The
+    caller (``views.py``) must invoke this function inside
+    ``transaction.atomic()`` so the outbox row shares the business
+    transaction's fate.
+    """
     title = f"KB article approved: {article.title}"
     body = f"'{article.title}' was approved by {user_label(reviewer)}."
     if comment.strip():
         body += f"\nComment: {comment.strip()}"
     if article.author:
-        _kb_notify(article.author, actor, title, body, article)
+        # In-app notification via centralized helper (deduped, preference-
+        # aware but in-app always delivered).
+        notify_user(
+            article.author, KB_REVIEW_CATEGORY, title, body,
+            entity_type="assets.KnowledgeBaseArticle",
+            object_id=str(article.pk),
+            actor=actor,
+            dedupe=True,
+        )
+        # Enqueue outbox event in the caller's ambient transaction.
+        # This INSERT shares the business transaction's fate: if the
+        # caller's transaction rolls back, the outbox event is never
+        # persisted; if it commits, the event is durable and will be
+        # picked up by the periodic scanner or on_commit wake-up.
         if article.author.email:
-            email_utils.send_kb_notification(
-                article.author.email, title, body,
-                article=article, user=article.author)
+            enqueue_email(
+                event_type="kb.article.approved",
+                to_email=article.author.email,
+                subject=title,
+                body=body,
+                recipient=article.author,
+                category=KB_REVIEW_CATEGORY,
+                dedupe=True,
+                notification=None,  # in-app notification handled separately
+            )
 
 
 def notify_article_rejected(article, actor, reviewer, comment):
-    """Notify the article author that their article was rejected (with reason)."""
+    """Notify the article author that their article was rejected (with reason).
+
+    In-app notification via the centralized ``notify_user`` helper (with
+    deduplication).  Outbox event registration is performed via
+    ``enqueue_email()`` in the caller's ambient transaction — the event
+    commits or rolls back atomically with the business change.  The
+    caller (``views.py``) must invoke this function inside
+    ``transaction.atomic()`` so the outbox row shares the business
+    transaction's fate.
+    """
     title = f"KB article rejected: {article.title}"
     body = (
         f"'{article.title}' was rejected by {user_label(reviewer)} and "
         f"returned to draft.\nReason: {comment}"
     )
     if article.author:
-        _kb_notify(article.author, actor, title, body, article)
+        # In-app notification via centralized helper (deduped, preference-
+        # aware but in-app always delivered).
+        notify_user(
+            article.author, KB_REVIEW_CATEGORY, title, body,
+            entity_type="assets.KnowledgeBaseArticle",
+            object_id=str(article.pk),
+            actor=actor,
+            dedupe=True,
+        )
+        # Enqueue outbox event in the caller's ambient transaction.
+        # This INSERT shares the business transaction's fate: if the
+        # caller's transaction rolls back, the outbox event is never
+        # persisted; if it commits, the event is durable and will be
+        # picked up by the periodic scanner or on_commit wake-up.
         if article.author.email:
-            email_utils.send_kb_notification(
-                article.author.email, title, body,
-                article=article, user=article.author)
+            enqueue_email(
+                event_type="kb.article.rejected",
+                to_email=article.author.email,
+                subject=title,
+                body=body,
+                recipient=article.author,
+                category=KB_REVIEW_CATEGORY,
+                dedupe=True,
+                notification=None,  # in-app notification handled separately
+            )
 
 
 def notify_article_published(article, actor):
-    """Notify the article author that their article was published."""
+    """Notify the article author that their article was published.
+
+    In-app notification via the centralized ``notify_user`` helper (with
+    deduplication).  Outbox event registration is performed via
+    ``enqueue_email()`` in the caller's ambient transaction — the event
+    commits or rolls back atomically with the business change.  The
+    caller (``views.py``) must invoke this function inside
+    ``transaction.atomic()`` so the outbox row shares the business
+    transaction's fate.
+    """
     title = f"KB article published: {article.title}"
     body = f"'{article.title}' (revision {article.revision_number}) is now published."
     if article.author:
-        _kb_notify(article.author, actor, title, body, article)
+        # In-app notification via centralized helper (deduped, preference-
+        # aware but in-app always delivered).
+        notify_user(
+            article.author, KB_REVIEW_CATEGORY, title, body,
+            entity_type="assets.KnowledgeBaseArticle",
+            object_id=str(article.pk),
+            actor=actor,
+            dedupe=True,
+        )
+        # Enqueue outbox event in the caller's ambient transaction.
+        # This INSERT shares the business transaction's fate: if the
+        # caller's transaction rolls back, the outbox event is never
+        # persisted; if it commits, the event is durable and will be
+        # picked up by the periodic scanner or on_commit wake-up.
         if article.author.email:
-            email_utils.send_kb_notification(
-                article.author.email, title, body,
-                article=article, user=article.author)
+            enqueue_email(
+                event_type="kb.article.published",
+                to_email=article.author.email,
+                subject=title,
+                body=body,
+                recipient=article.author,
+                category=KB_REVIEW_CATEGORY,
+                dedupe=True,
+                notification=None,  # in-app notification handled separately
+            )

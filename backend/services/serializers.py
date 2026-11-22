@@ -71,9 +71,16 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
 
     def get_comments(self, obj):
         user = self.context.get("request").user if self.context.get("request") else None
-        qs = obj.comments.all()
-        if not _is_staff(user):
-            qs = qs.filter(is_internal=False)
+        prefetched = getattr(obj, "_prefetched_comments", None)
+        if prefetched is None:
+            qs = obj.comments.all()
+            if not _is_staff(user):
+                qs = qs.filter(is_internal=False)
+        elif _is_staff(user):
+            qs = prefetched
+        else:
+            qs = [comment for comment in prefetched
+                  if not comment.is_internal]
         return ServiceRequestCommentSerializer(qs, many=True).data
 
     def get_ticket_creation_status(self, obj):

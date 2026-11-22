@@ -1,0 +1,191 @@
+ M ../.github/workflows/backend.yml
+ M accounts/views.py
+ M assets/kb_services.py
+ M assets/models.py
+ M assets/serializers.py
+ M assets/test_knowledge_base_versioning.py
+ M assets/views.py
+ D check_django.py
+ M common/exports.py
+ M common/models.py
+ M common/reports.py
+ M common/tasks.py
+ M common/test_kb_integration.py
+ M common/test_notification_outbox.py
+ M common/test_notification_outbox_postgres.py
+ M common/test_scheduled_reports.py
+ M common/views.py
+ M config/settings.py
+ M procurement/views.py
+ M services/serializers.py
+ M services/views.py
+ M tickets/serializers.py
+ M tickets/test_performance.py
+ M tickets/views.py
+ M ../frontend/package-lock.json
+ M ../frontend/src/App.jsx
+ M ../frontend/src/procurement-routes.test.jsx
+ M ../frontend/src/tickets-regression.test.jsx
+ M ../frontend/src/tickets.jsx
+ D ../test_output.txt
+?? ../Assignment1_Continuation_Report.md
+?? ../Assignment_1_Continuation_Final_Report.md
+?? ../Assignment_Import_Scalability_Report.md
+?? ../CONCLUSION.md
+?? ../FINAL_ENGINEERING_REPORT.md
+?? ../FINAL_REPORT_CONCISE.md
+?? ../FINAL_SUMMARY.md
+?? ../STATUS_SUMMARY.md
+?? ../Temp/assignment5-build-audited/assets/AlertDetail-D8KHYAX0.js
+?? ../Temp/assignment5-build-audited/assets/AlertList-3RTE-qLj.js
+?? ../Temp/assignment5-build-audited/assets/MonitoringOverview-DQvL0t_c.js
+?? ../Temp/assignment5-build-audited/assets/PolicyManagement-Bpm1R-IN.js
+?? ../Temp/assignment5-build-audited/assets/SourceManagement-lplLBXbk.js
+?? ../Temp/assignment5-build-audited/assets/access-D7UicrVK.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-baselines-gtq409RH.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-dashboard-DCfcpx6r.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-dependency-map-DjLUzDX_.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-drift-DCvDFWwi.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-impact-CMMGRl0V.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-item-detail-4MIB0ZWE.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-item-form-CpKy-Aqd.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-items-0QY7uMDW.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-relationships-BvSEB7AP.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-reports-CJbXu9XY.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-services-CN8UYGry.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-types-DhsnnPKy.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-utils-B8AZrdYY.js
+?? ../Temp/assignment5-build-audited/assets/cmdb-verification-CHXSGh5E.js
+?? ../Temp/assignment5-build-audited/assets/index-B3UifsvW.js
+?? ../Temp/assignment5-build-audited/assets/index-BsTId06I.css
+?? ../Temp/assignment5-build-audited/assets/licensing-BRIzm7CJ.js
+?? ../Temp/assignment5-build-audited/assets/monitoring-CBDygybZ.js
+?? ../Temp/assignment5-build-audited/assets/monitoring-api-BL_AAWS9.js
+?? ../Temp/assignment5-build-audited/assets/problem-detail-B75Z92QT.js
+?? ../Temp/assignment5-build-audited/assets/problem-list-CRN9nQkG.js
+?? ../Temp/assignment5-build-audited/assets/problem-management-bsgcnCVP.js
+?? ../Temp/assignment5-build-audited/assets/procurement-DIHSv_u0.js
+?? ../Temp/assignment5-build-audited/favicon.svg
+?? ../Temp/assignment5-build-audited/index.html
+?? ../Temp/assignment5-build-locked/assets/AlertDetail-D8KHYAX0.js
+?? ../Temp/assignment5-build-locked/assets/AlertList-3RTE-qLj.js
+?? ../Temp/assignment5-build-locked/assets/MonitoringOverview-DQvL0t_c.js
+?? ../Temp/assignment5-build-locked/assets/PolicyManagement-Bpm1R-IN.js
+?? ../Temp/assignment5-build-locked/assets/SourceManagement-lplLBXbk.js
+?? ../Temp/assignment5-build-locked/assets/access-D7UicrVK.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-baselines-gtq409RH.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-dashboard-DCfcpx6r.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-dependency-map-DjLUzDX_.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-drift-DCvDFWwi.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-impact-CMMGRl0V.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-item-detail-4MIB0ZWE.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-item-form-CpKy-Aqd.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-items-0QY7uMDW.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-relationships-BvSEB7AP.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-reports-CJbXu9XY.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-services-CN8UYGry.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-types-DhsnnPKy.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-utils-B8AZrdYY.js
+?? ../Temp/assignment5-build-locked/assets/cmdb-verification-CHXSGh5E.js
+?? ../Temp/assignment5-build-locked/assets/index-B3UifsvW.js
+?? ../Temp/assignment5-build-locked/assets/index-BsTId06I.css
+?? ../Temp/assignment5-build-locked/assets/licensing-BRIzm7CJ.js
+?? ../Temp/assignment5-build-locked/assets/monitoring-CBDygybZ.js
+?? ../Temp/assignment5-build-locked/assets/monitoring-api-BL_AAWS9.js
+?? ../Temp/assignment5-build-locked/assets/problem-detail-B75Z92QT.js
+?? ../Temp/assignment5-build-locked/assets/problem-list-CRN9nQkG.js
+?? ../Temp/assignment5-build-locked/assets/problem-management-bsgcnCVP.js
+?? ../Temp/assignment5-build-locked/assets/procurement-DIHSv_u0.js
+?? ../Temp/assignment5-build-locked/favicon.svg
+?? ../Temp/assignment5-build-locked/index.html
+?? ../Temp/assignment5-tooling/package-lock.json
+?? ../Temp/assignment5-tooling/package.json
+?? ../Temp/assignment5-tooling/vite.config.js
+?? ../Temp/assignment5_seed_e2e.py
+?? ../asset_test_err.txt
+?? ../asset_test_out.txt
+?? accounts/test_user_query_performance.py
+?? accounts_test.txt
+?? assets/test_knowledge_base_authorization_security.py
+?? assets/test_knowledge_base_postgres_concurrency.py
+?? check_lines.py
+?? check_lines2.py
+?? check_validate.py
+?? common/import_stream.py
+?? common/migrations/0016_scheduledreportrun_running_unique.py
+?? common/migrations/0017_scheduledreportrun_execution_token_and_more.py
+?? common/migrations/0018_enforce_unique_active_dedupe_key.py
+?? common/test_dashboard_query_performance.py
+?? common/test_import_scalability.py
+?? common/test_large_exports_scalability.py
+?? common/test_scheduled_report_concurrency.py
+?? git_status.txt
+?? kb_auth_err.txt
+?? kb_auth_out.txt
+?? kb_notif_test_err.txt
+?? kb_notif_test_out.txt
+?? kb_test_err.txt
+?? kb_test_error.txt
+?? kb_test_out.txt
+?? kb_test_output.txt
+?? services/test_performance_scalability.py
+?? test_accounts_err.txt
+?? test_accounts_out.txt
+?? test_error.txt
+?? test_kb.py
+?? test_kb_all_err.txt
+?? test_kb_all_out.txt
+?? test_kb_auth_err.txt
+?? test_kb_auth_out.txt
+?? test_kb_run.py
+?? test_notif_err.txt
+?? test_notif_out.txt
+?? test_output.txt
+?? test_result.txt
+?? test_ticketing_test
+?? tickets/test_bulk_import_scalability.py
+?? tickets/test_service_request_query_performance.py
+?? verify_changes.py
+?? ../frontend/.assignment5-build-final/favicon.svg
+?? ../frontend/.assignment5-build-lazy/assets/AlertDetail-CFWilwth.js
+?? ../frontend/.assignment5-build-lazy/assets/AlertList-CuLegYWi.js
+?? ../frontend/.assignment5-build-lazy/assets/MonitoringOverview-xW3ba0zd.js
+?? ../frontend/.assignment5-build-lazy/assets/PolicyManagement-BSuF211S.js
+?? ../frontend/.assignment5-build-lazy/assets/SourceManagement-DHY68tuw.js
+?? ../frontend/.assignment5-build-lazy/assets/access-BjSFtl84.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-baselines-B67j2P4_.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-dashboard-DMQKJau5.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-dependency-map-fRTPHgs0.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-drift-DSVxlKmN.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-impact-DfzMc4Ia.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-item-detail-DGvsZt7O.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-item-form-CovWOBhs.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-items-CG4Ka5zn.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-relationships-BGHryzpf.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-reports-CDdZ_5lK.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-services-BYa0z_Qw.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-types-CyYNlCQu.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-utils-B8AZrdYY.js
+?? ../frontend/.assignment5-build-lazy/assets/cmdb-verification-BW9-cC7f.js
+?? ../frontend/.assignment5-build-lazy/assets/index-BsTId06I.css
+?? ../frontend/.assignment5-build-lazy/assets/index-CX-ykKEY.js
+?? ../frontend/.assignment5-build-lazy/assets/licensing-CvK7CHSc.js
+?? ../frontend/.assignment5-build-lazy/assets/monitoring-BYDtdhwf.js
+?? ../frontend/.assignment5-build-lazy/assets/monitoring-api-BMaM5sq-.js
+?? ../frontend/.assignment5-build-lazy/assets/problem-detail-DohacvyS.js
+?? ../frontend/.assignment5-build-lazy/assets/problem-list-30uRvUgW.js
+?? ../frontend/.assignment5-build-lazy/assets/problem-management-CVdWspCK.js
+?? ../frontend/.assignment5-build-lazy/assets/procurement-CjDKj68U.js
+?? ../frontend/.assignment5-build-lazy/favicon.svg
+?? ../frontend/.assignment5-build-lazy/index.html
+?? ../frontend/.assignment5-build/assets/index-BsTId06I.css
+?? ../frontend/.assignment5-build/assets/index-CJfxzXFJ.js
+?? ../frontend/.assignment5-build/favicon.svg
+?? ../frontend/.assignment5-build/index.html
+?? ../frontend/.assignment5-playwright-results/.last-run.json
+?? ../frontend/.assignment5.playwright.config.js
+?? ../frontend/e2e/assignment5-workflows.spec.js
+?? ../mychanges.diff
+?? ../ticket_bulk_err.txt
+?? ../ticket_bulk_out.txt
+?? ../ticket_bulk_test.txt

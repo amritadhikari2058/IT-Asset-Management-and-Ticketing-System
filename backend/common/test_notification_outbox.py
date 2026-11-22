@@ -12,7 +12,8 @@ Coverage:
 
 External SMTP is mocked/faked via the locmem backend and ``send_mail`` patches;
 these are unit-level checks, not real SMTP verification. PostgreSQL concurrency
-lives in ``test_notification_outbox_postgres.py``.
+lives in ``test_notification_outbox_postgres.py`` and is exercised by the CI
+PostgreSQL job (``.github/workflows/backend.yml``).
 """
 import random
 from unittest import mock

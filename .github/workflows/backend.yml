@@ -63,7 +63,7 @@ jobs:
       - name: Run backend tests (SQLite)
         run: |
           cd backend
-          python manage.py test
+          python -m pytest -q
         env:
           DEBUG: "false"
           SECRET_KEY: "ci-test-secret-key-do-not-use-in-production"
@@ -130,7 +130,7 @@ jobs:
       - name: Run backend tests (PostgreSQL)
         run: |
           cd backend
-          python manage.py test services common.test_reports common.test_scheduled_reports inventory workflow.test_workflow
+          python -m pytest services common/test_reports.py common/test_scheduled_reports.py common/test_notification_outbox_postgres.py common/test_notification_outbox_postgres_extra.py common/test_notification_outbox.py common/test_notification_dedup.py inventory workflow/test_workflow.py assets/test_concurrency_postgres.py -q
         env:
           DATABASE__ENGINE: "django.db.backends.postgresql"
           DATABASE__NAME: "ticketing_test"

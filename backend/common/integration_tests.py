@@ -318,9 +318,28 @@ class EndToEndWorkflowTests(TestCase):
             "title": "VPN troubleshooting",
             "slug": "vpn-troubleshooting",
             "content": "Restart the VPN client.",
-            "status": "published",
         }, format="json")
         self.assertEqual(res.status_code, 201, res.data)
+        article_id = res.data["id"]
+        version = res.data["version"]
+
+        # Submit for review
+        res = self.c.post(f"/api/assets/knowledge-base/{article_id}/submit_review/",
+                          {"version": version}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        version = res.data["version"]
+
+        # Approve (admin, not the author)
+        auth(self.c, self.admin)
+        res = self.c.post(f"/api/assets/knowledge-base/{article_id}/approve/",
+                          {"version": version}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        version = res.data["version"]
+
+        # Publish
+        res = self.c.post(f"/api/assets/knowledge-base/{article_id}/publish/",
+                          {"version": version}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
 
         # Employee can search published articles
         auth(self.c, self.emp)

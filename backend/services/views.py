@@ -1,6 +1,7 @@
 import itertools
 
 from django.db import transaction
+from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework import permissions, viewsets, status
 from rest_framework.decorators import action
@@ -79,6 +80,21 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
+        qs = qs.select_related(
+            "catalogue_item", "requester", "assigned_to",
+            "fulfilment_ticket__assignee",
+        ).prefetch_related(
+            Prefetch(
+                "comments",
+                queryset=ServiceRequestComment.objects.select_related("author"),
+                to_attr="_prefetched_comments",
+            ),
+            Prefetch(
+                "history",
+                queryset=ServiceRequestHistory.objects.select_related("actor"),
+            ),
+            "attachments",
+        )
         user = self.request.user
         if not is_staff(user):
             qs = qs.filter(requester=user)
