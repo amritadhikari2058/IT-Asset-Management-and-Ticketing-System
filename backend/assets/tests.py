@@ -1,6 +1,7 @@
 ﻿"""Asset API tests: bulk safety (assignment guard), bulk assignment."""
 import threading
 from django.db import IntegrityError, connection, transaction
+from unittest import SkipTest
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -1729,6 +1730,9 @@ class AssetAssignmentConcurrencyTests(TransactionTestCase):
     reset_sequences = True
 
     def setUp(self):
+        from django.db import connections
+        if connections['default'].vendor == 'sqlite':
+            raise SkipTest('SQLite does not support concurrent writes via ThreadPoolExecutor; requires PostgreSQL for reliable verification.')
         self.dep, self.admin, self.mgr, self.emp = make_users()
         self.acat = AssetCategory.objects.create(name="Laptop")
         self.e2 = User.objects.create_user(

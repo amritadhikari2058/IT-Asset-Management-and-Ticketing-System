@@ -7,16 +7,19 @@ infrastructure actions; they only evaluate state and record findings.
 import logging
 
 from celery import shared_task
+from django.conf import settings
 from django.utils import timezone
-from django.db.models import Q
 
 from changes.models import (
     ChangeRequest,
     ChangeConflict,
     ChangeTemplate,
     PostImplementationReview,
-    BackgroundTaskRun,
+    MaintenanceWindow,
 )
+
+from common.models import BackgroundTaskRun
+from common.tasks import _mark_run
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +104,13 @@ def evaluate_change_deadlines(self):
             findings.append(f"{overdue_emergency} emergency retrospective(s) overdue.")
 
         summary = "; ".join(findings) if findings else "No overdue items."
-        _record_run("changes.tasks.evaluate_change_deadlines", "succeeded", "", {"findings": findings})
+        run.payload = {"findings": findings}
+        _mark_run("changes.tasks.evaluate_change_deadlines", run, "succeeded")
         logger.info("Change deadline evaluation complete: %s", summary)
         return {"findings": findings}
     except Exception as exc:  # noqa: BLE001
         logger.exception("Change deadline evaluation failed.")
-        _record_run("changes.tasks.evaluate_change_deadlines", "failed", type(exc).__name__)
+        _mark_run("changes.tasks.evaluate_change_deadlines", run, "failed", error_summary=type(exc).__name__)
         raise self.retry(exc=exc)
 
 
@@ -136,12 +140,13 @@ def detect_change_conflicts(self):
             updated_count += len(u)
 
         summary = f"Created {created_count}, updated {updated_count} conflict(s)."
-        _record_run("changes.tasks.detect_change_conflicts", "succeeded", "", {"created": created_count, "updated": updated_count})
+        run.payload = {"created": created_count, "updated": updated_count}
+        _mark_run("changes.tasks.detect_change_conflicts", run, "succeeded")
         logger.info("Change conflict detection complete: %s", summary)
         return {"created": created_count, "updated": updated_count}
     except Exception as exc:  # noqa: BLE001
         logger.exception("Change conflict detection failed.")
-        _record_run("changes.tasks.detect_change_conflicts", "failed", type(exc).__name__)
+        _mark_run("changes.tasks.detect_change_conflicts", run, "failed", error_summary=type(exc).__name__)
         raise self.retry(exc=exc)
 
 
@@ -154,44 +159,45 @@ def review_standard_change_templates(self):
     """
     run = _record_run("changes.tasks.review_standard_change_templates", "running")
     try:
-        from django.utils import timezone as tz
         now = timezone.now()
         window_start = now - timezone.timedelta(
-            days=getattr(__import__("django.conf", fromlist=["settings"]).settings, "CHANGE_STANDARD_FAILURE_WINDOW_DAYS", 90)
-        )
+            days=getattr(settings, "CHANGE_STANDARD_FAILURE_WINDOW_DAYS", 90))
+        failure_threshold = getattr(
+            settings, "CHANGE_STANDARD_FAILURE_THRESHOLD", 2)
 
-        overdue = 0
-        suspended = 0
-
-        # Overdue reviews.
-        templates = ChangeTemplate.objects.filter(
+        # Overdue reviews. This task only reports; it does not deactivate or
+        # re-approve a template (that stays an explicit owner decision).
+        overdue_templates = list(ChangeTemplate.objects.filter(
             is_active=True,
             is_preapproved=True,
             next_review_due__lt=now,
-        )
-        for tmpl in templates:
-            # Mark needs review (no state change beyond logging; owners act via UI).
-            overdue += 1
+        ).values_list("pk", flat=True))
+        overdue = len(overdue_templates)
 
-        # Repeated failures: count failed implementations of changes from
-        # this template in the window. We approximate by counting failed
-        # changes linked via history event "created from template" - since we
-        # don't store template on change, we count all failed changes as a
-        # conservative proxy and log for owner review.
+        # Failed implementations in the window. ChangeRequest does not store
+        # which template produced it, so this is a conservative organisation-
+        # level signal for template owners, not a per-template failure count.
         failed_count = ChangeRequest.objects.filter(
             status="failed",
             actual_end__gte=window_start,
         ).count()
-        if failed_count >= getattr(__import__("django.conf", fromlist=["settings"]).settings, "CHANGE_STANDARD_FAILURE_THRESHOLD", 2):
-            suspended += failed_count
+        review_flagged = failed_count >= failure_threshold
 
-        summary = f"{overdue} template(s) overdue for review; {failed_count} failed change(s) in window."
-        _record_run("changes.tasks.review_standard_change_templates", "succeeded", "", {"overdue_templates": overdue, "failed_changes": failed_count})
+        summary = (f"{overdue} template(s) overdue for review; "
+                   f"{failed_count} failed change(s) in window.")
+        _mark_run("changes.tasks.review_standard_change_templates", run,
+                  "succeeded",
+                  payload={"overdue_templates": overdue,
+                           "overdue_template_ids": overdue_templates,
+                           "failed_changes": failed_count,
+                           "failure_threshold_met": review_flagged})
         logger.info("Template review complete: %s", summary)
-        return {"overdue_templates": overdue, "failed_changes": failed_count}
+        return {"overdue_templates": overdue,
+                "failed_changes": failed_count,
+                "failure_threshold_met": review_flagged}
     except Exception as exc:  # noqa: BLE001
         logger.exception("Template review failed.")
-        _record_run("changes.tasks.review_standard_change_templates", "failed", type(exc).__name__)
+        _mark_run("changes.tasks.review_standard_change_templates", run, "failed", error_summary=type(exc).__name__)
         raise self.retry(exc=exc)
 
 
@@ -210,9 +216,10 @@ def activate_change_windows(self):
         completed = MaintenanceWindow.objects.filter(
             end_at__lt=now, status="active"
         ).update(status="completed")
-        _record_run("changes.tasks.activate_change_windows", "succeeded", "", {"activated": activated, "completed": completed})
+        run.payload = {"activated": activated, "completed": completed}
+        _mark_run("changes.tasks.activate_change_windows", run, "succeeded")
         return {"activated": activated, "completed": completed}
     except Exception as exc:  # noqa: BLE001
         logger.exception("Activate change windows failed.")
-        _record_run("changes.tasks.activate_change_windows", "failed", type(exc).__name__)
+        _mark_run("changes.tasks.activate_change_windows", run, "failed", error_summary=type(exc).__name__)
         raise self.retry(exc=exc)

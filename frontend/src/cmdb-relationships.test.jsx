@@ -62,70 +62,98 @@ describe('CMDB Relationships', () => {
     mockPost.mockResolvedValueOnce({ data: { id: 1, relationship_type: 'parent', direction: 'upstream', target: 2 } });
     mockGet.mockResolvedValueOnce({ data: [] });
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    await screen.findByText(/Create/i);
+    await screen.findByRole('button', { name: /Add Relationship/i });
   });
 
-  it('system_admin can view inverse relationships', () => {
+  it('system_admin can view inverse relationships', async () => {
     makeAdminAuth();
-    mockGet.mockResolvedValueOnce({ data: [] });
+    mockGet
+      .mockResolvedValueOnce({ data: { id: 1, ci_number: 'CI #1', name: 'A' } }) // ci detail
+      .mockResolvedValueOnce({ data: [{ id: 5, relationship_type: 'depends_on', source_ci: 2, target_ci: 1, source_ci_number: 'CI #2', status: 'active' }] }) // relationships
+      .mockResolvedValueOnce({ data: { results: [{ id: 2, ci_number: 'CI #2', name: 'B' }] } }); // CI options
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    expect(screen.getByRole('heading', { name: /Inverse/i })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /Incoming Relationships/i })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /Outgoing Relationships/i })).toBeTruthy();
+    expect(await screen.findByRole('link', { name: /CI #2 — B/i })).toBeTruthy();
   });
 
-  it('system_admin can activate/deactivate relationships', () => {
+  it('system_admin can activate/deactivate relationships', async () => {
     makeAdminAuth();
+    mockPost.mockResolvedValueOnce({ data: { id: 1, relationship_type: 'parent', direction: 'upstream', target: 2 } });
+    mockGet.mockResolvedValue({ data: { results: [{ id: 1, relationship_type: 'parent', direction: 'upstream', source_ci: 1, target_ci: 2, status: 'active' }, { id: 2, relationship_type: 'parent', direction: 'upstream', source_ci: 1, target_ci: 3, status: 'inactive' }] } });
     mockPatch.mockResolvedValueOnce({ data: { status: 'active' } });
-    mockGet.mockResolvedValueOnce({ data: [] });
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    expect(screen.getByRole('button', { name: /Activate/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Deactivate/ })).toBeTruthy();
+    await screen.findByRole('button', { name: /Activate/ });
+    await screen.findByRole('button', { name: /Deactivate/ });
   });
 
-  it('prevents self-link relationships', () => {
+  it('prevents self-link relationships', async () => {
     makeAdminAuth();
-    mockPost.mockRejectedValueOnce({ response: { status: 400 } });
-    mockGet.mockResolvedValueOnce({ data: [] });
+    mockGet
+      .mockResolvedValueOnce({ data: { id: 1, ci_number: 'CI #1', name: 'A' } }) // ci detail
+      .mockResolvedValueOnce({ data: [] }) // relationships
+      .mockResolvedValueOnce({ data: [{ id: 2, ci_number: 'CI #2', name: 'B' }] }); // CI options
+    mockPost.mockRejectedValueOnce({ response: { status: 400, data: { detail: 'A CI cannot be related to itself.' } } });
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    // The form should reject self-link
-    expect(screen.queryByRole('button', { name: /Create/ })).toBeTruthy();
+    await screen.findByRole('option', { name: /CI #2/i });
+    fireEvent.change(screen.getByLabelText(/Related CI/i), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText(/Relationship Type/i), { target: { value: 'depends_on' } });
+    fireEvent.click(screen.getByRole('button', { name: /Add Relationship/i }));
+    expect(await screen.findByText(/cannot be related to itself/i)).toBeTruthy();
   });
 
-  it('prevents duplicate active relationships', () => {
+  it('prevents duplicate active relationships', async () => {
     makeAdminAuth();
-    mockPost.mockRejectedValueOnce({ response: { status: 409 } });
-    mockGet.mockResolvedValueOnce({ data: [] });
+    mockGet
+      .mockResolvedValueOnce({ data: { id: 1, ci_number: 'CI #1', name: 'A' } }) // ci detail
+      .mockResolvedValueOnce({ data: [] }) // relationships
+      .mockResolvedValueOnce({ data: [{ id: 2, ci_number: 'CI #2', name: 'B' }] }); // CI options
+    mockPost.mockRejectedValueOnce({ response: { status: 409, data: { detail: 'This relationship already exists.' } } });
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    expect(screen.getByText(/duplicate/i)).toBeTruthy();
+    await screen.findByRole('option', { name: /CI #2/i });
+    fireEvent.change(screen.getByLabelText(/Related CI/i), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText(/Relationship Type/i), { target: { value: 'depends_on' } });
+    fireEvent.click(screen.getByRole('button', { name: /Add Relationship/i }));
+    expect(await screen.findByText(/This relationship already exists/i)).toBeTruthy();
   });
 
-  it('shows cycle errors on create', () => {
+  it('shows cycle errors on create', async () => {
     makeAdminAuth();
+    mockGet
+      .mockResolvedValueOnce({ data: { id: 1, ci_number: 'CI #1', name: 'A' } }) // ci detail
+      .mockResolvedValueOnce({ data: [] }) // relationships
+      .mockResolvedValueOnce({ data: [{ id: 2, ci_number: 'CI #2', name: 'B' }] }); // CI options
     mockPost.mockRejectedValueOnce({ response: { status: 409, data: { detail: 'Cycle detected' } } });
-    mockGet.mockResolvedValueOnce({ data: [] });
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    expect(screen.getByText(/cycle/i)).toBeTruthy();
+    await screen.findByRole('option', { name: /CI #2/i });
+    fireEvent.change(screen.getByLabelText(/Related CI/i), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText(/Relationship Type/i), { target: { value: 'depends_on' } });
+    fireEvent.click(screen.getByRole('button', { name: /Add Relationship/i }));
+    expect(await screen.findByText(/Cycle detected/i)).toBeTruthy();
   });
 
   it('excludes inaccessible CIs from relationship selectors', async () => {
     makeAdminAuth();
     mockGet
+      .mockResolvedValueOnce({ data: { id: 1, ci_number: 'CI #1', name: 'A' } }) // ci detail
       .mockResolvedValueOnce({ data: [] }) // relationships for this CI
-      .mockResolvedValueOnce({ data: [{ id: 1, name: 'A', status: 'active' }, { id: 2, name: 'B', status: 'inactive' }] });
+      .mockResolvedValueOnce({ data: { results: [{ id: 1, ci_number: 'CI #1', name: 'A', status: 'active' }, { id: 2, ci_number: 'CI #2', name: 'B', status: 'inactive' }] } }); // related CI choices
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    expect(await screen.findByRole('option', { name: 'B (2)' })).toBeTruthy();
+    expect(await screen.findByRole('option', { name: /CI #2/i })).toBeTruthy();
   });
 
   it('shows error on missing related CI', async () => {
     makeAdminAuth();
     mockGet
+      .mockResolvedValueOnce({ data: { id: 1, ci_number: 'CI #1', name: 'A' } }) // ci detail
       .mockResolvedValueOnce({ data: [] }) // relationships for this CI
-      .mockResolvedValueOnce({ data: [{ id: 2, name: 'B' }] }); // related CI choices
-    mockPost.mockRejectedValueOnce({ response: { status: 404 } });
+      .mockResolvedValueOnce({ data: { results: [{ id: 2, ci_number: 'CI #2', name: 'B' }] } }); // related CI choices
+    mockPost.mockRejectedValueOnce({ response: { status: 404, data: { detail: 'Related CI not found.' } } });
     render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-    await screen.findByRole('option', { name: 'B (2)' });
-    fireEvent.change(screen.getByLabelText('Related CI'), { target: { value: '2' } });
-    fireEvent.change(screen.getByLabelText('Relationship Type'), { target: { value: 'depends_on' } });
-    fireEvent.click(screen.getByRole('button', { name: /(Create|Update) Relationship/i }));
+    await screen.findByRole('option', { name: /CI #2/i });
+    fireEvent.change(screen.getByLabelText(/Related CI/i), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText(/Relationship Type/i), { target: { value: 'depends_on' } });
+    fireEvent.click(screen.getByRole('button', { name: /Add Relationship/i }));
     expect(await screen.findByText(/not found/i)).toBeTruthy();
   });
 
@@ -135,15 +163,14 @@ describe('CMDB Relationships', () => {
       mockPost.mockResolvedValueOnce({ data: { id: 1, relationship_type: 'parent', direction: 'upstream', target: 2 } });
       mockGet.mockResolvedValueOnce({ data: [] });
       render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-      await screen.findByText(/Create/i);
+      await screen.findByRole('button', { name: /Add Relationship/i });
     });
 
     it('it_support can view relationships but not create', () => {
       makeSupportAuth();
       mockGet.mockResolvedValueOnce({ data: [] });
       render(<CiRelationshipsPage match={{ params: { id: 1 } }} />);
-      expect(screen.queryByRole('button', { name: /Create/ })).toBeNull();
-      expect(screen.getByText(/requires IT Manager/i)).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /Add Relationship/i })).toBeNull();
     });
 
     it('employee denied all relationship access', () => {

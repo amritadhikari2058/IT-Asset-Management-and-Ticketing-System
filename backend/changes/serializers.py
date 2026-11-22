@@ -625,9 +625,16 @@ class BlackoutPeriodSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
 
     def validate(self, data):
-        """Validate that end time is after start time."""
-        if data.get("start_at") and data.get("end_at") and data["start_at"] >= data["end_at"]:
-            raise serializers.ValidationError({"end_at": "End time must be after start time."})
+        """Validate that end time is after start time.
+
+        Partial updates (PATCH) fall back to the stored instance values so a
+        single-field edit cannot bypass the range check.
+        """
+        start = data.get("start_at", getattr(self.instance, "start_at", None))
+        end = data.get("end_at", getattr(self.instance, "end_at", None))
+        if start and end and start >= end:
+            raise serializers.ValidationError(
+                {"end_at": "End time must be after start time."})
         return data
 
 

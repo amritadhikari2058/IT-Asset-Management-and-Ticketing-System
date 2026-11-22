@@ -4,6 +4,7 @@ from common.monitoring_views import (ApiPerformanceViewSet,
                                      BackgroundTaskMonitorViewSet,
                                      EmailStorageHealthViewSet,
                                      HealthCheckResultViewSet,
+                                     NotificationOutboxViewSet,
                                      OperationalAlertViewSet,
                                      OperationalErrorEventViewSet,
                                      OperationalIncidentViewSet,
@@ -51,6 +52,8 @@ router.register("api-performance", ApiPerformanceViewSet,
                 basename="apiperformance")
 router.register("email-storage", EmailStorageHealthViewSet,
                 basename="emailstorage")
+router.register("notification-outbox", NotificationOutboxViewSet,
+                basename="notificationoutbox")
 
 urlpatterns = [
     path("data-integrity/", data_integrity, name="data-integrity"),

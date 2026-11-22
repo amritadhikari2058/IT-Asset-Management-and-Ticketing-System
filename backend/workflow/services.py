@@ -12,7 +12,7 @@ import logging
 from django.db import transaction
 from django.utils import timezone
 
-from common.models import Notification
+from common.notifications import notify_user
 from tickets.models import Ticket, TicketHistory, TicketNote
 from .models import AutomationRule, RuleExecution
 
@@ -142,11 +142,13 @@ def _exec_action(action, ticket, rule, results):
         if recipient is None or not getattr(recipient, "is_active", True):
             results.append("notify: no eligible user")
             return
-        Notification.objects.create(
-            recipient=recipient,
-            title=f"Automation: ticket #{ticket.pk}",
-            body=f"Rule '{rule.name}' processed this ticket.",
-            entity_type="tickets.Ticket", object_id=str(ticket.pk))
+        notify_user(
+            recipient, "automation_notify",
+            f"Automation: ticket #{ticket.pk}",
+            f"Rule '{rule.name}' processed this ticket.",
+            entity_type="tickets.Ticket", object_id=str(ticket.pk),
+            post_commit=False,
+        )
         results.append(f"notified {recipient.pk}")
     else:
         raise ValueError(f"Unknown action {t}")

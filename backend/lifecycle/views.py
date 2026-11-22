@@ -150,7 +150,16 @@ class LifecycleCaseViewSet(viewsets.ModelViewSet):
         employee = serializer.validated_data.get("employee")
         if getattr(employee, "is_deleted", False):
             raise ValidationError({"employee": "Deleted employee."})
-        services.create_case_from_template(
+        assigned_coordinator = serializer.validated_data.get(
+            "assigned_coordinator")
+        if isinstance(assigned_coordinator, int):
+            try:
+                assigned_coordinator = User.objects.get(
+                    pk=assigned_coordinator)
+            except User.DoesNotExist:
+                raise ValidationError(
+                    {"assigned_coordinator": "Invalid user."})
+        case = services.create_case_from_template(
             template=template, employee=employee, actor=self.request.user,
             department=serializer.validated_data.get("department"),
             priority=serializer.validated_data.get("priority", "medium"),
@@ -162,9 +171,9 @@ class LifecycleCaseViewSet(viewsets.ModelViewSet):
             source_reference=serializer.validated_data.get(
                 "source_reference", ""),
             notes=serializer.validated_data.get("notes", ""),
-            assigned_coordinator=serializer.validated_data.get(
-                "assigned_coordinator"),
+            assigned_coordinator=assigned_coordinator,
         )
+        serializer.instance = case
 
     def _case(self):
         return get_object_or_404(
@@ -345,6 +354,8 @@ class LifecycleCaseViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"])
     def from_service_request(self, request):
+        if not _is_staff(request.user):
+            raise PermissionDenied("IT staff only.")
         ser = sl.LifecycleCaseTransitionSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
@@ -364,11 +375,17 @@ class LifecycleCaseViewSet(viewsets.ModelViewSet):
                 pk=template_id, is_deleted=False, is_active=True)
         except (lm.LifecycleTemplate.DoesNotExist, ValueError, TypeError):
             raise ValidationError({"template_id": "Invalid template."})
+        assigned_coordinator = request.data.get("assigned_coordinator")
+        if isinstance(assigned_coordinator, int):
+            try:
+                assigned_coordinator = User.objects.get(pk=assigned_coordinator)
+            except User.DoesNotExist:
+                raise ValidationError({"assigned_coordinator": "Invalid user."})
         case = services.create_case_from_template(
             template=template, employee=employee, actor=request.user,
             department=sr.department or employee.home_department,
             source="service_request", source_reference=sr.request_number,
-            assigned_coordinator=request.data.get("assigned_coordinator"),
+            assigned_coordinator=assigned_coordinator,
         )
         log_action(actor=request.user, action="create", instance=case,
                    details={"source_service_request": sr.pk})
@@ -717,6 +734,9 @@ class LifecycleDashboardView(viewsets.ViewSet):
         def _count(qs, **filters):
             return qs.filter(**filters).count()
 
+        task_qs = lm.LifecycleTask.objects.filter(
+            is_deleted=False, case__in=base)
+
         data = {
             "onboarding_in_progress": _count(
                 base, case_type="onboarding", status="in_progress"),
@@ -740,12 +760,10 @@ class LifecycleDashboardView(viewsets.ViewSet):
             "transfers_in_progress": _count(
                 base, case_type="transfer", status="in_progress"),
             "overdue_tasks": _count(
-                lm.LifecycleTask.objects.filter(is_deleted=False),
-                due_date__lt=now,
+                task_qs, due_date__lt=now,
                 status__in=("pending", "in_progress", "blocked")),
             "failed_automations": _count(
-                lm.LifecycleTask.objects.filter(is_deleted=False),
-                automation_status="failed"),
+                task_qs, automation_status="failed"),
         }
         if is_admin or is_manager:
             data["recent_cases"] = list(

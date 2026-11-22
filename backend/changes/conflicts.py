@@ -79,8 +79,7 @@ def detect_conflicts(change, horizon_days=90):
 
     # --- Blackout period conflict ---
     # A change scheduled during a blackout period is a conflict
-    from datetime import timedelta
-    horizon_end = timezone.now() + timedelta(days=90)
+    horizon_end = now + timedelta(days=horizon_days)
     blackout_periods = BlackoutPeriod.objects.filter(
         status="active", end_at__gte=timezone.now()
     )
@@ -89,8 +88,15 @@ def detect_conflicts(change, horizon_days=90):
         scope_match = True
         if bp.scope_department and change.department_id != bp.scope_department_id:
             scope_match = False
-        if bp.scope_service and change.service_id != bp.scope_service_id:
-            scope_match = False
+        if bp.scope_service_id:
+            # ChangeRequest has no ``service`` FK; affected services live in
+            # ChangeServiceImpact rows, so look those up instead.
+            affected = ChangeServiceImpact.objects.filter(
+                change=change,
+                service_catalogue_item_id=bp.scope_service_id,
+            ).exists()
+            if not affected:
+                scope_match = False
         if not scope_match:
             continue
         # Check overlap with change window
@@ -493,9 +499,12 @@ def upsert_conflicts(change, conflicts):
             matching.severity = conflict.get(
                 "severity", matching.severity
             )
-            matching.status = "open"
-            matching.save()
-            updated.append(matching)
+            # Do not reopen conflicts that a human already resolved, or
+            # accepted: repeated scans are idempotent, they must not reset
+            # human decisions.
+            if matching.status not in ("resolved", "accepted", "acknowledged"):
+                matching.save()
+                updated.append(matching)
         else:
             ChangeConflict.objects.create(
                 change=change,

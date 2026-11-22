@@ -130,7 +130,7 @@ describe('Procurement route resolution', () => {
       expect(screen.getByText('Pending asset registration')).toBeTruthy();
     });
 
-    const requestsLink = screen.getByText('Purchase Requests');
+    const requestsLink = screen.getByText('Purchase requests');
     requestsLink.click();
 
     await waitFor(() => {

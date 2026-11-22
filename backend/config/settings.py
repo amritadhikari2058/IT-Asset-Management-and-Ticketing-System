@@ -160,8 +160,16 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 86400.0,  # daily
     },
     'evaluate-retention-policies': {
-        'task': 'common.monitoring_tasks.evaluate_retention_policies',
+        'task': 'common.tasks.evaluate_retention_policies',
         'schedule': 3600.0,  # hourly
+    },
+    'process-notification-outbox': {
+        'task': 'common.tasks.process_notification_outbox',
+        'schedule': 30.0,  # every 30 seconds: durable safety net + retries
+    },
+    'cleanup-notification-outbox': {
+        'task': 'common.tasks.cleanup_notification_outbox',
+        'schedule': crontab(hour=3, minute=0),  # daily at 03:00
     },
     'evaluate-component-health': {
         'task': 'common.monitoring_tasks.evaluate_component_health',
@@ -175,10 +183,9 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'common.monitoring_tasks.detect_missed_scheduled_tasks',
         'schedule': 900.0,  # every 15 minutes
     },
-    'sync-backup-schedules': {
-        'task': 'backup.tasks.sync_beat_schedules',
-        'schedule': 300.0,  # every 5 minutes
-    },
+    # ``backup.tasks.sync_beat_schedules`` is a planned placeholder (no backup
+    # models exist yet), so it is intentionally NOT scheduled: a periodic
+    # no-op that records a success would make operational health misleading.
     'cmdb-evaluate-configuration-drift': {
         'task': 'cmdb.tasks.evaluate_configuration_drift_task',
         'schedule': crontab(hour=2, minute=15),
@@ -193,6 +200,24 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'cmdb.tasks.check_ci_verification_age_task',
         'schedule': crontab(hour=8, minute=0),
         'kwargs': {'batch_size': 200, 'notify': True},
+    },
+    'activate-change-windows': {
+        'task': 'changes.tasks.activate_change_windows',
+        'schedule': 300.0,  # every 5 minutes
+    },
+    'evaluate-change-deadlines': {
+        'task': 'changes.tasks.evaluate_change_deadlines',
+        'schedule': 900.0,  # every 15 minutes
+    },
+    'detect-change-conflicts': {
+        'task': 'changes.tasks.detect_change_conflicts',
+        # Scheduling already runs conflict detection synchronously; this is a
+        # periodic safety net for conflicts introduced by later changes.
+        'schedule': crontab(minute=40, hour="*/6"),
+    },
+    'review-standard-change-templates': {
+        'task': 'changes.tasks.review_standard_change_templates',
+        'schedule': 86400.0,  # daily
     },
 }
 
@@ -347,6 +372,27 @@ PROBLEM_DETECTION_BATCH_SIZE = 500
 PROBLEM_RECURRENCE_MONITORING_DAYS = 30
 PROBLEM_DASHBOARD_DETAIL_LIMIT = 10
 
+# ---------- Change Management policy defaults ----------
+# Used by changes.tasks.review_standard_change_templates to decide how far
+# back failed changes are counted and when template owners should review.
+CHANGE_STANDARD_FAILURE_WINDOW_DAYS = int(
+    os.environ.get('CHANGE_STANDARD_FAILURE_WINDOW_DAYS', '90'))
+CHANGE_STANDARD_FAILURE_THRESHOLD = int(
+    os.environ.get('CHANGE_STANDARD_FAILURE_THRESHOLD', '2'))
+# ---------- Ticket bulk import limits / idempotency ----------
+# Endpoint-specific guardrails for ticket bulk import (CSV/XLSX/JSON). These
+# are hard request limits: oversized uploads are rejected before ticket rows are
+# created. Adjust via environment/config without changing business logic.
+TICKET_BULK_IMPORT_MAX_FILE_SIZE_MB = float(
+    os.environ.get('TICKET_BULK_IMPORT_MAX_FILE_SIZE_MB', '5'))
+TICKET_BULK_IMPORT_MAX_ROWS = int(
+    os.environ.get('TICKET_BULK_IMPORT_MAX_ROWS', '500'))
+TICKET_BULK_IMPORT_MAX_JSON_ROWS = int(
+    os.environ.get('TICKET_BULK_IMPORT_MAX_JSON_ROWS',
+                   os.environ.get('TICKET_BULK_IMPORT_MAX_ROWS', '500')))
+TICKET_BULK_IMPORT_TOKEN_TTL_HOURS = int(
+    os.environ.get('TICKET_BULK_IMPORT_TOKEN_TTL_HOURS', '24'))
+
 # ---------- Email intake (organizational support mailbox via IMAP) ----------
 INBOUND_MAILBOX_ENABLED = os.environ.get('INBOUND_MAILBOX_ENABLED', 'true').lower() == 'true'
 INBOUND_MAILBOX_HOST = os.environ.get('INBOUND_MAILBOX_HOST', '')
@@ -364,6 +410,30 @@ INBOUND_ALLOWED_SENDER_DOMAINS = [
 INBOUND_MAILBOX_POLL_SECONDS = float(os.environ.get('INBOUND_MAILBOX_POLL_SECONDS', '60') or '60')
 # Dedup window for outbound ticket emails (per ticket + subject + recipient).
 EMAIL_DEDUP_TTL_SECONDS = float(os.environ.get('EMAIL_DEDUP_TTL_SECONDS', '3600') or '3600')
+
+# ---------- Transactional notification outbox (Phase 66) ----------
+# Durable, database-backed delivery queue for outbound notification email. The
+# outbox row is committed atomically with the business change; a Celery worker
+# delivers it with bounded retries. These knobs tune throughput and recovery
+# without code changes.
+NOTIFICATION_OUTBOX_BATCH_SIZE = int(
+    os.environ.get('NOTIFICATION_OUTBOX_BATCH_SIZE', '100'))
+NOTIFICATION_OUTBOX_MAX_ATTEMPTS = int(
+    os.environ.get('NOTIFICATION_OUTBOX_MAX_ATTEMPTS', '5'))
+NOTIFICATION_OUTBOX_LEASE_SECONDS = int(
+    os.environ.get('NOTIFICATION_OUTBOX_LEASE_SECONDS', '120'))
+NOTIFICATION_OUTBOX_RETRY_BASE_SECONDS = int(
+    os.environ.get('NOTIFICATION_OUTBOX_RETRY_BASE_SECONDS', '30'))
+NOTIFICATION_OUTBOX_RETRY_MAX_SECONDS = int(
+    os.environ.get('NOTIFICATION_OUTBOX_RETRY_MAX_SECONDS', '3600'))
+# When true, the on_commit wake-up runs delivery inline (no broker required).
+# Enabled only in the test settings; production uses the async Celery path.
+NOTIFICATION_OUTBOX_EAGER = (
+    os.environ.get('NOTIFICATION_OUTBOX_EAGER', 'false').lower() == 'true')
+# Retention for terminal outbox rows (delivered/failed/cancelled). Cleanup
+# never removes pending/retry/processing rows.
+NOTIFICATION_OUTBOX_RETENTION_DAYS = int(
+    os.environ.get('NOTIFICATION_OUTBOX_RETENTION_DAYS', '30'))
 
 # ---------- Email (console dev/test, SMTP prod via env; provider-agnostic) ----------
 EMAIL_BACKEND = os.environ.get(
@@ -493,3 +563,4 @@ LOGGING = {
         'common.security': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
     },
 }
+use_tz = True

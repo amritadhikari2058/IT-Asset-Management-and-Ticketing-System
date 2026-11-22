@@ -12,8 +12,9 @@ import json
 from django.db import transaction
 from django.utils import timezone
 
-from common.models import Notification
 from common.audit import log_action
+from common.models import Notification
+from common.notifications import SYSTEM_CATEGORY, notify_user
 
 from .models import (
     ConfigurationBaseline,
@@ -399,15 +400,18 @@ def _notify_owner(ci, finding):
             created_at__gte=cutoff,
         ).exists()
         if not already:
-            Notification.objects.create(
-                recipient=recipient,
-                title=f"CMDB drift ({finding.severity}): {ci.ci_number}",
-                body=(
+            notify_user(
+                recipient,
+                SYSTEM_CATEGORY,
+                f"CMDB drift ({finding.severity}): {ci.ci_number}",
+                (
                     f"Drift finding '{finding.finding_type}' on {ci.ci_number} "
                     f"({ci.name}) field '{finding.field_name or 'n/a'}'."
                 ),
                 entity_type="cmdb.ConfigurationDriftFinding",
                 object_id=str(finding.pk),
+                dedupe=False,
+                post_commit=True,
             )
 
 

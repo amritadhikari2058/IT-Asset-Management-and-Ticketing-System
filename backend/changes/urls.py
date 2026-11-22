@@ -21,6 +21,8 @@ router.register(r"approvals", views.ChangeApprovalViewSet, basename="changeappro
 router.register(r"review-meetings", views.ChangeReviewMeetingViewSet, basename="changereviewmeeting")
 router.register(r"review-items", views.ChangeReviewItemViewSet, basename="changereviewitem")
 router.register(r"maintenance-windows", views.MaintenanceWindowViewSet, basename="maintenancewindow")
+router.register(r"blackout-periods", views.BlackoutPeriodViewSet,
+                basename="changeblackoutperiod")
 router.register(r"scheduling-exceptions", views.ChangeSchedulingExceptionViewSet, basename="schedulingexception")
 router.register(r"conflicts", views.ChangeConflictViewSet, basename="changeconflict")
 router.register(r"attachments", views.ChangeAttachmentViewSet, basename="changeattachment")

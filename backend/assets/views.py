@@ -50,6 +50,7 @@ from assets.models import (KnowledgeBaseArticle, KnowledgeBaseArticleRevision,
                            KnowledgeBaseFeedback)
 from common.audit import log_action
 from common.models import Notification
+from common.notifications import notify_user
 from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
 from tickets.serializers import validate_attachment_file
 
@@ -83,21 +84,14 @@ def _notify_assignee(recipient, actor, title, body, asset):
     about their own action, never notify inactive/deleted users or empty
     recipients. In-app only — asset events never send email. Created
     inline so the row shares the mutation's fate on rollback.
+    Deduplicated via notify_user(): equivalent active notifications are
+    not created twice.
     """
-    from common.models import Notification
-
-    if recipient is None or getattr(recipient, "pk", None) is None:
-        return None
-    actor_pk = getattr(actor, "pk", None)
-    if actor_pk is not None and recipient.pk == actor_pk:
-        return None
-    if not getattr(recipient, "is_active", True):
-        return None
-    if getattr(recipient, "is_deleted", False):
-        return None
-    return Notification.objects.create(
-        recipient=recipient, title=title[:255], body=body or "",
-        entity_type="assets.Asset", object_id=str(asset.pk))
+    notify_user(
+        recipient, "asset_assigned", title, body or "",
+        entity_type="assets.Asset", object_id=str(asset.pk),
+        actor=actor, post_commit=False,
+    )
 
 
 def _as_key(value):
@@ -305,14 +299,21 @@ class AssetCategoryViewSet(viewsets.ModelViewSet):
         if obj.assets.count():
             return Response({"detail": "Blocked: assets still reference it."},
                             status=409)
+        from django.db.models.deletion import ProtectedError
         from common.models import AuditLog
-        with transaction.atomic():
-            AuditLog.objects.create(
-                actor=request.user, action="hard_delete",
-                entity_type="assets.AssetCategory", object_id=str(obj.pk),
-                object_repr=str(obj)[:255],
-                reason=request.data.get("reason", ""))
-            obj.hard_delete()
+        try:
+            with transaction.atomic():
+                AuditLog.objects.create(
+                    actor=request.user, action="hard_delete",
+                    entity_type="assets.AssetCategory", object_id=str(obj.pk),
+                    object_repr=str(obj)[:255],
+                    reason=request.data.get("reason", ""))
+                obj.hard_delete()
+        except ProtectedError:
+            return Response(
+                {"detail": "Blocked: protected related records prevent permanent deletion.",
+                 "hint": "Remove or reassign protected references before hard delete."},
+                status=409)
         return Response({"permanently_deleted": True})
 
 
@@ -323,12 +324,33 @@ class AssetViewSet(viewsets.ModelViewSet):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def get_permissions(self):
+        # Respect explicit action-level permission_classes (@action permission_classes=...).
+        handler = getattr(self, self.action, None) if self.action else None
+        if handler is not None:
+            action_perms = getattr(handler, "kwargs", {}).get("permission_classes")
+            if action_perms:
+                return [permission() for permission in action_perms]
+
         if self.action in ("create", "update", "partial_update", "destroy",
                            "assign", "return_asset", "retire", "mark_lost",
                            "bulk_create", "bulk_update", "bulk_delete",
                            "bulk_assign"):
             return [IsITStaff()]
-        return super().get_permissions()
+
+        from rest_framework.permissions import IsAuthenticated
+
+        class _ActiveAuthenticated(IsAuthenticated):
+            def has_permission(self, request, view):
+                if not super().has_permission(request, view):
+                    return False
+                if not getattr(request.user, "is_active", False):
+                    return False
+                role = getattr(request.user, "role", "")
+                return role in ("system_admin", "it_manager", "it_support",
+                                "employee") or getattr(
+                                    request.user, "is_superuser", False)
+
+        return [_ActiveAuthenticated()]
 
     def get_queryset(self):
         qs = _asset_visible_qs(self.request.user)
@@ -722,24 +744,57 @@ class AssetViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"],
             permission_classes=[IsSystemAdmin])
     def hard_delete(self, request, pk=None):
+        from common.permissions import is_system_admin
+        if not is_system_admin(request.user):
+            return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
         if request.data.get("confirm") != str(pk):
             return Response({"detail": "Confirmation required."}, status=400)
-        obj = Asset.all_objects.get(pk=pk)
-        refs = {"assignments": obj.assignments.count(),
-                "history": obj.history.count(),
-                "tickets": obj.tickets.count(),
-                "attachments": obj.attachments.count()}
-        if any(refs.values()):
-            return Response({"detail": "Blocked: history exists.",
-                             "references": refs}, status=409)
+        from django.db.models.deletion import ProtectedError
         from common.models import AuditLog
-        with transaction.atomic():
-            AuditLog.objects.create(
-                actor=request.user, action="hard_delete",
-                entity_type="assets.Asset", object_id=str(obj.pk),
-                object_repr=str(obj)[:255],
-                reason=request.data.get("reason", ""))
-            obj.hard_delete()
+
+        obj = Asset.all_objects.get(pk=pk)
+        refs = {
+            "assignments": obj.assignments.count(),
+            "asset_assignments": obj.asset_assignments.count(),
+            "history": obj.history.count(),
+            "attachments": obj.attachments.count(),
+            "maintenance": obj.maintenance.count(),
+            "disposals": obj.disposals.count(),
+            "tickets": obj.tickets.count(),
+        }
+        try:
+            obj.procurement_receipt_item
+            refs["procurement_receipt_item"] = 1
+        except Exception:
+            # OneToOne reverse accessor may raise RelatedObjectDoesNotExist
+            refs["procurement_receipt_item"] = 0
+        blocking = {k: v for k, v in refs.items() if v}
+        if blocking:
+            return Response(
+                {"detail": "Blocked: related records prevent permanent deletion.",
+                 "references": blocking,
+                 "hint": "Retire/archive the asset or remove protected references before hard delete."},
+                status=409)
+        try:
+            with transaction.atomic():
+                AuditLog.objects.create(
+                    actor=request.user, action="hard_delete",
+                    entity_type="assets.Asset", object_id=str(obj.pk),
+                    object_repr=str(obj)[:255],
+                    reason=request.data.get("reason", ""))
+                obj.hard_delete()
+        except ProtectedError as exc:
+            protected = []
+            for p in exc.protected_objects:
+                protected.append({
+                    "type": p._meta.label,
+                    "id": str(p.pk),
+                })
+            return Response(
+                {"detail": "Blocked: protected related records prevent permanent deletion.",
+                 "protected_objects": protected[:50],
+                 "hint": "Remove or reassign protected references before hard delete."},
+                status=409)
         return Response({"permanently_deleted": True})
 
     # ---------- bulk ----------
@@ -783,7 +838,9 @@ class AssetViewSet(viewsets.ModelViewSet):
                 header = [str(h or "").strip() for h in rows[0]]
                 unknown = [h for h in header if h and h not in allowed]
                 if unknown:
-                    raise ValueError("unknown columns: " + ", ".join(unknown))
+                    raise ValidationError(
+                        {"file": "unknown columns: "
+                                 + ", ".join(unknown)})
                 if not any(h in allowed for h in header):
                     raise ValueError("header row missing")
                 return [dict(zip(header, r)) for r in rows[1:] if any(r)]
@@ -794,10 +851,12 @@ class AssetViewSet(viewsets.ModelViewSet):
             header = [str(h or "").strip() for h in reader.fieldnames]
             unknown = [h for h in header if h and h not in allowed]
             if unknown:
-                raise ValueError("unknown columns: " + ", ".join(unknown))
+                raise ValidationError(
+                    {"file": "unknown columns: "
+                             + ", ".join(unknown)})
             if not any(h in allowed for h in header):
                 raise ValueError("header row missing")
-            return list(reader)
+            return [{k.strip(): v for k, v in r.items()} for r in reader]
         except ValidationError:
             raise
         except Exception:
@@ -806,6 +865,25 @@ class AssetViewSet(viewsets.ModelViewSet):
                 {"file": f"Could not read the uploaded file '{name}'. "
                          "Expected a UTF-8 CSV or a valid XLSX workbook "
                          "with a header row."})
+
+    @action(detail=False, methods=["get"])
+    def find_all(self, request):
+        """Return all assets (unpaginated) with optional filtering."""
+        qs = _asset_visible_qs(request.user)
+        params = request.query_params
+        if params.get("category"):
+            cat_filter = params["category"]
+            qs = qs.filter(category__name__icontains=cat_filter)
+        if params.get("department"):
+            qs = qs.filter(department_id=params["department"])
+        if params.get("q"):
+            q = params["q"]
+            qs = qs.filter(
+                Q(name__icontains=q) | Q(asset_tag__icontains=q) |
+                Q(serial_number__icontains=q) | Q(location__icontains=q)
+            )
+        serializer = AssetSerializer(qs, many=True)
+        return Response(serializer.data)
 
     @action(detail=False, methods=["get", "post"])
     def bulk_create(self, request):
@@ -846,6 +924,15 @@ class AssetViewSet(viewsets.ModelViewSet):
                     errors.append(
                         {"row": i,
                          "errors": f"duplicate serial number {serial}"})
+                elif not str(r.get("category") or "").strip():
+                    errors.append({"row": i, "errors": "category required"})
+                elif not AssetCategory.objects.filter(
+                        name=str(r.get("category") or "").strip()).exists():
+                    errors.append({"row": i, "errors": "unknown category"})
+                elif str(r.get("status") or "available").strip().lower() not in (
+                        "available", "assigned", "in_repair", "retired",
+                        "lost", "disposed"):
+                    errors.append({"row": i, "errors": "unknown status"})
                 else:
                     seen.add(tag)
                     if serial:
@@ -871,7 +958,7 @@ class AssetViewSet(viewsets.ModelViewSet):
                                         "reason": "exists; use bulk_update"})
                         continue
                     cat = AssetCategory.objects.filter(
-                        name=r.get("category")).first()
+                        name=str(r.get("category") or "").strip()).first()
                     if not cat:
                         failed.append({"row": i, "asset_tag": tag,
                                        "errors": "unknown category"})
@@ -899,16 +986,23 @@ class AssetViewSet(viewsets.ModelViewSet):
                         cost = cost if cost in (None, "") else float(cost)
                     except (TypeError, ValueError):
                         cost = None
-                    if str(r.get("status") or "available") == "assigned":
+                    if str(r.get("status") or "available").strip().lower() not in (
+                            "available", "assigned", "in_repair", "retired",
+                            "lost", "disposed"):
+                        failed.append({"row": i, "asset_tag": tag,
+                                       "errors": "unknown status"})
+                        continue
+                    if str(r.get("status") or "available").strip().lower() == "assigned":
                         failed.append(
                             {"row": i, "asset_tag": tag,
                              "errors": "status 'assigned' cannot be imported; "
                                        "use the assign workflow"})
                         continue
-                    obj = Asset(asset_tag=tag, name=r.get("name", tag),
+                    obj = Asset(asset_tag=tag, name=(str(r.get("name") or "").strip() or tag),
                                 category=cat,
                                 serial_number=serial,
-                                status=r.get("status", "available") or "available",
+                                status=(str(r.get("status") or "available").strip().lower()
+                                        or "available"),
                                 department=dept,
                                 location=str(r.get("location") or "").strip(),
                                 description=str(r.get("description") or "").strip(),
@@ -1239,6 +1333,8 @@ def _notify_maintenance(maintenance, actor, old=None):
 
     Notifies the assigned technician (and the actor is never notified of
     their own action). Completion also notifies the asset's current holder.
+    Deduplicated via notify_user(): equivalent active notifications are
+    not created twice.
     """
     from django.utils import timezone
 
@@ -1261,21 +1357,23 @@ def _notify_maintenance(maintenance, actor, old=None):
     else:
         body = f"{maintenance.asset.asset_tag} maintenance scheduled for " \
                f"{maintenance.scheduled_date:%Y-%m-%d}."
-    notification = Notification.objects.create(
-        recipient=recipient, title=title[:255], body=body,
-        entity_type="assets.Maintenance", object_id=str(maintenance.pk))
+    notify_user(
+        recipient, "maintenance_event", title, body,
+        entity_type="assets.Maintenance", object_id=str(maintenance.pk),
+        actor=actor, post_commit=False,
+    )
     # Also notify the current asset holder when maintenance completes.
     if (status == "completed" and maintenance.asset.assigned_to_id
-            and maintenance.asset.assigned_to_id != recipient.pk
-            and maintenance.asset.assigned_to.is_active
-            and not maintenance.asset.assigned_to.is_deleted):
-        Notification.objects.create(
-            recipient=maintenance.asset.assigned_to,
-            title=f"Asset under maintenance: {maintenance.asset.asset_tag}",
-            body=f"Your assigned asset is undergoing maintenance: "
-                 f"{maintenance.title}.",
-            entity_type="assets.Asset", object_id=str(maintenance.asset.pk))
-    return notification
+            and maintenance.asset.assigned_to_id != recipient.pk):
+        holder = maintenance.asset.assigned_to
+        notify_user(
+            holder, "maintenance_event",
+            f"Asset under maintenance: {maintenance.asset.asset_tag}",
+            f"Your assigned asset is undergoing maintenance: "
+            f"{maintenance.title}.",
+            entity_type="assets.Asset", object_id=str(maintenance.asset.pk),
+            actor=actor, post_commit=False,
+        )
 
 
 class MaintenanceViewSet(viewsets.ModelViewSet):
@@ -1403,9 +1501,11 @@ def _notify_disposal(disposal, actor, old=None):
         body = f"Disposal of {disposal.asset.asset_tag} completed."
     else:
         body = f"Disposal of {disposal.asset.asset_tag} pending approval."
-    return Notification.objects.create(
-        recipient=recipient, title=title[:255], body=body,
-        entity_type="assets.Disposal", object_id=str(disposal.pk))
+    notify_user(
+        recipient, "disposal_event", title, body,
+        entity_type="assets.Disposal", object_id=str(disposal.pk),
+        actor=actor, post_commit=False,
+    )
 
 
 def _record_disposal_decision(disposal, actor, old_status):

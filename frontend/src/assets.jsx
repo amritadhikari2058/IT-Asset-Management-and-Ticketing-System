@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';import { Badge, CategorySelect, ConfirmDialog, DepartmentSelect, ErrorSummary, Field,
   Link, LoadingRows, Modal, PageHeader, UserSelect,
@@ -407,6 +407,12 @@ export function AssetForm({ id }) {
 
 export function AssetDetail({ id }) {
   const { isStaff } = useAuth();
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const [asset, setAsset] = useState(null);
   const [assignments, setAssignments] = useState([]);
   const [history, setHistory] = useState(null);
@@ -445,39 +451,48 @@ export function AssetDetail({ id }) {
   const [maintCostError, setMaintCostError] = useState('');
 
   const load = async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError('');
+    setAttachments([]);
     try {
       setAsset((await api.get(`/assets/${id}/`)).data);
+      if (requestId !== requestIdRef.current) return;
       try {
         const r = await api.get('/assets/assignments/history/', { params: { asset: id } });
+        if (requestId !== requestIdRef.current) return;
         setAssignments(r.data.results ?? r.data ?? []);
-      } catch { setAssignments([]); }
+      } catch { if (requestId === requestIdRef.current) setAssignments([]); }
       try {
         const at = await api.get('/assets/attachments/', { params: { asset: id } });
+        if (requestId !== requestIdRef.current) return;
         setAttachments(at.data.results ?? at.data ?? []);
-      } catch { setAttachments([]); }
+      } catch { if (requestId === requestIdRef.current) setAttachments([]); }
       try {
         const h = await api.get('/assets/histories/', { params: { asset: id } });
+        if (requestId !== requestIdRef.current) return;
         setHistory(h.data.results ?? h.data ?? []);
-      } catch { setHistory(null); }
+      } catch { if (requestId === requestIdRef.current) setHistory(null); }
       try {
         const m = await api.get('/assets/maintenance/', { params: { asset: id, page_size: 100 } });
+        if (requestId !== requestIdRef.current) return;
         setMaintenance(m.data.results ?? m.data ?? []);
-      } catch { setMaintenance([]); }
+      } catch { if (requestId === requestIdRef.current) setMaintenance([]); }
       try {
         const d = await api.get('/assets/disposals/', { params: { asset: id, page_size: 100 } });
+        if (requestId !== requestIdRef.current) return;
         setDisposals(d.data.results ?? d.data ?? []);
-      } catch { setDisposals([]); }
-      // Load maintenance cost summary for this asset
+      } catch { if (requestId === requestIdRef.current) setDisposals([]); }
       try {
         const cs = await api.get('/assets/reports/?report=maintenance', { params: { asset: id, report: 'maintenance' } });
+        if (requestId !== requestIdRef.current) return;
         setMaintCostSummary(cs.data);
-      } catch { setMaintCostSummary(null); }
+      } catch { if (requestId === requestIdRef.current) setMaintCostSummary(null); }
     } catch (e) {
+      if (requestId !== requestIdRef.current) return;
       setError(parseApiError(e).global || 'Could not load asset.');
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   };
   useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -511,10 +526,13 @@ export function AssetDetail({ id }) {
   };
 
   const reloadAttachments = async () => {
+    const requestId = requestIdRef.current;
     try {
       const at = await api.get('/assets/attachments/', { params: { asset: id } });
+      if (requestId !== requestIdRef.current) return;
       setAttachments(at.data.results ?? at.data ?? []);
     } catch {
+      if (requestId !== requestIdRef.current) return;
       setAttachments([]);
     }
   };

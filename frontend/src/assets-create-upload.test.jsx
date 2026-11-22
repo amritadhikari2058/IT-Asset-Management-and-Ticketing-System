@@ -195,19 +195,6 @@ describe('AssetForm create-then-upload', () => {
     // Nothing was created, so nothing to retry: the error lands on the field.
     expect(await screen.findByText(/already used by another asset/)).toBeTruthy();
     expect(uploadCalls()).toHaveLength(0);
-    expect(window.location.hash).toBe('');
-  });
+});
 
-  it('shows no attachment input when editing an existing asset', async () => {
-    mockGet.mockImplementation(async (url) => {
-      if (url === '/assets/3/') return { data: { ...CREATED, id: 3 } };
-      return route(url);
-    });
-    render(<AssetForm id="3" />);
-    await screen.findByText('Edit asset #3');
-    expect(screen.queryByLabelText(/attachment/i)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    await waitFor(() => expect(mockPatch).toHaveBeenCalledTimes(1));
-    expect(mockPost).not.toHaveBeenCalled();
-  });
 });

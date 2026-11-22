@@ -1,0 +1,97 @@
+﻿name: PostgreSQL Reconciliation Acceptance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-reconciliation:
+    name: PostgreSQL reconciliation acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: reconciliation_test
+          POSTGRES_USER: reconciliation_user
+          POSTGRES_PASSWORD: reconciliation_test_pw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U reconciliation_user -d reconciliation_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE__ENGINE: django.db.backends.postgresql
+      DATABASE__NAME: reconciliation_test
+      DATABASE__HOST: 127.0.0.1
+      DATABASE__PORT: "5432"
+      DATABASE__USER: reconciliation_user
+      DATABASE__PASSWORD: reconciliation_test_pw
+      DJANGO_SETTINGS_MODULE: config.settings
+      DEBUG: "false"
+      SECRET_KEY: "ci-test-secret-key-do-not-use-in-production"
+      EMAIL_BACKEND: django.core.mail.backends.locmem.EmailBackend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify PostgreSQL vendor (actual Django connection)
+        working-directory: backend
+        run: |
+          python -c "import django,os; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings'); django.setup(); from django.db import connection; connection.ensure_connection(); print(connection.vendor); assert connection.vendor=='postgresql', f'Expected postgresql, got {connection.vendor}'"
+
+      - name: Django system check
+        working-directory: backend
+        run: python manage.py check
+
+      - name: Migration consistency
+        working-directory: backend
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Fresh migrations
+        working-directory: backend
+        run: python manage.py migrate --noinput
+
+      - name: Reconciliation and durable regression tests (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest tickets/test_bulk_import_reconciliation.py tickets/test_bulk_import_reconciliation_durable.py tickets/test_bulk_import_concurrency.py -q
+
+      - name: Asset concurrency acceptance (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest assets/test_concurrency_postgres.py -q
+
+      - name: Asset regression suites (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest assets/test_lifecycle_integrity.py assets/test_operations.py assets/test_reports.py assets/test_knowledge_base_versioning.py assets/tests.py assets/test_pagination_role_scope.py assets/test_vendors.py -q
+
+      - name: Notification acceptance tests (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest common/test_notification_dedup.py common/test_notification_reliability.py common/test_notification_api_security_phase62.py assets/test_maintenance_task_notifications.py tickets/test_sla_task_notifications.py licensing/test_tasks.py cmdb/test_tasks.py cmdb/tests.py -q
+
+      - name: Notification outbox tests (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest common/test_notification_outbox.py common/test_notification_outbox_postgres.py -q
+
+      - name: Ticket regression suites (PostgreSQL)
+        working-directory: backend
+        run: python -m pytest tickets/tests.py tickets/test_status_transitions.py tickets/test_lifecycle.py -q

@@ -66,6 +66,7 @@ from changes.models import (
     ChangeKnowledgeLink,
 )
 from changes.serializers import (
+    BlackoutPeriodSerializer,
     ChangeRequestSerializer,
     ChangeRequestListSerializer,
     ChangeRequestCreateSerializer,
@@ -976,6 +977,48 @@ class ChangeReviewItemViewSet(viewsets.ModelViewSet):
 # ---------------------------------------------------------------------------
 # MaintenanceWindow
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BlackoutPeriod
+# ---------------------------------------------------------------------------
+
+
+class BlackoutPeriodViewSet(viewsets.ModelViewSet):
+    """Blackout periods used by the scheduling policy and conflict engine.
+
+    Read access is available to any authenticated user (the change schedule
+    view needs it to display policy feedback). Writes follow the existing
+    Change Management authorization model: IT Manager or System Admin only.
+
+    Mounted both under ``/api/changes/blackout-periods/`` and, because the
+    frontend calls it directly, at ``/api/blackout-periods/``.
+    """
+
+    queryset = BlackoutPeriod.objects.all()
+    serializer_class = BlackoutPeriodSerializer
+
+    def get_queryset(self):
+        qs = BlackoutPeriod.objects.select_related(
+            "scope_department", "scope_service", "created_by")
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            qs = qs.filter(status=status_param)
+        period_type = self.request.query_params.get("period_type")
+        if period_type:
+            qs = qs.filter(period_type=period_type)
+        active = (self.request.query_params.get("active") or "").lower()
+        if active in ("1", "true", "yes"):
+            qs = qs.filter(status="active")
+        return qs
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [permissions.IsAuthenticated()]
+        return [IsChangeManagerOrAdmin()]
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
 
 
 class MaintenanceWindowViewSet(viewsets.ModelViewSet):

@@ -32,6 +32,9 @@ urlpatterns = [
     path("api/accounts/", include("accounts.urls")),
     path("api/assets/", include("assets.urls")),
     path("api/changes/", include("changes.urls")),
+    # Frontend contract: blackout periods are read/written at this exact
+    # prefix by blackout-periods.jsx and change-schedule.jsx.
+    path("api/blackout-periods/", include("changes.blackout_urls")),
     path("api/tickets/", include("tickets.urls")),
     path("api/services/", include("services.urls")),
     path("api/inventory/", include("inventory.urls")),

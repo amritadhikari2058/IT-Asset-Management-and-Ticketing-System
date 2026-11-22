@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
   Badge, ConfirmDialog, DataTable, EmptyState, Field, Modal, PageHeader, Pager,
-  TableControls, useSort, useTableColumns,
+  TableControls, useSort, useTableColumns, PageSizeSelector,
 } from './components';
 import { fetchPage, parseApiError } from './api-utils';
 
@@ -77,13 +77,20 @@ export function KnowledgeBase() {
     if (typeof window === 'undefined') return 20;
     try {
       const saved = window.localStorage.getItem('itdesk.pageSize');
-      return saved ? Number(saved) : 20;
+      const n = Number(saved);
+      return saved && Number.isFinite(n) && n > 0 && n <= 100 ? n : 20;
     } catch {
       return 20;
     }
   });
   const [page, setPage] = useState(1);
   const [items, setItems] = useState([]);
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
   const [previous, setPrevious] = useState(null);
@@ -171,29 +178,33 @@ export function KnowledgeBase() {
   };
 
   const loadUrl = async (url) => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setListError('');
     try {
       const pg = await fetchPage(url);
-      setItems(pg.items);
-      setCount(pg.count);
-      setNext(pg.next);
-      setPrevious(pg.previous);
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
+      setItems(pg.items ?? []);
+      setCount(pg.count ?? (Array.isArray(pg.items) ? pg.items.length : 0));
+      setNext(pg.next ?? null);
+      setPrevious(pg.previous ?? null);
     } catch {
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
       setListError('Could not load knowledge-base articles.');
     } finally {
-      setLoading(false);
+      if (mountedRef.current && requestId === requestIdRef.current) setLoading(false);
     }
   };
 
   const applyFilters = (patch) => {
     const merged = { ...f, ...patch };
     setF(merged);
+    setPage(1);
     const p = new URLSearchParams();
     for (const k of ['q', 'status']) {
       if (merged[k] !== '' && merged[k] != null) p.set(k, merged[k]);
     }
-    p.set('page', page);
+    p.set('page', 1);
     p.set('page_size', pageSize);
     const ord = orderingParam();
     if (ord) p.set('ordering', ord);
@@ -301,6 +312,18 @@ export function KnowledgeBase() {
   // Reset to page 1 when page size changes
   useEffect(() => {
     setPage(1);
+  }, [pageSize]);
+
+  // Persist page-size preference without unnecessary writes
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (window.localStorage.getItem('itdesk.pageSize') !== String(pageSize)) {
+        window.localStorage.setItem('itdesk.pageSize', String(pageSize));
+      }
+    } catch {
+      // ignore storage failures
+    }
   }, [pageSize]);
 
   const filtersActive = () => !!(f.q || f.status);

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './auth';
-import { AccessDenied, Badge, Field, DataTable, Pager, PageHeader, Modal, ConfirmDialog, UserSelect } from './components';
+import { AccessDenied, Badge, Field, DataTable, Pager, PageHeader, Modal, ConfirmDialog, UserSelect, PageSizeSelector } from './components';
 import { fetchPage, parseApiError } from './api-utils';
 import api from './api';
 import {
@@ -16,12 +16,19 @@ const RELEASABLE_STATUSES = ['reserved', 'assigned', 'active', 'suspended', 'exp
 function LicenseAllocationsPage() {
   const auth = useAuth();
   const caps = licensingCapabilities(auth);
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   // Page-size preference persisted in localStorage; fall back to DRF default 20.
   const [pageSize, setPageSize] = useState(() => {
     if (typeof window === 'undefined') return 20;
     try {
       const saved = window.localStorage.getItem('itdesk.pageSize');
-      return saved ? Number(saved) : 20;
+      const n = Number(saved);
+      return saved && Number.isFinite(n) && n > 0 && n <= 100 ? n : 20;
     } catch {
       return 20;
     }
@@ -64,14 +71,19 @@ function LicenseAllocationsPage() {
   const builtUrl = useMemo(() => buildAllocationListUrl(f, null, page, pageSize), [f, page, pageSize]);
 
   const loadUrl = async (url) => {
+    const requestId = ++requestIdRef.current;
     setLoading(true); setError('');
     try {
       const pg = await fetchPage(url);
-      setItems(pg.items); setCount(pg.count); setNext(pg.next); setPrevious(pg.previous);
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
+      setItems(pg.items ?? []); setCount(pg.count ?? 0); setNext(pg.next ?? null); setPrevious(pg.previous ?? null);
       setLastUrl(url);
     } catch (e) {
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
       setError(parseApiError(e).global || 'Could not load allocations.');
-    } finally { setLoading(false); }
+    } finally {
+      if (mountedRef.current && requestId === requestIdRef.current) setLoading(false);
+    }
   };
   // Reload whichever page the user is actually on (Pager loads absolute
   // next/previous URLs, so rebuilding from `page` would jump back to page 1).
@@ -83,9 +95,16 @@ function LicenseAllocationsPage() {
     return () => clearTimeout(t);
   }, [builtUrl, caps.canViewAllocations]);
 
-  // Reset to page 1 when page size changes (DRF defaults to page 1 when page_size is omitted)
+  // Persist page-size preference without unnecessary writes
   useEffect(() => {
-    setPage(1);
+    if (typeof window === 'undefined') return;
+    try {
+      if (window.localStorage.getItem('itdesk.pageSize') !== String(pageSize)) {
+        window.localStorage.setItem('itdesk.pageSize', String(pageSize));
+      }
+    } catch {
+      // ignore storage failures
+    }
   }, [pageSize]);
 
   const doAction = async (row, action, body = {}) => {

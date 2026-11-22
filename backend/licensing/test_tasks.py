@@ -92,3 +92,49 @@ class LicensingTasksTests(TestCase):
         run = BackgroundTaskRun.objects.filter(task_name="licensing.tasks.evaluate_license_compliance_task").first()
         self.assertIsNotNone(run)
         self.assertTrue(run.success)
+
+    def test_deadline_notification_uses_central_contract(self):
+        """Migrated deadline notification has correct fields and dedupe=False semantics."""
+        today = timezone.now().date()
+        agr = LicenseAgreement.objects.create(
+            agreement_number="LIC-2026-DEADLINE-CONTRACT-01",
+            software_product=self.product,
+            status="active",
+            expiry_date=today + timezone.timedelta(days=15),
+            renewal_notice_days=30,
+            owner=self.mgr,
+            contract_manager=self.sys_admin,
+            created_by=self.sys_admin,
+        )
+
+        payload = evaluate_license_deadlines()
+        self.assertGreaterEqual(payload["notifications_dispatched"], 1)
+
+        notif = Notification.objects.get(
+            recipient=self.mgr,
+            entity_type="licensing.LicenseAgreement",
+            object_id=str(agr.pk),
+        )
+        self.assertEqual(notif.recipient_id, self.mgr.pk)
+        self.assertIn("Renewal Notice", notif.title)
+        self.assertIn(agr.agreement_number, notif.body)
+        self.assertIsNone(notif.dedupe_key)
+
+        # 7-day window suppresses repeat; moving the notification outside the
+        # window allows a legitimate reminder (dedupe=False, time-windowed).
+        Notification.objects.filter(
+            recipient=self.mgr,
+            entity_type="licensing.LicenseAgreement",
+            object_id=str(agr.pk),
+        ).update(created_at=timezone.now() - timezone.timedelta(days=8))
+        LicenseAgreement.objects.filter(pk=agr.pk).update(status="active")
+        payload2 = evaluate_license_deadlines()
+        self.assertGreaterEqual(payload2["notifications_dispatched"], 1)
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient=self.mgr,
+                entity_type="licensing.LicenseAgreement",
+                object_id=str(agr.pk),
+            ).count(),
+            2,
+        )

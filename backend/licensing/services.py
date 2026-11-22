@@ -22,6 +22,7 @@ from django.utils import timezone
 
 from common.audit import log_action
 from common.models import Notification
+from common.notifications import notify_user
 from licensing.models import (
     LicenseAgreement,
     LicenseAllocation,
@@ -703,15 +704,16 @@ def allocate_license(
 
     # Notification to employee if user allocation
     if assigned_user and getattr(assigned_user, "pk", None):
-        Notification.objects.create(
-            recipient=assigned_user,
-            title=f"License Assigned: {product.name}",
-            body=(
+        notify_user(
+            assigned_user, "license_assigned",
+            f"License Assigned: {product.name}",
+            (
                 f"A license for '{product.name}' has been assigned to you under agreement "
                 f"{locked_agreement.agreement_number} (Ref: {ref})."
             ),
             entity_type="licensing.LicenseAllocation",
             object_id=str(allocation.pk),
+            post_commit=False,
         )
 
     return allocation
@@ -781,12 +783,13 @@ def revoke_allocation(
 
     # In-app notification to affected user
     if locked_alloc.assigned_user:
-        Notification.objects.create(
-            recipient=locked_alloc.assigned_user,
-            title=f"License Revoked: {agreement.software_product.name}",
-            body=f"Your license for '{agreement.software_product.name}' has been revoked. Reason: {reason.strip()}",
+        notify_user(
+            locked_alloc.assigned_user, "license_revoked",
+            f"License Revoked: {agreement.software_product.name}",
+            f"Your license for '{agreement.software_product.name}' has been revoked. Reason: {reason.strip()}",
             entity_type="licensing.LicenseAllocation",
             object_id=str(locked_alloc.pk),
+            post_commit=False,
         )
 
     return locked_alloc
@@ -1193,12 +1196,13 @@ def review_renewal_request(
     )
 
     if locked_renewal.requested_by:
-        Notification.objects.create(
-            recipient=locked_renewal.requested_by,
-            title=f"Renewal {decision.capitalize()}: {locked_renewal.agreement.agreement_number}",
-            body=f"Your renewal proposal for {locked_renewal.agreement.agreement_number} was {decision}.",
+        notify_user(
+            locked_renewal.requested_by, "license_renewal_decision",
+            f"Renewal {decision.capitalize()}: {locked_renewal.agreement.agreement_number}",
+            f"Your renewal proposal for {locked_renewal.agreement.agreement_number} was {decision}.",
             entity_type="licensing.LicenseRenewal",
             object_id=str(locked_renewal.pk),
+            post_commit=False,
         )
 
     return locked_renewal

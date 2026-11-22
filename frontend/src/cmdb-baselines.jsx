@@ -23,7 +23,7 @@ function stringifyValue(v) {
   return String(v);
 }
 
-export function BaselinesPage() {
+function BaselinesPageInner() {
   const { role: authRole, user } = useAuth();
   const role = authRole ?? user?.role;
   const [baselines, setBaselines] = useState([]);
@@ -40,10 +40,6 @@ export function BaselinesPage() {
 
   const canCreate = CMDB_PERMISSIONS.canCreateBaselines(role);
   const canApprove = CMDB_PERMISSIONS.canApproveBaselines(role);
-
-  if (role === 'employee') {
-    return <div className="error-summary" role="alert">Employees have no CMDB baseline access.</div>;
-  }
 
   const load = async () => {
     setLoading(true);
@@ -116,9 +112,9 @@ export function BaselinesPage() {
     setError('');
     setMsg('');
     try {
-      await api.post(`/cmdb/baselines/${selectedBaseline.id}/${action}/`, {});
+      const res = await api.post(`/cmdb/baselines/${selectedBaseline.id}/${action}/`, {});
+      setBaselines((prev) => prev.map((b) => (b.id === selectedBaseline.id ? { ...b, status: res.data?.status || b.status } : b)));
       setMsg(`Baseline ${action} action completed.`);
-      await load();
     } catch (err) {
       setError(parseApiError(err).global || `Could not ${action} baseline.`);
     } finally {
@@ -318,3 +314,13 @@ export function BaselinesPage() {
     </div>
   );
 }
+
+export function BaselinesPage() {
+  const { role: authRole, user } = useAuth();
+  const role = authRole ?? user?.role;
+  if (role === 'employee') {
+    return <div className="error-summary" role="alert">Employees have no CMDB baseline access.</div>;
+  }
+  return <BaselinesPageInner />;
+}
+

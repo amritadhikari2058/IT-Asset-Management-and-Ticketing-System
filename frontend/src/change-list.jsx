@@ -3,7 +3,7 @@
  * Route: #/changes
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { PageHeader, DataTable, Pager, EmptyState, Badge } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError, statusBadgeVariant, priorityBadgeVariant, riskBadgeVariant, buildChangeListUrl, STATUS_LABELS, CHANGE_TYPE_LABELS, PRIORITY_LABELS, RISK_LEVEL_LABELS } from './changes-utils';
@@ -17,7 +17,8 @@ export function ChangeList({ initialFilters = {} }) {
     if (typeof window === 'undefined') return 20;
     try {
       const saved = window.localStorage.getItem('itdesk.pageSize');
-      return saved ? Number(saved) : 20;
+      const n = Number(saved);
+      return saved && Number.isFinite(n) && n > 0 && n <= 100 ? n : 20;
     } catch {
       return 20;
     }
@@ -29,24 +30,39 @@ export function ChangeList({ initialFilters = {} }) {
   const [page, setPage] = useState(1);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const fetchChanges = async () => {
-    setLoading(true);
-    setError(null);
+  // Persist page-size preference without unnecessary writes
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
     try {
-      const url = buildChangeListUrl(filters, pageSize, page);
-      const fullUrl = url ? `${CHANGE_LIST_API}${url}` : CHANGE_LIST_API;
-      const response = await fetchPage(fullUrl);
-      setChanges(response.items ?? []);
-    } catch (e) {
-      setError(parseApiError(e));
-    } finally {
-      setLoading(false);
+      if (window.localStorage.getItem('itdesk.pageSize') !== String(pageSize)) {
+        window.localStorage.setItem('itdesk.pageSize', String(pageSize));
+      }
+    } catch {
+      // ignore storage failures
     }
-  };
+  }, [pageSize]);
 
   useEffect(() => {
-    fetchChanges();
-  }, [refreshKey, pageSize]);
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const run = async () => {
+      try {
+        const url = buildChangeListUrl(filters, pageSize, page);
+        const fullUrl = url ? `${CHANGE_LIST_API}${url}` : CHANGE_LIST_API;
+        const response = await fetchPage(fullUrl);
+        if (cancelled) return;
+        setChanges(response.items ?? []);
+      } catch (e) {
+        if (cancelled) return;
+        setError(parseApiError(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [filters, pageSize, page, refreshKey]);
 
   const onFilterChange = (newFilters) => {
     setFilters(newFilters);

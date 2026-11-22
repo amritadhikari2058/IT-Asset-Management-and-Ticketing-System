@@ -1,29 +1,39 @@
 """Maintenance reminder tasks."""
 from celery import shared_task
+from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
+from accounts import email_utils as _email_utils
 from assets.models import Maintenance, MaintenanceReminder
 from common.models import BackgroundTaskRun
-from accounts import email_utils as _email_utils
+from common.notifications import MAINTENANCE_CATEGORY, email_enabled_for, notify_user
+from common.outbox import enqueue_email
 
 TASK_NAME = "assets.tasks.check_maintenance_reminders"
 
 
 def _send_notification(maintenance, level, title, body):
-    """Create a notification for the assigned technician (or asset creator
-    if unassigned). The MaintenanceReminder unique constraint guards repeats.
+    """Create an in-app maintenance reminder notification.
+
+    Recipient: assigned technician, falling back to creator. The
+    MaintenanceReminder unique constraint guards repeated reminder/email
+    dispatch for the same maintenance+level; notify_user dedup provides
+    extra idempotency for the in-app notification row itself.
     """
     recipient = maintenance.assigned_to if maintenance.assigned_to_id \
         else maintenance.created_by
     if not recipient or not recipient.pk:
         return
-    from common.models import Notification
-    Notification.objects.create(
-        recipient_id=recipient.pk,
-        title=title,
-        body=body,
+    notify_user(
+        recipient,
+        MAINTENANCE_CATEGORY,
+        title,
+        body,
         entity_type="assets.Maintenance",
-        object_id=str(maintenance.id),
+        object_id=str(maintenance.pk),
+        dedupe=True,
+        post_commit=False,
     )
 
 
@@ -56,29 +66,73 @@ def check_maintenance_reminders(self):
             window_end = scheduled + timedelta(minutes=5)
             if window_start <= now <= window_end:
                 if not m.reminders.filter(level="before").exists():
-                    _send_notification(m, "before",
-                                       f"Maintenance due soon ({m.title})",
-                                       f"Maintenance for asset "
-                                       f"{m.asset.asset_tag} – {m.title} is "
-                                       f"scheduled for {scheduled:%Y-%m-%d %H:%M}. "
-                                       "Please prepare.")
-                    MaintenanceReminder.objects.get_or_create(
-                        maintenance=m, level="before")
-                    _email_utils.send_maintenance_reminder(m)
+                    enqueued = None
+                    with transaction.atomic():
+                        _rem, created = MaintenanceReminder.objects.get_or_create(
+                            maintenance=m, level="before")
+                        if created:
+                            title = f"Maintenance due soon ({m.title})"
+                            body = (
+                                f"Maintenance for asset "
+                                f"{m.asset.asset_tag} - {m.title} is "
+                                f"scheduled for {scheduled:%Y-%m-%d %H:%M}. "
+                                "Please prepare."
+                            )
+                            recipient = m.assigned_to if m.assigned_to_id else m.created_by
+                            _send_notification(m, "before", title, body)
+                            if recipient and getattr(recipient, "email", None) and email_enabled_for(recipient, category=MAINTENANCE_CATEGORY):
+                                enqueued = enqueue_email(
+                                    event_type="maintenance.email.reminder",
+                                    to_email=recipient.email,
+                                    subject=title,
+                                    body=body,
+                                    recipient=recipient,
+                                    category=MAINTENANCE_CATEGORY,
+                                    ticket_id=None,
+                                    dedupe=True,
+                                )
+                    if enqueued is not None and getattr(settings, "NOTIFICATION_OUTBOX_EAGER", False):
+                        from common.outbox import deliver_event_core
+                        try:
+                            deliver_event_core(enqueued.id)
+                        except Exception:
+                            pass
 
             if now > scheduled and m.status != "completed" \
                     and m.status != "cancelled":
                 if not m.reminders.filter(level="overdue").exists():
-                    _send_notification(m, "overdue",
-                                       f"Maintenance overdue ({m.title})",
-                                       f"Maintenance for asset "
-                                       f"{m.asset.asset_tag} – {m.title} was due "
-                                       f"at {scheduled:%Y-%m-%d %H:%M} and is "
-                                       "still open. Update the status or "
-                                       "schedule a new maintenance.")
-                    MaintenanceReminder.objects.get_or_create(
-                        maintenance=m, level="overdue")
-                    _email_utils.send_maintenance_reminder(m)
+                    enqueued = None
+                    with transaction.atomic():
+                        _rem, created = MaintenanceReminder.objects.get_or_create(
+                            maintenance=m, level="overdue")
+                        if created:
+                            title = f"Maintenance overdue ({m.title})"
+                            body = (
+                                f"Maintenance for asset "
+                                f"{m.asset.asset_tag} - {m.title} was due "
+                                f"at {scheduled:%Y-%m-%d %H:%M} and is "
+                                "still open. Update the status or "
+                                "schedule a new maintenance."
+                            )
+                            recipient = m.assigned_to if m.assigned_to_id else m.created_by
+                            _send_notification(m, "overdue", title, body)
+                            if recipient and getattr(recipient, "email", None) and email_enabled_for(recipient, category=MAINTENANCE_CATEGORY):
+                                enqueued = enqueue_email(
+                                    event_type="maintenance.email.overdue",
+                                    to_email=recipient.email,
+                                    subject=title,
+                                    body=body,
+                                    recipient=recipient,
+                                    category=MAINTENANCE_CATEGORY,
+                                    ticket_id=None,
+                                    dedupe=True,
+                                )
+                    if enqueued is not None and getattr(settings, "NOTIFICATION_OUTBOX_EAGER", False):
+                        from common.outbox import deliver_event_core
+                        try:
+                            deliver_event_core(enqueued.id)
+                        except Exception:
+                            pass
 
         run.status = "succeeded"
         run.success = True

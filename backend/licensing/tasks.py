@@ -16,6 +16,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from common.models import BackgroundTaskRun, Notification
+from common.notifications import SYSTEM_CATEGORY, notify_user
 from licensing.models import LicenseAgreement, LicenseComplianceFinding
 from licensing.services import evaluate_license_compliance
 
@@ -75,17 +76,21 @@ def evaluate_license_deadlines(self=None) -> Dict[str, Any]:
                     ).exists()
 
                     if not already_notified:
-                        Notification.objects.create(
-                            recipient=rec,
-                            title=f"License Renewal Notice: {agr.software_product.name}",
-                            body=(
+                        created = notify_user(
+                            rec,
+                            SYSTEM_CATEGORY,
+                            f"License Renewal Notice: {agr.software_product.name}",
+                            (
                                 f"Agreement {agr.agreement_number} for '{agr.software_product.name}' is approaching "
                                 f"renewal/expiry on {agr.expiry_date}. Please review required renewal actions."
                             ),
                             entity_type="licensing.LicenseAgreement",
                             object_id=str(agr.pk),
+                            dedupe=False,
+                            post_commit=False,
                         )
-                        notified_count += 1
+                        if created is not None:
+                            notified_count += 1
 
         run.status = "succeeded"
         run.success = True

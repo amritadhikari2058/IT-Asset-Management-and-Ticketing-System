@@ -21,7 +21,8 @@ from django.utils import timezone
 from accounts.models import User
 from assets.models import Asset, Assignment, AssetHistory
 from common.audit import log_action
-from common.models import BackgroundTaskRun, Notification
+from common.models import BackgroundTaskRun
+from common.notifications import notify_user
 from lifecycle import models as lm
 
 logger = logging.getLogger(__name__)
@@ -87,10 +88,11 @@ def _notify(recipient, actor, title, body, case=None, task=None):
     if getattr(recipient, "is_deleted", False):
         return None
     target = case if case is not None else task
-    return Notification.objects.create(
-        recipient=recipient, title=title[:255], body=body or "",
-        entity_type="lifecycle.LifecycleCase",
-        object_id=str(target.pk))
+    notify_user(
+        recipient, "lifecycle_event", title, body or "",
+        entity_type="lifecycle.LifecycleCase", object_id=str(target.pk),
+        actor=actor, post_commit=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -615,7 +617,7 @@ def _run_task_automation(task, actor):
     try:
         handler = _automation_handler(task.automation_type)
         handler(task, actor)
-        if task.automation_status != "failed":
+        if task.automation_status not in ("failed", "manual_review"):
             task.automation_status = "succeeded"
             _history(task.case, task, actor, "automation_succeeded",
                      new_status="succeeded")
@@ -642,31 +644,25 @@ def _automation_handler(automation_type):
 
 
 def _automation_create_service_request(task, actor):
-    try:
-        from services.models import ServiceRequest, ServiceCatalogueItem
-    except Exception:
-        task.automation_status = "manual_review"
-        task.automation_error_summary = "Service Request integration not available"
-        task.save(update_fields=["automation_status", "automation_error_summary", "updated_at"])
-        _history(task.case, task, actor, "automation_failed",
-                 new_status="manual_review",
-                 detail="Service Request integration not available")
-        return
-    raise NotImplementedError("Service Request automation hook not wired")
+    task.automation_status = "manual_review"
+    task.automation_error_summary = (
+        "Service Request automation is not implemented; manual review required.")
+    task.save(update_fields=["automation_status", "automation_error_summary",
+                             "updated_at"])
+    _history(task.case, task, actor, "automation_failed",
+             new_status="manual_review",
+             detail="Service Request automation is not implemented.")
 
 
 def _automation_create_ticket(task, actor):
-    try:
-        from tickets.models import Ticket, TicketCategory
-    except Exception:
-        task.automation_status = "manual_review"
-        task.automation_error_summary = "Ticket integration not available"
-        task.save(update_fields=["automation_status", "automation_error_summary", "updated_at"])
-        _history(task.case, task, actor, "automation_failed",
-                 new_status="manual_review",
-                 detail="Ticket integration not available")
-        return
-    raise NotImplementedError("Ticket automation hook not wired")
+    task.automation_status = "manual_review"
+    task.automation_error_summary = (
+        "Ticket automation is not implemented; manual review required.")
+    task.save(update_fields=["automation_status", "automation_error_summary",
+                             "updated_at"])
+    _history(task.case, task, actor, "automation_failed",
+             new_status="manual_review",
+             detail="Ticket automation is not implemented.")
 
 
 def _automation_assign_asset(task, actor):
@@ -759,13 +755,28 @@ def assign_asset_to_case_employee(case, asset_id, actor, note="",
 
 
 def _resolve_asset(case, asset, resolution, actor, related_task=None, note=""):
-    res, created = lm.LifecycleAssetResolution.objects.get_or_create(
-        case=case, asset=asset,
-        defaults={"status": "pending", "resolution": resolution,
-                  "notes": note, "resolved_by": actor,
-                  "resolved_at": timezone.now() if resolution != "pending" else None,
-                  "related_task": related_task})
-    if not created:
+    try:
+        with transaction.atomic():
+            res, created = lm.LifecycleAssetResolution.objects.get_or_create(
+                case=case, asset=asset,
+                defaults={"status": "pending", "resolution": resolution,
+                          "notes": note, "resolved_by": actor,
+                          "resolved_at": timezone.now() if resolution != "pending" else None,
+                          "related_task": related_task})
+            if not created:
+                if res.resolution != "pending":
+                    raise ValidationError(
+                        {"detail": f"Asset {asset.asset_tag} already resolved as "
+                                   f"{res.resolution}."})
+                res.resolution = resolution
+                res.notes = note
+                res.resolved_by = actor
+                res.resolved_at = timezone.now() if resolution != "pending" else None
+                res.related_task = related_task
+                res.save(update_fields=["resolution", "notes", "resolved_by",
+                                        "resolved_at", "related_task", "updated_at"])
+    except IntegrityError:
+        res = lm.LifecycleAssetResolution.objects.get(case=case, asset=asset)
         if res.resolution != "pending":
             raise ValidationError(
                 {"detail": f"Asset {asset.asset_tag} already resolved as "

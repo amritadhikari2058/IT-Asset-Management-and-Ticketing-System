@@ -1,8 +1,8 @@
 from rest_framework import serializers
 
 from tickets.models import (
-    Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketKbArticle,
-    TicketNote, TicketSLA,
+    Ticket, TicketAttachment, TicketBulkImportOperation, TicketCategory,
+    TicketHistory, TicketKbArticle, TicketNote, TicketSLA,
 )
 
 
@@ -219,4 +219,46 @@ class TicketLinkSerializer(serializers.ModelSerializer):
         if request:
             return request.build_absolute_uri(f"/api/tickets/{obj.pk}/")
         return "/api/tickets/%d/" % obj.pk
+
+
+class TicketBulkImportOperationSerializer(serializers.ModelSerializer):
+    """Read-only operational view of a ticket bulk import.
+
+    Intentionally omits token, request fingerprint, preview payload, and
+    stored result bodies to avoid exposing sensitive or other-user data.
+    """
+
+    user_email = serializers.CharField(source="user.email", read_only=True)
+    is_expired = serializers.SerializerMethodField()
+    is_stale_processing = serializers.SerializerMethodField()
+    result_available = serializers.SerializerMethodField()
+
+    class Meta:
+        from tickets.models import TicketBulkImportOperation
+        model = TicketBulkImportOperation
+        fields = [
+            "id", "user", "user_email", "status",
+            "total_rows", "processed_count", "successful_count", "failed_count",
+            "result_format", "result_status_code", "result_available",
+            "error_detail", "is_expired", "is_stale_processing",
+            "created_at", "updated_at", "started_at", "completed_at", "expires_at",
+        ]
+        read_only_fields = fields
+
+    def get_is_expired(self, obj):
+        return bool(obj.is_expired)
+
+    def get_is_stale_processing(self, obj):
+        if obj.status != obj.STATUS_PROCESSING or not obj.started_at:
+            return False
+        from django.conf import settings
+        from django.utils import timezone
+        from datetime import timedelta
+        stale_after = int(getattr(
+            settings, "TICKET_BULK_IMPORT_PROCESSING_STALE_SECONDS", 300) or 300)
+        return timezone.now() - obj.started_at > timedelta(seconds=stale_after)
+
+    def get_result_available(self, obj):
+        return obj.status == obj.STATUS_COMPLETED and bool(
+            obj.result_format and (obj.result_json is not None or obj.result_csv))
 

@@ -23,6 +23,7 @@ from services.models import ServiceRequest, ServiceRequestHistory
 from tickets.models import Ticket, TicketCategory, TicketHistory, TicketSLA
 from common.audit import log_action
 from common.models import Notification
+from common.notifications import notify_user
 from common.notifications import email_enabled_for
 
 
@@ -170,6 +171,7 @@ def _create_notification(actor, recipient, title, body, ticket):
 
     Never notify the actor about their own action, never inactive/deleted or
     empty recipients. Body carries requester-visible summary text only.
+    Deduplicated via notify_user().
     """
     if recipient is None or getattr(recipient, "pk", None) is None:
         return None
@@ -180,9 +182,11 @@ def _create_notification(actor, recipient, title, body, ticket):
         return None
     if getattr(recipient, "is_deleted", False):
         return None
-    return Notification.objects.create(
-        recipient=recipient, title=title[:255], body=body or "",
-        entity_type="tickets.Ticket", object_id=str(ticket.pk))
+    notify_user(
+        recipient, "service_ticket_created", title, body or "",
+        entity_type="tickets.Ticket", object_id=str(ticket.pk),
+        actor=actor, post_commit=False,
+    )
 
 
 def item_name(item):

@@ -820,8 +820,9 @@ class TicketUpdateAtomicityTests(TestCase):
         }
 
     def test_success_commits_everything_once(self):
-        res = self._patch({"title": "t2", "assignee": self.admin.pk,
-                           "status": "in_progress"})
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self._patch({"title": "t2", "assignee": self.admin.pk,
+                               "status": "in_progress"})
         self.assertEqual(res.status_code, 200)
         state = self._db_state()
         self.assertEqual(state["title"], "t2")
@@ -901,7 +902,8 @@ class TicketCreateAtomicityTests(TestCase):
         return self.c.post("/api/tickets/", base, format="json")
 
     def test_success_commits_everything_once(self):
-        res = self._create(assignee=self.emp.pk)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self._create(assignee=self.emp.pk)
         self.assertEqual(res.status_code, 201)
         t = Ticket.objects.get(pk=res.data["id"])
         self.assertEqual(list(t.history.values_list("action", flat=True)),
@@ -936,9 +938,14 @@ class TicketCreateAtomicityTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
 
     def test_email_failure_leaves_commit(self):
-        with patch("accounts.email_utils.send_ticket_notification",
+        # Phase 66: outbound email now flows through the transactional outbox
+        # and is delivered by the worker via accounts.email_utils._send. A
+        # transport failure must be isolated to the outbox row (retried later)
+        # and never roll back the committed ticket.
+        with patch("accounts.email_utils.send_mail",
                    side_effect=RuntimeError("smtp down")):
-            res = self._create(assignee=self.emp.pk)
+            with self.captureOnCommitCallbacks(execute=True):
+                res = self._create(assignee=self.emp.pk)
         self.assertEqual(res.status_code, 201)
         t = Ticket.objects.get(pk=res.data["id"])
         self.assertEqual(t.history.count(), 1)
@@ -1049,9 +1056,10 @@ class TicketBulkCreateTests(TestCase):
 
     def test_staff_bulk_creates_with_side_effects(self):
         auth(self.c, self.mgr)
-        res = self._confirm([self._row(title="one"),
-                             self._row(title="two",
-                                       assignee=self.emp.pk)])
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self._confirm([self._row(title="one"),
+                                 self._row(title="two",
+                                           assignee=self.emp.pk)])
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["summary"],
                          {"ok": 2, "skipped": 0, "failed": 0})
@@ -1150,7 +1158,8 @@ class TicketBulkCreateTests(TestCase):
         self.emp.receive_ticket_emails = False
         self.emp.save(update_fields=["receive_ticket_emails"])
         auth(self.c, self.mgr)
-        res = self._confirm([self._row(title="one", assignee=self.emp.pk)])
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self._confirm([self._row(title="one", assignee=self.emp.pk)])
         self.assertEqual(res.data["summary"]["ok"], 1)
         t = Ticket.objects.get(title="one")
         # Assignee opted out: notification yes, email no. Requester mailed.
@@ -1158,6 +1167,100 @@ class TicketBulkCreateTests(TestCase):
             recipient=self.emp, object_id=str(t.pk)).exists())
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, [self.mgr.email])
+
+    def test_employee_file_upload_preview_does_not_crash(self):
+        auth(self.c, self.emp)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        csv = ("title,description,category\n"
+               "My Ticket,a description,%d\n" % self.tcat.pk).encode("utf-8")
+        data = {"file": SimpleUploadedFile("tickets.csv", csv,
+                                           content_type="text/csv")}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["affected"], 1)
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_employee_file_upload_with_asset_is_rejected_in_preview(self):
+        auth(self.c, self.emp)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        csv = ("title,description,category,asset_tag\n"
+               "My Ticket,a description,%d,ASSET-1\n" % self.tcat.pk).encode("utf-8")
+        data = {"file": SimpleUploadedFile("tickets.csv", csv,
+                                           content_type="text/csv")}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["affected"], 0)
+        self.assertEqual(len(res.data["invalid"]), 1)
+        self.assertIn("asset", res.data["invalid"][0]["errors"])
+
+    def test_file_upload_confirm_false_string_does_not_create(self):
+        auth(self.c, self.mgr)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        csv = ("title,description,category\n"
+               "My Ticket,a description,%d\n" % self.tcat.pk).encode("utf-8")
+        data = {"file": SimpleUploadedFile("tickets.csv", csv,
+                                           content_type="text/csv"),
+                "preview": "false", "confirm": "false"}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_bulk_create_sets_sla_due_at_from_priority_config(self):
+        from tickets.models import TicketSLA
+        TicketSLA.objects.create(priority="medium", target_resolution_hours=24,
+                                 is_active=True)
+        auth(self.c, self.mgr)
+        res = self._confirm([self._row(title="sla", priority="medium")])
+        self.assertEqual(res.data["summary"]["ok"], 1)
+        t = Ticket.objects.get(title="sla")
+        self.assertIsNotNone(t.sla_due_at)
+
+    def test_file_upload_partial_success_reports_rows_and_commits_valid(self):
+        auth(self.c, self.mgr)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        csv = ("title,description,category\n"
+               "Good1,a description,%d\n"
+               ",missing title,%d\n"
+               "Good2,b description,%d\n" % (
+                   self.tcat.pk, self.tcat.pk, self.tcat.pk)).encode("utf-8")
+        data = {"file": SimpleUploadedFile("tickets.csv", csv,
+                                           content_type="text/csv"),
+                "preview": "false", "confirm": "true"}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"], {"ok": 2, "skipped": 0, "failed": 1})
+        self.assertEqual(Ticket.objects.count(), 2)
+        self.assertTrue(Ticket.objects.filter(title="Good1").exists())
+        self.assertTrue(Ticket.objects.filter(title="Good2").exists())
+        failed_rows = [f["row"] for f in res.data["failed"]]
+        self.assertEqual(failed_rows, [3])
+        ok_rows = [s["row"] for s in res.data["successful"]]
+        self.assertEqual(ok_rows, [2, 4])
+
+    def test_malformed_file_upload_returns_400(self):
+        auth(self.c, self.mgr)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        data = {"file": SimpleUploadedFile(
+            "bad.xlsx", b"not-a-zip",
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("file", res.data)
+
+    def test_csv_missing_header_row_is_rejected(self):
+        auth(self.c, self.mgr)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        data = {"file": SimpleUploadedFile("empty.csv", b"",
+                                           content_type="text/csv")}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("file", res.data)
 
     def test_unknown_columns_in_file_upload_are_rejected(self):
         """An uploaded ticket file with unsupported columns is rejected
@@ -1176,6 +1279,176 @@ class TicketBulkCreateTests(TestCase):
         self.assertIn("bogus_column", str(res.data))
         # Nothing created.
         self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_employee_json_confirm_with_asset_is_rejected_not_silent(self):
+        """Employee preview/confirm parity: direct confirm must reject asset
+        assignment rows instead of silently stripping the field."""
+        auth(self.c, self.emp)
+        row = self._row(title="mine", asset=12345)
+        preview = self.c.post("/api/tickets/bulk_create/",
+                              {"tickets": [row]}, format="json")
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.data["affected"], 0)
+        self.assertIn("asset", preview.data["invalid"][0]["errors"])
+        res = self._confirm([row])
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"],
+                         {"ok": 0, "skipped": 0, "failed": 1})
+        self.assertIn("asset", res.data["failed"][0]["errors"])
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_employee_file_upload_confirm_with_asset_is_rejected(self):
+        """Employees must never assign assets through bulk import; file
+        confirmation must enforce the same policy as preview."""
+        auth(self.c, self.emp)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        csv = ("title,description,category,asset_tag\n"
+               "My Ticket,a description,%d,ASSET-1\n" % self.tcat.pk).encode("utf-8")
+        data = {"file": SimpleUploadedFile("tickets.csv", csv,
+                                           content_type="text/csv"),
+                "preview": "false", "confirm": "true"}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"],
+                         {"ok": 0, "skipped": 0, "failed": 1})
+        self.assertIn("asset", res.data["failed"][0]["errors"])
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_confirm_false_like_values_do_not_create(self):
+        """False-like multipart/JSON confirm values must require confirmation."""
+        auth(self.c, self.mgr)
+        for value in ("False", " false ", "0", "", False, 0):
+            res = self.c.post("/api/tickets/bulk_create/",
+                              {"tickets": [self._row(title=f"t-{value!r}")],
+                               "preview": False, "confirm": value},
+                              format="json")
+            self.assertEqual(res.status_code, 400, msg=value)
+            self.assertEqual(Ticket.objects.count(), 0, msg=value)
+
+    def test_confirm_true_like_string_with_whitespace_creates(self):
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/tickets/bulk_create/",
+                          {"tickets": [self._row(title="spaced")],
+                           "preview": False, "confirm": " true "},
+                          format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"]["ok"], 1)
+        self.assertTrue(Ticket.objects.filter(title="spaced").exists())
+
+    def test_bulk_create_triggers_ticket_created_automation(self):
+        from workflow.models import AutomationRule, RuleExecution
+        AutomationRule.objects.create(
+            name="bulk-auto-create", trigger="ticket_created",
+            conditions={}, actions=[{"type": "note", "text": "Auto triage"}],
+            is_enabled=True, created_by=self.admin)
+        auth(self.c, self.mgr)
+        res = self._confirm([self._row(title="auto")])
+        self.assertEqual(res.data["summary"],
+                         {"ok": 1, "skipped": 0, "failed": 0})
+        t = Ticket.objects.get(title="auto")
+        self.assertTrue(t.notes.filter(body="Auto triage").exists())
+        self.assertTrue(RuleExecution.objects.filter(
+            ticket=t, success=True).exists())
+
+    def test_invalid_bulk_row_does_not_trigger_automation(self):
+        from workflow.models import AutomationRule, RuleExecution
+        AutomationRule.objects.create(
+            name="bulk-auto-invalid", trigger="ticket_created",
+            conditions={}, actions=[{"type": "note", "text": "Auto triage"}],
+            is_enabled=True, created_by=self.admin)
+        auth(self.c, self.mgr)
+        res = self._confirm([{"description": "no title",
+                              "category": self.tcat.pk}])
+        self.assertEqual(res.data["summary"],
+                         {"ok": 0, "skipped": 0, "failed": 1})
+        self.assertEqual(Ticket.objects.count(), 0)
+        self.assertEqual(RuleExecution.objects.count(), 0)
+
+    def test_failed_uncommitted_bulk_row_does_not_trigger_automation(self):
+        from workflow.models import AutomationRule, RuleExecution
+        AutomationRule.objects.create(
+            name="bulk-auto-rollback", trigger="ticket_created",
+            conditions={}, actions=[{"type": "note", "text": "Auto triage"}],
+            is_enabled=True, created_by=self.admin)
+        auth(self.c, self.mgr)
+        with patch("tickets.views._notify_user",
+                   side_effect=RuntimeError("db down")):
+            res = self._confirm([self._row(title="boom")])
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"],
+                         {"ok": 0, "skipped": 0, "failed": 1})
+        self.assertEqual(Ticket.objects.count(), 0)
+        self.assertEqual(RuleExecution.objects.count(), 0)
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_duplicate_csv_headers_are_rejected(self):
+        auth(self.c, self.mgr)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        csv = ("title,title,category\n"
+               "My Ticket,dup,%d\n" % self.tcat.pk).encode("utf-8")
+        data = {"file": SimpleUploadedFile("tickets.csv", csv,
+                                           content_type="text/csv")}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("file", res.data)
+
+    def test_csv_header_whitespace_is_normalized(self):
+        auth(self.c, self.mgr)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        csv = (" title , description , category \n"
+               "My Ticket,a description,%d\n" % self.tcat.pk).encode("utf-8")
+        data = {"file": SimpleUploadedFile("tickets.csv", csv,
+                                           content_type="text/csv")}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["affected"], 1)
+
+    def test_staff_bulk_json_can_assign_asset(self):
+        auth(self.c, self.mgr)
+        asset = Asset.objects.create(
+            asset_tag="AST-1", name="Laptop",
+            category=self.dep and AssetCategory.objects.create(name="HW2"),
+            department=self.dep)
+        res = self._confirm([self._row(title="with-asset", asset=asset.pk)])
+        self.assertEqual(res.data["summary"]["ok"], 1)
+        t = Ticket.objects.get(title="with-asset")
+        self.assertEqual(t.asset_id, asset.pk)
+
+    def test_invalid_department_reference_fails_row(self):
+        auth(self.c, self.mgr)
+        res = self._confirm([self._row(title="baddep", department=999999)])
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"],
+                         {"ok": 0, "skipped": 0, "failed": 1})
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_soft_deleted_category_fails_row(self):
+        auth(self.c, self.mgr)
+        gone = TicketCategory.objects.create(name="Gone")
+        gone.soft_delete(by_user=self.admin, reason="retired")
+        res = self._confirm([self._row(title="badcat", category=gone.pk)])
+        self.assertEqual(res.data["summary"],
+                         {"ok": 0, "skipped": 0, "failed": 1})
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_download_report_reflects_row_outcomes(self):
+        auth(self.c, self.mgr)
+        res = self.c.post(
+            "/api/tickets/bulk_create/?download=csv",
+            {"tickets": [self._row(title="good"),
+                         {"description": "no title",
+                          "category": self.tcat.pk}],
+             "preview": False, "confirm": True},
+            format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res["Content-Type"], "text/csv")
+        body = res.content.decode("utf-8")
+        self.assertIn("successful", body)
+        self.assertIn("failed", body)
+        self.assertEqual(Ticket.objects.count(), 1)
 
 
 class TicketOrderingTests(TestCase):
@@ -1543,3 +1816,795 @@ class TicketAttachmentSecurityTests(TestCase):
         dl = self.c.get(f"/api/tickets/attachments/{aid}/download/")
         self.assertEqual(dl.status_code, 404)
         dl.close()
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class TicketBulkCreateIdempotencyTests(TestCase):
+    """Idempotent preview/confirm behavior for ticket bulk import."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="Hardware")
+        self.other_dep = Department.objects.create(name="Other", code="OTH-IDEM")
+
+    def _row(self, **kw):
+        base = {"title": "t", "description": "d",
+                "category": self.tcat.pk, "department": self.dep.pk}
+        base.update(kw)
+        return base
+
+    def _post(self, payload, **kwargs):
+        return self.c.post("/api/tickets/bulk_create/", payload,
+                           format=kwargs.pop("fmt", "json"), **kwargs)
+
+    def test_same_token_confirmation_replays_without_duplicates(self):
+        auth(self.c, self.mgr)
+        token = "idem-confirm-1"
+        payload = {"tickets": [self._row(title="once")],
+                   "preview": False, "confirm": True, "import_token": token}
+        res1 = self._post(payload)
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res1.data["summary"],
+                         {"ok": 1, "skipped": 0, "failed": 0})
+        first_id = res1.data["successful"][0]["id"]
+        # Client loses response and retries the same confirmation.
+        res2 = self._post(payload)
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(res2.data, res1.data)
+        self.assertEqual(Ticket.objects.filter(title="once").count(), 1)
+        self.assertEqual(Ticket.objects.get(pk=first_id).title, "once")
+
+    def test_same_token_csv_confirmation_replays_same_report(self):
+        auth(self.c, self.mgr)
+        token = "idem-csv-1"
+        payload = {"tickets": [self._row(title="csv-once"),
+                               {"description": "no title", "category": self.tcat.pk}],
+                   "preview": False, "confirm": True, "import_token": token}
+        res1 = self._post(payload, fmt="json",
+                          QUERY_STRING="download=csv")
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res1["Content-Type"], "text/csv")
+        body1 = res1.content.decode("utf-8")
+        self.assertEqual(Ticket.objects.filter(title="csv-once").count(), 1)
+        res2 = self._post(payload, fmt="json",
+                          QUERY_STRING="download=csv")
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(res2["Content-Type"], "text/csv")
+        self.assertEqual(res2.content.decode("utf-8"), body1)
+        self.assertEqual(Ticket.objects.filter(title="csv-once").count(), 1)
+
+    def test_partial_success_confirmation_replays_same_outcome(self):
+        auth(self.c, self.mgr)
+        token = "idem-partial-1"
+        payload = {"tickets": [self._row(title="good-p"),
+                               {"description": "no title", "category": self.tcat.pk}],
+                   "preview": False, "confirm": True, "import_token": token}
+        res1 = self._post(payload)
+        self.assertEqual(res1.data["summary"],
+                         {"ok": 1, "skipped": 0, "failed": 1})
+        res2 = self._post(payload)
+        self.assertEqual(res2.data, res1.data)
+        self.assertEqual(Ticket.objects.count(), 1)
+        self.assertTrue(Ticket.objects.filter(title="good-p").exists())
+
+    def test_separate_imports_with_identical_rows_are_allowed(self):
+        auth(self.c, self.mgr)
+        row = self._row(title="same")
+        res1 = self._post({"tickets": [row], "preview": False,
+                           "confirm": True, "import_token": "idem-a"})
+        res2 = self._post({"tickets": [row], "preview": False,
+                           "confirm": True, "import_token": "idem-b"})
+        self.assertEqual(res1.data["summary"]["ok"], 1)
+        self.assertEqual(res2.data["summary"]["ok"], 1)
+        self.assertEqual(Ticket.objects.filter(title="same").count(), 2)
+        self.assertNotEqual(res1.data["successful"][0]["id"],
+                            res2.data["successful"][0]["id"])
+
+    def test_different_user_cannot_access_another_users_import_result(self):
+        auth(self.c, self.mgr)
+        token = "idem-cross-user"
+        res = self._post({"tickets": [self._row(title="mgr-only")],
+                          "preview": False, "confirm": True,
+                          "import_token": token})
+        self.assertEqual(res.data["summary"]["ok"], 1)
+        mgr_ticket_id = res.data["successful"][0]["id"]
+        # Employee uses the same token value: must not access manager's stored
+        # result. It is scoped to the employee and treated as a separate import
+        # attempt; with a different (and valid) payload it may create their own
+        # ticket, but must never replay or expose the manager's import.
+        auth(self.c, self.emp)
+        res_emp = self._post({"tickets": [self._row(title="emp-own")],
+                              "preview": False, "confirm": True,
+                              "import_token": token})
+        self.assertEqual(res_emp.status_code, 200)
+        self.assertEqual(res_emp.data["summary"]["ok"], 1)
+        emp_ticket_id = res_emp.data["successful"][0]["id"]
+        self.assertNotEqual(emp_ticket_id, mgr_ticket_id)
+        self.assertEqual(Ticket.objects.filter(pk=mgr_ticket_id).count(), 1)
+        self.assertEqual(Ticket.objects.get(pk=emp_ticket_id).requester,
+                         self.emp)
+        # No additional manager ticket was created and manager's result not replayed.
+        self.assertEqual(Ticket.objects.filter(title="mgr-only").count(), 1)
+
+    def test_expired_token_is_rejected(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        from tickets.models import TicketBulkImportOperation
+        from tickets.views import _ticket_bulk_import_fingerprint
+        auth(self.c, self.mgr)
+        token = "idem-expired"
+        rows = [self._row(title="late")]
+        TicketBulkImportOperation.objects.create(
+            user=self.mgr, token=token,
+            status=TicketBulkImportOperation.STATUS_PREVIEWED,
+            request_fingerprint=_ticket_bulk_import_fingerprint(rows, upload=None),
+            expires_at=timezone.now() - timedelta(minutes=1))
+        res = self._post({"tickets": rows, "preview": False,
+                          "confirm": True, "import_token": token})
+        self.assertEqual(res.status_code, 410)
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_processing_operation_rejects_concurrent_confirmation(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from tickets.models import TicketBulkImportOperation
+        auth(self.c, self.mgr)
+        token = "idem-processing"
+        # Same payload fingerprint as request to simulate in-progress claim.
+        rows_in = [self._row(title="inprog")]
+        from tickets.views import _ticket_bulk_import_fingerprint
+        fp = _ticket_bulk_import_fingerprint(rows_in, upload=None)
+        TicketBulkImportOperation.objects.create(
+            user=self.mgr, token=token,
+            status=TicketBulkImportOperation.STATUS_PROCESSING,
+            request_fingerprint=fp,
+            started_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(hours=1))
+        res = self._post({"tickets": rows_in, "preview": False,
+                          "confirm": True, "import_token": token})
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("in progress", res.data["detail"].lower())
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_same_token_cannot_be_reused_with_different_payload(self):
+        auth(self.c, self.mgr)
+        token = "idem-mismatch"
+        res1 = self._post({"tickets": [self._row(title="first")],
+                           "preview": True, "import_token": token})
+        self.assertEqual(res1.status_code, 200)
+        res2 = self._post({"tickets": [self._row(title="different")],
+                           "preview": True, "import_token": token})
+        self.assertEqual(res2.status_code, 409)
+        res3 = self._post({"tickets": [self._row(title="different")],
+                           "preview": False, "confirm": True,
+                           "import_token": token})
+        self.assertEqual(res3.status_code, 409)
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_confirmation_with_no_created_tickets_is_replayable(self):
+        auth(self.c, self.mgr)
+        token = "idem-none-created"
+        payload = {"tickets": [{"description": "no title", "category": self.tcat.pk}],
+                   "preview": False, "confirm": True, "import_token": token}
+        res1 = self._post(payload)
+        self.assertEqual(res1.data["summary"],
+                         {"ok": 0, "skipped": 0, "failed": 1})
+        res2 = self._post(payload)
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(res2.data, res1.data)
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_confirmation_fails_before_any_ticket_created(self):
+        """Unexpected failure before any durable ticket creation must not allow
+        a blind retry that could duplicate work once fixed/retried differently;
+        the same operation token is marked failed."""
+        from tickets.models import TicketBulkImportOperation
+        auth(self.c, self.mgr)
+        token = "idem-fail-no-create"
+        # All rows invalid => no tickets committed. Force an unexpected failure
+        # during CSV report finalization (after processing loop, before completion).
+        old = self.c.raise_request_exception
+        self.c.raise_request_exception = False
+        try:
+            with patch("tickets.views._ticket_report_rows",
+                       side_effect=RuntimeError("boom")):
+                res = self.c.post(
+                    "/api/tickets/bulk_create/?download=csv",
+                    {"tickets": [{"description": "no title",
+                                  "category": self.tcat.pk}],
+                     "preview": False, "confirm": True,
+                     "import_token": token},
+                    format="json")
+        finally:
+            self.c.raise_request_exception = old
+        self.assertEqual(res.status_code, 500)
+        self.assertEqual(Ticket.objects.count(), 0)
+        op = TicketBulkImportOperation.objects.get(user=self.mgr, token=token)
+        # Finalization failed before a completed result was persisted. The
+        # implementation attempts to mark the operation failed; if that status
+        # cannot be persisted in the current transaction context, it remains
+        # processing (retry is still blocked as in-progress/stale, never
+        # auto-replayed to duplicate tickets).
+        self.assertIn(op.status, [
+            TicketBulkImportOperation.STATUS_FAILED,
+            TicketBulkImportOperation.STATUS_PROCESSING,
+        ])
+        res2 = self._post({"tickets": [{"description": "no title",
+                                        "category": self.tcat.pk}],
+                           "preview": False, "confirm": True,
+                           "import_token": token},
+                          fmt="json", QUERY_STRING="download=csv")
+        self.assertEqual(res2.status_code, 409)
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_preview_then_confirm_with_same_token_creates_once(self):
+        auth(self.c, self.mgr)
+        token = "idem-preview-confirm"
+        rows = [self._row(title="previewed")]
+        p = self._post({"tickets": rows, "preview": True,
+                        "import_token": token})
+        self.assertEqual(p.status_code, 200)
+        self.assertEqual(p.data["affected"], 1)
+        c = self._post({"tickets": rows, "preview": False,
+                        "confirm": True, "import_token": token})
+        self.assertEqual(c.data["summary"]["ok"], 1)
+        c2 = self._post({"tickets": rows, "preview": False,
+                         "confirm": True, "import_token": token})
+        self.assertEqual(c2.data, c.data)
+        self.assertEqual(Ticket.objects.count(), 1)
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+                   TICKET_BULK_IMPORT_MAX_ROWS=2,
+                   TICKET_BULK_IMPORT_MAX_JSON_ROWS=2,
+                   TICKET_BULK_IMPORT_MAX_FILE_SIZE_MB=0.0005)
+class TicketBulkCreateLimitTests(TestCase):
+    """Configurable hard limits for ticket bulk import."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="Hardware")
+
+    def _row(self, **kw):
+        base = {"title": "t", "description": "d",
+                "category": self.tcat.pk, "department": self.dep.pk}
+        base.update(kw)
+        return base
+
+    def test_json_row_limit_rejects_before_creation(self):
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/tickets/bulk_create/",
+                          {"tickets": [self._row(title="a"),
+                                       self._row(title="b"),
+                                       self._row(title="c")],
+                           "preview": False, "confirm": True},
+                          format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("too many rows", res.data["detail"].lower())
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_csv_row_limit_rejects_entire_upload(self):
+        auth(self.c, self.mgr)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        csv = ("title,description,category\n"
+               "A,d,%d\nB,d,%d\nC,d,%d\n" % (
+                   self.tcat.pk, self.tcat.pk, self.tcat.pk)).encode("utf-8")
+        data = {"file": SimpleUploadedFile("tickets.csv", csv,
+                                           content_type="text/csv"),
+                "preview": "false", "confirm": "true"}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("file", res.data)
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    def test_file_size_limit_rejects_before_parsing(self):
+        auth(self.c, self.mgr)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        # ~700 bytes, above 0.0005 MB (~512 bytes) limit in settings override.
+        big = ("title,description,category\n" + ("A," + ("d" * 200) + ",%d\n" % self.tcat.pk) * 3).encode("utf-8")
+        data = {"file": SimpleUploadedFile("tickets.csv", big,
+                                           content_type="text/csv"),
+                "preview": "true"}
+        res = self.c.post("/api/tickets/bulk_create/", data,
+                          format="multipart")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("file", res.data)
+        self.assertIn("too large", str(res.data["file"]).lower())
+        self.assertEqual(Ticket.objects.count(), 0)
+
+    @override_settings(TICKET_BULK_IMPORT_MAX_ROWS=10,
+                       TICKET_BULK_IMPORT_MAX_JSON_ROWS=10,
+                       TICKET_BULK_IMPORT_MAX_FILE_SIZE_MB=5)
+    def test_within_limits_preserves_partial_success(self):
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/tickets/bulk_create/",
+                          {"tickets": [self._row(title="good"),
+                                       {"description": "no title",
+                                        "category": self.tcat.pk}],
+                           "preview": False, "confirm": True},
+                          format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"],
+                         {"ok": 1, "skipped": 0, "failed": 1})
+        self.assertEqual(Ticket.objects.count(), 1)
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class TicketBulkCreateOperationalRecoveryTests(TestCase):
+    """Operational observability and recovery behavior for ticket bulk imports."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="Hardware")
+
+    def _row(self, **kw):
+        base = {"title": "t", "description": "d",
+                "category": self.tcat.pk, "department": self.dep.pk}
+        base.update(kw)
+        return base
+
+    def _post(self, payload, **kwargs):
+        return self.c.post("/api/tickets/bulk_create/", payload,
+                           format=kwargs.pop("fmt", "json"), **kwargs)
+
+    def test_stale_processing_operation_blocks_retry_without_duplicates(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from tickets.models import TicketBulkImportOperation
+        from tickets.views import _ticket_bulk_import_fingerprint
+        auth(self.c, self.mgr)
+        token = "idem-stale-processing"
+        rows = [self._row(title="stale")]
+        fp = _ticket_bulk_import_fingerprint(rows, upload=None)
+        TicketBulkImportOperation.objects.create(
+            user=self.mgr, token=token,
+            status=TicketBulkImportOperation.STATUS_PROCESSING,
+            request_fingerprint=fp,
+            started_at=timezone.now() - timedelta(minutes=30),
+            expires_at=timezone.now() + timedelta(hours=1),
+            total_rows=1, processed_count=0)
+        res = self._post({"tickets": rows, "preview": False,
+                          "confirm": True, "import_token": token})
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("interrupted", res.data["detail"].lower())
+        self.assertEqual(Ticket.objects.count(), 0)
+        op = TicketBulkImportOperation.objects.get(user=self.mgr, token=token)
+        self.assertEqual(op.status, TicketBulkImportOperation.STATUS_PROCESSING)
+
+    def test_failure_during_result_generation_after_committed_rows_preserves_counts_and_blocks_retry(self):
+        """Report/result generation failure after some per-row commits: committed
+        tickets must remain, no duplicates on retry, and operation must expose
+        known progress/counts without a completed result."""
+        from tickets.models import TicketBulkImportOperation
+        auth(self.c, self.mgr)
+        token = "idem-report-fail-after-commit"
+        rows = [self._row(title="committed-1"),
+                {"description": "no title", "category": self.tcat.pk}]
+        old = self.c.raise_request_exception
+        self.c.raise_request_exception = False
+        try:
+            with patch("tickets.views._ticket_report_rows",
+                       side_effect=RuntimeError("csv boom")):
+                res = self.c.post(
+                    "/api/tickets/bulk_create/?download=csv",
+                    {"tickets": rows, "preview": False, "confirm": True,
+                     "import_token": token},
+                    format="json")
+        finally:
+            self.c.raise_request_exception = old
+        self.assertEqual(res.status_code, 500)
+        self.assertEqual(Ticket.objects.filter(title="committed-1").count(), 1)
+        op = TicketBulkImportOperation.objects.get(user=self.mgr, token=token)
+        self.assertIn(op.status, [
+            TicketBulkImportOperation.STATUS_FAILED,
+            TicketBulkImportOperation.STATUS_PROCESSING,
+        ])
+        # Known durable progress: 1 row created, 1 failed validation, all processed.
+        self.assertEqual(op.total_rows, 2)
+        self.assertEqual(op.processed_count, 2)
+        self.assertEqual(op.successful_count, 1)
+        self.assertEqual(op.failed_count, 1)
+        self.assertEqual(op.result_json, None)
+        self.assertEqual(op.result_csv, "")
+        res2 = self._post({"tickets": rows, "preview": False,
+                           "confirm": True, "import_token": token},
+                          fmt="json", QUERY_STRING="download=csv")
+        self.assertEqual(res2.status_code, 409)
+        self.assertEqual(Ticket.objects.filter(title="committed-1").count(), 1)
+
+    def test_failure_during_final_operation_persistence_keeps_result_uncompleted_and_blocks_duplicate_retry(self):
+        """If persisting the completed operation/result fails, the operation must
+        not be marked completed and retries must not duplicate committed work."""
+        from tickets.models import TicketBulkImportOperation
+        auth(self.c, self.mgr)
+        token = "idem-final-persist-fail"
+        rows = [self._row(title="persist-1")]
+        real_filter = TicketBulkImportOperation.objects.filter
+
+        def flaky_filter(*args, **kwargs):
+            qs = real_filter(*args, **kwargs)
+
+            class _QS:
+                def __getattr__(self, name):
+                    return getattr(qs, name)
+
+                def update(self, **ukwargs):
+                    if ukwargs.get("status") == TicketBulkImportOperation.STATUS_COMPLETED:
+                        raise RuntimeError("persist boom")
+                    return qs.update(**ukwargs)
+
+            return _QS()
+
+        old = self.c.raise_request_exception
+        self.c.raise_request_exception = False
+        try:
+            with patch("tickets.models.TicketBulkImportOperation.objects.filter",
+                       side_effect=flaky_filter):
+                res = self._post({"tickets": rows, "preview": False,
+                                  "confirm": True, "import_token": token})
+        finally:
+            self.c.raise_request_exception = old
+        self.assertEqual(res.status_code, 500)
+        self.assertEqual(Ticket.objects.filter(title="persist-1").count(), 1)
+        op = TicketBulkImportOperation.objects.get(user=self.mgr, token=token)
+        self.assertNotEqual(op.status, TicketBulkImportOperation.STATUS_COMPLETED)
+        self.assertIn(op.status, [
+            TicketBulkImportOperation.STATUS_FAILED,
+            TicketBulkImportOperation.STATUS_PROCESSING,
+        ])
+        self.assertIsNone(op.result_json)
+        res2 = self._post({"tickets": rows, "preview": False,
+                           "confirm": True, "import_token": token})
+        self.assertEqual(res2.status_code, 409)
+        self.assertEqual(Ticket.objects.filter(title="persist-1").count(), 1)
+
+    def test_repeated_confirmation_after_partial_failure_is_blocked(self):
+        """A failed operation with some committed rows must not be auto-rerun."""
+        from tickets.models import TicketBulkImportOperation
+        auth(self.c, self.mgr)
+        token = "idem-partial-failed"
+        rows = [self._row(title="partial-1"),
+                {"description": "no title", "category": self.tcat.pk}]
+        # Simulate a failure recorded after one ticket committed.
+        Ticket.objects.create(title="partial-1", description="d",
+                              category=self.tcat, requester=self.mgr,
+                              department=self.dep)
+        # (The above is just to have a committed row; operation record below
+        # represents the import that produced it and then failed finalization.)
+        from tickets.views import _ticket_bulk_import_fingerprint
+        TicketBulkImportOperation.objects.create(
+            user=self.mgr, token=token,
+            status=TicketBulkImportOperation.STATUS_FAILED,
+            request_fingerprint=_ticket_bulk_import_fingerprint(rows, upload=None),
+            total_rows=2, processed_count=2,
+            successful_count=1, failed_count=1,
+            error_detail="Finalization failed")
+        before = Ticket.objects.count()
+        res = self._post({"tickets": rows, "preview": False,
+                          "confirm": True, "import_token": token})
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(Ticket.objects.count(), before)
+
+    def test_bulk_import_inspection_staff_only_and_redacted(self):
+        from tickets.models import TicketBulkImportOperation
+        from tickets.views import _ticket_bulk_import_fingerprint
+        auth(self.c, self.mgr)
+        token = "inspect-1"
+        rows = [self._row(title="inspect-target")]
+        op = TicketBulkImportOperation.objects.create(
+            user=self.mgr, token=token,
+            status=TicketBulkImportOperation.STATUS_FAILED,
+            request_fingerprint=_ticket_bulk_import_fingerprint(rows, upload=None),
+            preview_payload={"secret": "preview"},
+            result_json={"secret": "result"},
+            result_csv="secret,csv",
+            error_detail="boom",
+            total_rows=1, processed_count=1, successful_count=1, failed_count=0)
+        # Employee cannot inspect operational details.
+        auth(self.c, self.emp)
+        res = self.c.get("/api/tickets/bulk-imports/")
+        self.assertEqual(res.status_code, 403)
+        res = self.c.get(f"/api/tickets/bulk-imports/{op.pk}/")
+        self.assertEqual(res.status_code, 403)
+        # Staff can inspect, but sensitive fields/payloads/results/tokens are omitted.
+        auth(self.c, self.admin)
+        res = self.c.get(f"/api/tickets/bulk-imports/{op.pk}/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["id"], op.pk)
+        self.assertEqual(res.data["user"], self.mgr.pk)
+        self.assertEqual(res.data["status"], TicketBulkImportOperation.STATUS_FAILED)
+        self.assertEqual(res.data["total_rows"], 1)
+        self.assertEqual(res.data["successful_count"], 1)
+        self.assertNotIn("token", res.data)
+        self.assertNotIn("request_fingerprint", res.data)
+        self.assertNotIn("preview_payload", res.data)
+        self.assertNotIn("result_json", res.data)
+        self.assertNotIn("result_csv", res.data)
+        blob = str(res.data)
+        self.assertNotIn("inspect-1", blob)
+        self.assertNotIn("secret", blob)
+        # List endpoint works for staff.
+        res = self.c.get("/api/tickets/bulk-imports/")
+        self.assertEqual(res.status_code, 200)
+        rows_out = res.data["results"] if isinstance(res.data, dict) and "results" in res.data else res.data
+        self.assertTrue(any(r["id"] == op.pk for r in rows_out))
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class TicketBulkImportRowOutcomeTests(TestCase):
+    """Durable per-row outcome tracking and read-only reconciliation evidence."""
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="Hardware")
+
+    def _row(self, **kw):
+        base = {"title": "t", "description": "d",
+                "category": self.tcat.pk, "department": self.dep.pk}
+        base.update(kw)
+        return base
+
+    def _confirm(self, rows, token, fmt="json", query_string=""):
+        auth(self.c, self.mgr)
+        payload = {"tickets": rows, "preview": False, "confirm": True,
+                   "import_token": token}
+        return self.c.post(f"/api/tickets/bulk_create/{query_string}", payload,
+                           format=fmt)
+
+    def test_tokenized_confirm_records_durable_row_outcomes(self):
+        from tickets.models import TicketBulkImportOperation, TicketBulkImportRowOutcome
+        auth(self.c, self.mgr)
+        token = "row-outcomes-basic"
+        rows = [self._row(title="ok-1"),
+                {"description": "no title", "category": self.tcat.pk},
+                self._row(title="ok-2")]
+        res = self._confirm(rows, token)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"], {"ok": 2, "skipped": 0, "failed": 1})
+        op = TicketBulkImportOperation.objects.get(user=self.mgr, token=token)
+        outcomes = list(TicketBulkImportRowOutcome.objects.filter(operation=op)
+                        .order_by("row_index"))
+        self.assertEqual(len(outcomes), 3)
+        self.assertEqual([o.row_index for o in outcomes], [0, 1, 2])
+        self.assertEqual([o.row_number for o in outcomes], [1, 2, 3])
+        self.assertEqual(outcomes[0].outcome, TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED)
+        self.assertEqual(outcomes[1].outcome, TicketBulkImportRowOutcome.OUTCOME_FAILED)
+        self.assertEqual(outcomes[2].outcome, TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED)
+        self.assertIsNotNone(outcomes[0].ticket_id)
+        self.assertIsNone(outcomes[1].ticket_id)
+        self.assertIsNotNone(outcomes[2].ticket_id)
+        self.assertEqual(Ticket.objects.filter(
+            pk__in=[outcomes[0].ticket_id, outcomes[2].ticket_id]).count(), 2)
+        self.assertEqual(outcomes[0].ticket.title, "ok-1")
+        self.assertEqual(outcomes[2].ticket.title, "ok-2")
+        self.assertNotEqual(outcomes[1].error_message, "")
+        self.assertTrue(all(o.row_fingerprint for o in outcomes))
+        # Succeeded outcomes must map to tickets created by this operation/result.
+        result_ids = sorted([s["id"] for s in res.data["successful"]])
+        outcome_ids = sorted([o.ticket_id for o in outcomes
+                              if o.outcome == TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED])
+        self.assertEqual(result_ids, outcome_ids)
+
+    def test_processing_exception_rolls_back_ticket_and_records_failed_outcome(self):
+        from tickets.models import TicketBulkImportOperation, TicketBulkImportRowOutcome
+        auth(self.c, self.mgr)
+        token = "row-outcome-rollback"
+        rows = [self._row(title="boom-row")]
+        with patch("tickets.views.log_action", side_effect=RuntimeError("forced")):
+            res = self._confirm(rows, token)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"], {"ok": 0, "skipped": 0, "failed": 1})
+        self.assertEqual(Ticket.objects.filter(title="boom-row").count(), 0)
+        op = TicketBulkImportOperation.objects.get(user=self.mgr, token=token)
+        outcomes = list(TicketBulkImportRowOutcome.objects.filter(operation=op))
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(outcomes[0].outcome, TicketBulkImportRowOutcome.OUTCOME_FAILED)
+        self.assertIsNone(outcomes[0].ticket_id)
+        self.assertIn("forced", outcomes[0].error_message.lower())
+        self.assertEqual(op.status, TicketBulkImportOperation.STATUS_COMPLETED)
+
+    def test_succeeded_outcome_save_failure_rolls_back_ticket(self):
+        from tickets.models import TicketBulkImportOperation, TicketBulkImportRowOutcome
+        auth(self.c, self.mgr)
+        token = "row-outcome-save-fail"
+        rows = [self._row(title="no-commit-without-outcome")]
+        real_create = TicketBulkImportRowOutcome.objects.create
+
+        def flaky_create(*args, **kwargs):
+            if kwargs.get("outcome") == TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED:
+                raise RuntimeError("outcome save failed")
+            return real_create(*args, **kwargs)
+
+        with patch("tickets.models.TicketBulkImportRowOutcome.objects.create",
+                   side_effect=flaky_create):
+            res = self._confirm(rows, token)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"], {"ok": 0, "skipped": 0, "failed": 1})
+        self.assertEqual(Ticket.objects.filter(
+            title="no-commit-without-outcome").count(), 0)
+        op = TicketBulkImportOperation.objects.get(user=self.mgr, token=token)
+        outcomes = list(TicketBulkImportRowOutcome.objects.filter(operation=op))
+        # No succeeded outcome may remain; a failed outcome may be recorded after rollback.
+        self.assertFalse(any(
+            o.outcome == TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED for o in outcomes))
+        self.assertTrue(any(
+            o.outcome == TicketBulkImportRowOutcome.OUTCOME_FAILED for o in outcomes))
+        self.assertTrue(all(o.ticket_id is None for o in outcomes))
+
+    def test_finalization_failure_after_commit_preserves_authoritative_row_outcomes(self):
+        from tickets.models import TicketBulkImportOperation, TicketBulkImportRowOutcome
+        auth(self.c, self.mgr)
+        token = "row-outcome-finalize-fail"
+        rows = [self._row(title="committed-with-outcome"),
+                {"description": "no title", "category": self.tcat.pk}]
+        old = self.c.raise_request_exception
+        self.c.raise_request_exception = False
+        try:
+            with patch("tickets.views._ticket_report_rows",
+                       side_effect=RuntimeError("csv boom")):
+                res = self.c.post(
+                    "/api/tickets/bulk_create/?download=csv",
+                    {"tickets": rows, "preview": False, "confirm": True,
+                     "import_token": token},
+                    format="json")
+        finally:
+            self.c.raise_request_exception = old
+        self.assertEqual(res.status_code, 500)
+        self.assertEqual(Ticket.objects.filter(
+            title="committed-with-outcome").count(), 1)
+        op = TicketBulkImportOperation.objects.get(user=self.mgr, token=token)
+        outcomes = list(TicketBulkImportRowOutcome.objects.filter(operation=op)
+                        .order_by("row_index"))
+        self.assertEqual(len(outcomes), 2)
+        self.assertEqual(outcomes[0].outcome, TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED)
+        self.assertEqual(outcomes[0].ticket_id,
+                         Ticket.objects.get(title="committed-with-outcome").pk)
+        self.assertEqual(outcomes[1].outcome, TicketBulkImportRowOutcome.OUTCOME_FAILED)
+        self.assertIsNone(outcomes[1].ticket_id)
+
+    def test_reconciliation_endpoint_staff_only_and_evidence_based(self):
+        from tickets.models import TicketBulkImportOperation, TicketBulkImportRowOutcome
+        auth(self.c, self.mgr)
+        token = "recon-ok"
+        rows = [self._row(title="r1"),
+                {"description": "no title", "category": self.tcat.pk}]
+        res = self._confirm(rows, token)
+        self.assertEqual(res.status_code, 200)
+        op = TicketBulkImportOperation.objects.get(user=self.mgr, token=token)
+
+        # Employee denied.
+        auth(self.c, self.emp)
+        res = self.c.get(f"/api/tickets/bulk-imports/{op.pk}/reconciliation/")
+        self.assertEqual(res.status_code, 403)
+
+        # Staff gets durable evidence-based preview without sensitive payloads.
+        auth(self.c, self.admin)
+        res = self.c.get(f"/api/tickets/bulk-imports/{op.pk}/reconciliation/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["operation_id"], op.pk)
+        self.assertEqual(res.data["status"], TicketBulkImportOperation.STATUS_COMPLETED)
+        self.assertEqual(res.data["expected_rows"], 2)
+        self.assertEqual(res.data["recorded_successful_rows"], 1)
+        self.assertEqual(res.data["recorded_failed_rows"], 1)
+        self.assertEqual(res.data["unprocessed_or_unrecorded_rows"], 0)
+        self.assertTrue(res.data["result_stored"])
+        self.assertTrue(res.data["evidence"]["has_row_level_outcomes"])
+        self.assertFalse(res.data["evidence"]["legacy_or_pre_tracking"])
+        self.assertFalse(res.data["evidence"]["ambiguous"])
+        self.assertEqual(len(res.data["committed_ticket_ids"]), 1)
+        self.assertEqual(res.data["committed_ticket_ids"][0],
+                         Ticket.objects.get(title="r1").pk)
+        blob = str(res.data)
+        self.assertNotIn(token, blob)
+        self.assertNotIn("request_fingerprint", blob)
+        self.assertNotIn("preview_payload", blob)
+        self.assertNotIn("result_json", blob)
+
+    def test_reconciliation_marks_legacy_operation_without_row_outcomes_ambiguous(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from tickets.models import TicketBulkImportOperation
+        from tickets.views import _ticket_bulk_import_fingerprint
+        auth(self.c, self.admin)
+        rows = [self._row(title="legacy")]
+        op = TicketBulkImportOperation.objects.create(
+            user=self.mgr, token="legacy-op",
+            status=TicketBulkImportOperation.STATUS_FAILED,
+            request_fingerprint=_ticket_bulk_import_fingerprint(rows, upload=None),
+            total_rows=1, processed_count=1, successful_count=1, failed_count=0,
+            error_detail="legacy failure",
+            expires_at=timezone.now() + timedelta(hours=1))
+        res = self.c.get(f"/api/tickets/bulk-imports/{op.pk}/reconciliation/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["recorded_successful_rows"], 0)
+        self.assertEqual(res.data["recorded_failed_rows"], 0)
+        self.assertEqual(res.data["unprocessed_or_unrecorded_rows"], 1)
+        self.assertTrue(res.data["evidence"]["legacy_or_pre_tracking"])
+        self.assertTrue(res.data["evidence"]["ambiguous"])
+        self.assertTrue(res.data["eligible_for_investigation"])
+        self.assertEqual(res.data["committed_ticket_ids"], [])
+        self.assertIn("ambiguous_or_legacy_evidence",
+                      res.data["investigation_reasons"])
+
+    def test_reconciliation_reports_unprocessed_rows_for_interrupted_operation(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from tickets.models import TicketBulkImportOperation, TicketBulkImportRowOutcome
+        from tickets.views import _ticket_bulk_import_fingerprint, _ticket_bulk_import_row_fingerprint
+        auth(self.c, self.admin)
+        rows = [self._row(title="done"), self._row(title="missing")]
+        fp = _ticket_bulk_import_fingerprint(rows, upload=None)
+        op = TicketBulkImportOperation.objects.create(
+            user=self.mgr, token="interrupted-op",
+            status=TicketBulkImportOperation.STATUS_PROCESSING,
+            request_fingerprint=fp,
+            total_rows=2, processed_count=1, successful_count=1, failed_count=0,
+            started_at=timezone.now() - timedelta(minutes=30),
+            expires_at=timezone.now() + timedelta(hours=1))
+        t = Ticket.objects.create(title="done", description="d",
+                                  category=self.tcat, requester=self.mgr,
+                                  department=self.dep)
+        TicketBulkImportRowOutcome.objects.create(
+            operation=op, row_index=0, row_number=1,
+            row_fingerprint=_ticket_bulk_import_row_fingerprint(rows[0]),
+            outcome=TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED,
+            ticket=t)
+        res = self.c.get(f"/api/tickets/bulk-imports/{op.pk}/reconciliation/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["recorded_successful_rows"], 1)
+        self.assertEqual(res.data["recorded_failed_rows"], 0)
+        self.assertEqual(res.data["unprocessed_or_unrecorded_rows"], 1)
+        self.assertTrue(res.data["eligible_for_investigation"])
+        self.assertIn("unprocessed_or_unrecorded_rows",
+                      res.data["investigation_reasons"])
+        self.assertEqual(res.data["committed_ticket_ids"], [t.pk])
+
+    def test_failed_row_outcome_recording_does_not_overwrite_succeeded(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from tickets.models import TicketBulkImportOperation, TicketBulkImportRowOutcome
+        from tickets.views import (_record_ticket_bulk_import_row_failure,
+                                   _ticket_bulk_import_fingerprint,
+                                   _ticket_bulk_import_row_fingerprint)
+        rows = [self._row(title="ok")]
+        op = TicketBulkImportOperation.objects.create(
+            user=self.mgr, token="no-downgrade",
+            status=TicketBulkImportOperation.STATUS_PROCESSING,
+            request_fingerprint=_ticket_bulk_import_fingerprint(rows, upload=None),
+            total_rows=1, processed_count=1, successful_count=1, failed_count=0,
+            started_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(hours=1))
+        t = Ticket.objects.create(title="ok", description="d",
+                                  category=self.tcat, requester=self.mgr,
+                                  department=self.dep)
+        TicketBulkImportRowOutcome.objects.create(
+            operation=op, row_index=0, row_number=1,
+            row_fingerprint=_ticket_bulk_import_row_fingerprint(rows[0]),
+            outcome=TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED,
+            ticket=t)
+        _record_ticket_bulk_import_row_failure(op, 0, 1, rows[0], "later failure")
+        outcome = TicketBulkImportRowOutcome.objects.get(operation=op, row_index=0)
+        self.assertEqual(outcome.outcome, TicketBulkImportRowOutcome.OUTCOME_SUCCEEDED)
+        self.assertEqual(outcome.ticket_id, t.pk)
+
+    def test_non_tokenized_import_preserves_behavior_without_operation_tracking(self):
+        auth(self.c, self.mgr)
+        from tickets.models import TicketBulkImportOperation, TicketBulkImportRowOutcome
+        res = self.c.post("/api/tickets/bulk_create/",
+                          {"tickets": [self._row(title="no-token")],
+                           "preview": False, "confirm": True},
+                          format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"], {"ok": 1, "skipped": 0, "failed": 0})
+        self.assertTrue(Ticket.objects.filter(title="no-token").exists())
+        self.assertEqual(TicketBulkImportOperation.objects.count(), 0)
+        self.assertEqual(TicketBulkImportRowOutcome.objects.count(), 0)

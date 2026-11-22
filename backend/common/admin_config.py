@@ -6,7 +6,7 @@ from accounts.models import Department, User
 from assets.models import (
     Asset, AssetAttachment, AssetCategory, AssetHistory, Assignment,
 )
-from common.models import AuditLog, Notification
+from common.models import AuditLog, Notification, NotificationOutboxEvent
 from tickets.models import (
     Ticket, TicketAttachment, TicketCategory, TicketHistory, TicketNote,
 )
@@ -111,3 +111,37 @@ admin.site.register(TicketHistory)
 admin.site.register(TicketNote)
 admin.site.register(TicketAttachment)
 admin.site.register(Notification)
+
+
+class NotificationOutboxAdmin(admin.ModelAdmin):
+    """Read-only operational view of the notification outbox.
+
+    Mutations (retry / cancel) are performed through the permission-checked
+    API (``/api/notification-outbox/<id>/retry|cancel/``) so they are audited;
+    the admin is intentionally read-only to avoid an unaudited mutation path.
+    """
+
+    list_display = ("id", "event_type", "recipient_email", "status",
+                    "attempts", "max_attempts", "next_attempt_at",
+                    "created_at")
+    list_filter = ("status", "event_type", "channel")
+    search_fields = ("event_type", "recipient_email")
+    readonly_fields = (
+        "id", "event_type", "channel", "recipient", "recipient_email",
+        "notification", "category", "payload", "dedupe_key", "status",
+        "attempts", "max_attempts", "next_attempt_at", "last_attempt_at",
+        "delivered_at", "lease_expires_at", "claimed_by", "last_error",
+        "cancel_reason", "created_at", "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+admin.site.register(NotificationOutboxEvent, NotificationOutboxAdmin)

@@ -102,7 +102,7 @@ function defaultGet(overrides = {}) {
   mockGet.mockImplementation(async (url, config) => {
     const u = String(url);
     if (overrides[u]) return overrides[u](config);
-    if (u === '/assets/knowledge-base/') return paginated([ARTICLE]);
+    if (u === '/assets/knowledge-base/' || /^\/assets\/knowledge-base\/\?/.test(u)) return paginated([ARTICLE]);
     if (u === '/assets/knowledge-base/1/') return { data: ARTICLE };
     if (u === '/assets/knowledge-base/1/revisions/') {
       return { data: [REV2, REV1] };
@@ -119,7 +119,7 @@ function defaultGet(overrides = {}) {
 
 beforeEach(() => {
   cleanup();
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   window.location.hash = '';
   staff();
   defaultGet();

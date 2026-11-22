@@ -22,6 +22,7 @@ from common.attachment_security import (
 )
 from common.audit import log_action
 from common.models import Notification
+from common.notifications import notify_user
 from inventory.models import StockItem, StockMovement
 from .models import (
     ProcurementSetting, PurchaseRequest, PurchaseRequestItem, PurchaseQuotation,
@@ -185,12 +186,11 @@ def recalculate_po_status(po):
 def _notify(user, title, body, instance):
     if user is None:
         return
-    Notification.objects.create(
-        recipient=user,
-        title=title[:255],
-        body=body,
+    notify_user(
+        user, "procurement_event", title, body,
         entity_type=f"{instance._meta.app_label}.{instance._meta.model_name}",
         object_id=str(instance.pk),
+        post_commit=False,
     )
 
 
@@ -295,118 +295,126 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
-        pr = self.get_object()
-        if pr.requester != request.user and not is_manager_or_admin(request.user):
-            raise PermissionDenied("Forbidden")
-        if pr.status not in ("draft", "returned_for_correction"):
-            return Response({"detail": "Cannot submit in current status"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if not pr.items.exists():
-            return Response({"detail": "A purchase request needs at least one line item before submission."},
-                            status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            pr = get_object_or_404(
+                PurchaseRequest.objects.select_for_update(), pk=pk)
+            if pr.requester != request.user and not is_manager_or_admin(request.user):
+                raise PermissionDenied("Forbidden")
+            if pr.status not in ("draft", "returned_for_correction"):
+                return Response({"detail": "Cannot submit in current status"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if not pr.items.exists():
+                return Response({"detail": "A purchase request needs at least one line item before submission."},
+                                status=status.HTTP_400_BAD_REQUEST)
 
-        settings = ProcurementSetting.get_settings()
-        pr.requires_system_admin_approval = pr.estimated_total >= settings.approval_threshold
-        pr.status = "pending_approval"
-        pr.version = (pr.version or 1) + 1
-        pr.save()
-        ProcurementHistory.objects.create(
-            purchase_request=pr, actor=request.user, action="submitted",
-            detail="Submitted for approval")
-        log_action(actor=request.user, action="update", instance=pr,
-                   reason="purchase request submitted")
+            settings = ProcurementSetting.get_settings()
+            pr.requires_system_admin_approval = pr.estimated_total >= settings.approval_threshold
+            pr.status = "pending_approval"
+            pr.version = (pr.version or 1) + 1
+            pr.save()
+            ProcurementHistory.objects.create(
+                purchase_request=pr, actor=request.user, action="submitted",
+                detail="Submitted for approval")
+            log_action(actor=request.user, action="update", instance=pr,
+                       reason="purchase request submitted")
         return Response(self.get_serializer(pr).data)
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
-        pr = self.get_object()
-        role = getattr(request.user, "role", "")
-        if not is_manager_or_admin(request.user):
-            raise PermissionDenied("Forbidden")
-        if pr.requester == request.user:
-            return Response({"detail": "Cannot approve own request"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if pr.status != "pending_approval":
-            return Response({"detail": "Not pending approval"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if pr.requires_system_admin_approval and role != "system_admin":
-            return Response({"detail": "System Admin approval required"},
-                            status=status.HTTP_403_FORBIDDEN)
+        with transaction.atomic():
+            pr = get_object_or_404(
+                PurchaseRequest.objects.select_for_update(), pk=pk)
+            role = getattr(request.user, "role", "")
+            if not is_manager_or_admin(request.user):
+                raise PermissionDenied("Forbidden")
+            if pr.requester == request.user:
+                return Response({"detail": "Cannot approve own request"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if pr.status != "pending_approval":
+                return Response({"detail": "Not pending approval"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if pr.requires_system_admin_approval and role != "system_admin":
+                return Response({"detail": "System Admin approval required"},
+                                status=status.HTTP_403_FORBIDDEN)
 
-        pr.status = "approved"
-        pr.approver = request.user
-        pr.approval_decision = "approved"
-        pr.approval_reason = request.data.get("reason", "")
-        pr.approved_at = timezone.now()
-        pr.version = (pr.version or 1) + 1
-        pr.save()
-        ProcurementHistory.objects.create(
-            purchase_request=pr, actor=request.user, action="approved",
-            detail=pr.approval_reason or "Approved")
-        log_action(actor=request.user, action="approve", instance=pr,
-                   reason="purchase request approved")
-        _notify(pr.requester, f"{pr.pr_number} approved",
-                pr.approval_reason or "Your purchase request was approved.", pr)
+            pr.status = "approved"
+            pr.approver = request.user
+            pr.approval_decision = "approved"
+            pr.approval_reason = request.data.get("reason", "")
+            pr.approved_at = timezone.now()
+            pr.version = (pr.version or 1) + 1
+            pr.save()
+            ProcurementHistory.objects.create(
+                purchase_request=pr, actor=request.user, action="approved",
+                detail=pr.approval_reason or "Approved")
+            log_action(actor=request.user, action="approve", instance=pr,
+                       reason="purchase request approved")
+            _notify(pr.requester, f"{pr.pr_number} approved",
+                    pr.approval_reason or "Your purchase request was approved.", pr)
         return Response(self.get_serializer(pr).data)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
-        pr = self.get_object()
-        role = getattr(request.user, "role", "")
-        if not is_manager_or_admin(request.user):
-            raise PermissionDenied("Forbidden")
-        if pr.requester == request.user:
-            return Response({"detail": "Cannot reject own request"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if pr.status != "pending_approval":
-            return Response({"detail": "Not pending approval"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if pr.requires_system_admin_approval and role != "system_admin":
-            return Response({"detail": "System Admin approval required"},
-                            status=status.HTTP_403_FORBIDDEN)
-        reason = str(request.data.get("reason", "") or "").strip()
-        if not reason:
-            return Response({"reason": "A rejection reason is required."},
-                            status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            pr = get_object_or_404(
+                PurchaseRequest.objects.select_for_update(), pk=pk)
+            role = getattr(request.user, "role", "")
+            if not is_manager_or_admin(request.user):
+                raise PermissionDenied("Forbidden")
+            if pr.requester == request.user:
+                return Response({"detail": "Cannot reject own request"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if pr.status != "pending_approval":
+                return Response({"detail": "Not pending approval"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if pr.requires_system_admin_approval and role != "system_admin":
+                return Response({"detail": "System Admin approval required"},
+                                status=status.HTTP_403_FORBIDDEN)
+            reason = str(request.data.get("reason", "") or "").strip()
+            if not reason:
+                return Response({"reason": "A rejection reason is required."},
+                                status=status.HTTP_400_BAD_REQUEST)
 
-        pr.status = "rejected"
-        pr.approver = request.user
-        pr.approval_decision = "rejected"
-        pr.approval_reason = request.data.get("reason", "")
-        pr.approved_at = timezone.now()
-        pr.version = (pr.version or 1) + 1
-        pr.save()
-        ProcurementHistory.objects.create(
-            purchase_request=pr, actor=request.user, action="rejected",
-            detail=pr.approval_reason or "Rejected")
-        log_action(actor=request.user, action="reject", instance=pr,
-                   reason="purchase request rejected")
+            pr.status = "rejected"
+            pr.approver = request.user
+            pr.approval_decision = "rejected"
+            pr.approval_reason = request.data.get("reason", "")
+            pr.approved_at = timezone.now()
+            pr.version = (pr.version or 1) + 1
+            pr.save()
+            ProcurementHistory.objects.create(
+                purchase_request=pr, actor=request.user, action="rejected",
+                detail=pr.approval_reason or "Rejected")
+            log_action(actor=request.user, action="reject", instance=pr,
+                       reason="purchase request rejected")
         return Response(self.get_serializer(pr).data)
 
     @action(detail=True, methods=["post"])
     def return_for_correction(self, request, pk=None):
-        pr = self.get_object()
-        if not is_manager_or_admin(request.user):
-            raise PermissionDenied("Forbidden")
-        if pr.status != "pending_approval":
-            return Response({"detail": "Not pending approval"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        reason = str(request.data.get("reason", "") or "").strip()
-        if not reason:
-            return Response({"reason": "A reason is required."},
-                            status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            pr = get_object_or_404(
+                PurchaseRequest.objects.select_for_update(), pk=pk)
+            if not is_manager_or_admin(request.user):
+                raise PermissionDenied("Forbidden")
+            if pr.status != "pending_approval":
+                return Response({"detail": "Not pending approval"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            reason = str(request.data.get("reason", "") or "").strip()
+            if not reason:
+                return Response({"reason": "A reason is required."},
+                                status=status.HTTP_400_BAD_REQUEST)
 
-        pr.status = "returned_for_correction"
-        pr.approver = request.user
-        pr.approval_decision = "returned"
-        pr.approval_reason = reason
-        pr.version = (pr.version or 1) + 1
-        pr.save()
-        ProcurementHistory.objects.create(
-            purchase_request=pr, actor=request.user, action="returned",
-            detail=pr.approval_reason or "Returned for correction")
-        log_action(actor=request.user, action="update", instance=pr,
-                   reason="purchase request returned for correction")
+            pr.status = "returned_for_correction"
+            pr.approver = request.user
+            pr.approval_decision = "returned"
+            pr.approval_reason = reason
+            pr.version = (pr.version or 1) + 1
+            pr.save()
+            ProcurementHistory.objects.create(
+                purchase_request=pr, actor=request.user, action="returned",
+                detail=pr.approval_reason or "Returned for correction")
+            log_action(actor=request.user, action="update", instance=pr,
+                       reason="purchase request returned for correction")
         return Response(self.get_serializer(pr).data)
 
     @action(detail=True, methods=["post"])
@@ -674,21 +682,25 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def generate_from_pr(self, request, pk=None):
-        pr = get_object_or_404(PurchaseRequest, pk=pk)
         if not is_manager_or_admin(request.user):
             raise PermissionDenied("Forbidden")
-        if pr.status != "approved":
-            return Response({"detail": "Purchase request must be approved"},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        selected_quote = pr.quotations.filter(is_selected=True).first()
-        if not selected_quote:
-            return Response({"detail": "No quotation selected"},
-                            status=status.HTTP_400_BAD_REQUEST)
-
         settings = ProcurementSetting.get_settings()
 
         with transaction.atomic():
+            pr = get_object_or_404(
+                PurchaseRequest.objects.select_for_update(), pk=pk)
+            if pr.purchase_orders.filter(is_deleted=False).exists():
+                return Response({"detail": "Purchase order already generated for this request"},
+                                status=status.HTTP_409_CONFLICT)
+            if pr.status != "approved":
+                return Response({"detail": "Purchase request must be approved"},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+            selected_quote = pr.quotations.filter(is_selected=True).first()
+            if not selected_quote:
+                return Response({"detail": "No quotation selected"},
+                                status=status.HTTP_400_BAD_REQUEST)
+
             po = PurchaseOrder.objects.create(
                 purchase_request=pr,
                 vendor=selected_quote.vendor,

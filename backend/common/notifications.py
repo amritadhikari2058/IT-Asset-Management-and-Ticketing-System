@@ -33,9 +33,10 @@ In-app notification helpers:
 - `notify_watchers(ticket, actor, title, message)` — creates in-app
   notifications for all watchers of a ticket.
 """
+import hashlib
 import re
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from common.models import Notification, UserNotificationPreference
 
@@ -142,6 +143,12 @@ def _notification_recipient_allowed(user, actor=None):
     return True
 
 
+def _compute_dedupe_key(user, title, body, entity_type, object_id):
+    """Compute a deterministic dedupe fingerprint from sanitized fields."""
+    raw = f"{user.pk}|{title}|{body}|{entity_type}|{object_id}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def notify_user(
     user,
     category,
@@ -158,6 +165,12 @@ def notify_user(
     In-app delivery is independent of email preferences. Recipients are
     validated, content is sanitized, and no monitoring code is invoked, so
     notification delivery can never re-enter ticket automation.
+
+    Database-level uniqueness on ``dedupe_key`` (conditional on
+    ``is_deleted=False``) guarantees race-safe deduplication: concurrent
+    attempts to create the same active notification result in exactly one
+    row.  The duplicate caller receives ``None`` (consistent with the
+    existing "already exists" return contract).
     """
     if not _notification_recipient_allowed(user, actor):
         return None
@@ -168,25 +181,53 @@ def notify_user(
         entity_type or f"notification.{category or 'general'}", 100
     ) or "notification.general"
     safe_object_id = _safe_notification_text(object_id, 100)
+    dedupe_key = (
+        _compute_dedupe_key(user, safe_title, safe_body, safe_entity, safe_object_id)
+        if dedupe else None
+    )
 
     def _write():
-        queryset = Notification.objects.filter(
-            recipient=user,
-            title=safe_title,
-            body=safe_body,
-            entity_type=safe_entity,
-            object_id=safe_object_id,
-            is_deleted=False,
-        )
-        if dedupe and queryset.exists():
-            return None
-        return Notification.objects.create(
-            recipient=user,
-            title=safe_title,
-            body=safe_body,
-            entity_type=safe_entity,
-            object_id=safe_object_id,
-        )
+        # Fast path: Python-level check using the same fingerprint identity
+        # enforced by the database constraint.  Avoids exception overhead in
+        # the common case where no equivalent active notification exists.
+        if dedupe and dedupe_key:
+            existing = (
+                Notification.objects.filter(
+                    dedupe_key=dedupe_key,
+                    is_deleted=False,
+                )
+                .first()
+            )
+            if existing:
+                return None
+        try:
+            # Nested atomic savepoint so an IntegrityError here only rolls
+            # back this insert, not the caller's surrounding transaction.
+            with transaction.atomic():
+                return Notification.objects.create(
+                    recipient=user,
+                    title=safe_title,
+                    body=safe_body,
+                    entity_type=safe_entity,
+                    object_id=safe_object_id,
+                    dedupe_key=dedupe_key,
+                )
+        except IntegrityError:
+            # A concurrent request may have committed the equivalent
+            # notification first.  Confirm before treating as dedup so
+            # unrelated integrity errors (e.g. a FK violation on a
+            # different column) still propagate.
+            if dedupe and dedupe_key:
+                existing = (
+                    Notification.objects.filter(
+                        dedupe_key=dedupe_key,
+                        is_deleted=False,
+                    )
+                    .first()
+                )
+                if existing:
+                    return None
+            raise
 
     if post_commit:
         transaction.on_commit(_write)

@@ -1,27 +1,37 @@
 """SLA escalation and breach tasks."""
 from celery import shared_task
+from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
 from accounts import email_utils as _email_utils
-from common.models import BackgroundTaskRun, Notification
-from tickets.models import Ticket, TicketSLA, SLAEscalation
+from common.models import BackgroundTaskRun
+from common.notifications import SLA_CATEGORY, email_enabled_for, notify_user
+from common.outbox import enqueue_email
+from tickets.models import SLAEscalation, Ticket, TicketSLA
 
 TASK_NAME = "tickets.tasks.check_sla_escalations"
 
 
 def _send_notification(ticket, level, title, body):
-    """Create an in-app notification for the ticket assignee (or requester
-    if unassigned). The SLA escalation record guards duplicate sends.
+    """Create an in-app SLA notification.
+
+    Recipient: assignee, falling back to requester. SLAEscalation records
+    guard repeated reminder/email dispatch for the same ticket+level;
+    notify_user dedupe provides extra idempotency for the in-app row.
     """
     recipient = ticket.assignee if ticket.assignee_id else ticket.requester
     if not recipient or not recipient.pk:
         return
-    Notification.objects.create(
-        recipient_id=recipient.pk,
-        title=title,
-        body=body,
+    notify_user(
+        recipient,
+        SLA_CATEGORY,
+        title,
+        body,
         entity_type="tickets.SLA",
-        object_id=str(ticket.id),
+        object_id=str(ticket.pk),
+        dedupe=True,
+        post_commit=False,
     )
 
 
@@ -57,25 +67,69 @@ def check_sla_escalations(self):
             approach_dt = sla_cfg.escalation_deadline(due)
             if now >= approach_dt and now < sla_cfg.breach_deadline(due):
                 if not ticket.sla_escalations.filter(level="approach").exists():
-                    _send_notification(ticket, "approach",
-                                       f"SLA approaching ({ticket.priority})",
-                                       f"Ticket #{ticket.id} is due for "
-                                       f"resolution by {due:%Y-%m-%d %H:%M}. "
-                                       "Please prioritize.")
-                    SLAEscalation.objects.get_or_create(
-                        ticket=ticket, level="approach")
-                    _email_utils.send_sla_approaching(ticket)
+                    enqueued = None
+                    with transaction.atomic():
+                        _esc, created = SLAEscalation.objects.get_or_create(
+                            ticket=ticket, level="approach")
+                        if created:
+                            title = f"SLA approaching ({ticket.priority})"
+                            body = (
+                                f"Ticket #{ticket.id} is due for "
+                                f"resolution by {due:%Y-%m-%d %H:%M}. "
+                                "Please prioritize."
+                            )
+                            recipient = ticket.assignee if ticket.assignee_id else ticket.requester
+                            _send_notification(ticket, "approach", title, body)
+                            if recipient and getattr(recipient, "email", None) and email_enabled_for(recipient, category=SLA_CATEGORY):
+                                enqueued = enqueue_email(
+                                    event_type="ticket.email.sla_approaching",
+                                    to_email=recipient.email,
+                                    subject=title,
+                                    body=body,
+                                    recipient=recipient,
+                                    category=SLA_CATEGORY,
+                                    ticket_id=ticket.pk,
+                                    dedupe=True,
+                                )
+                    if enqueued is not None and getattr(settings, "NOTIFICATION_OUTBOX_EAGER", False):
+                        from common.outbox import deliver_event_core
+                        try:
+                            deliver_event_core(enqueued.id)
+                        except Exception:
+                            pass
 
             if now >= sla_cfg.breach_deadline(due):
                 if not ticket.sla_escalations.filter(level="breach").exists():
-                    _send_notification(ticket, "breach",
-                                       f"SLA breached ({ticket.priority})",
-                                       f"Ticket #{ticket.id} has exceeded its "
-                                       f"SLA deadline of {due:%Y-%m-%d %H:%M}. "
-                                       "Immediate action required.")
-                    SLAEscalation.objects.get_or_create(
-                        ticket=ticket, level="breach")
-                    _email_utils.send_sla_breached(ticket)
+                    enqueued = None
+                    with transaction.atomic():
+                        _esc, created = SLAEscalation.objects.get_or_create(
+                            ticket=ticket, level="breach")
+                        if created:
+                            title = f"SLA breached ({ticket.priority})"
+                            body = (
+                                f"Ticket #{ticket.id} has exceeded its "
+                                f"SLA deadline of {due:%Y-%m-%d %H:%M}. "
+                                "Immediate action required."
+                            )
+                            recipient = ticket.assignee if ticket.assignee_id else ticket.requester
+                            _send_notification(ticket, "breach", title, body)
+                            if recipient and getattr(recipient, "email", None) and email_enabled_for(recipient, category=SLA_CATEGORY):
+                                enqueued = enqueue_email(
+                                    event_type="ticket.email.sla_breached",
+                                    to_email=recipient.email,
+                                    subject=title,
+                                    body=body,
+                                    recipient=recipient,
+                                    category=SLA_CATEGORY,
+                                    ticket_id=ticket.pk,
+                                    dedupe=True,
+                                )
+                    if enqueued is not None and getattr(settings, "NOTIFICATION_OUTBOX_EAGER", False):
+                        from common.outbox import deliver_event_core
+                        try:
+                            deliver_event_core(enqueued.id)
+                        except Exception:
+                            pass
 
         run.status = "succeeded"
         run.success = True

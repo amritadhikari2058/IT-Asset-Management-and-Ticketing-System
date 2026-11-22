@@ -910,7 +910,7 @@ export function Card({ children, className }) {
 
 export function Input({ label, ...props }) {
   const el = (props.rows || props.type === 'textarea')
-    ? <textarea className="input" {...props} />
+    ? <textarea className="input" {...props} rows={props.rows || 3} />
     : <input className="input" {...props} />;
   return label ? <label className="field"><span>{label}</span>{el}</label> : el;
 }

@@ -402,3 +402,81 @@ class EmailStorageHealthViewSet(viewsets.ViewSet):
     def list(self, request):
         result = run_health_checks(["email", "storage"])
         return Response(result)
+
+
+class NotificationOutboxViewSet(viewsets.ViewSet):
+    """Operational visibility and safe recovery for the notification outbox.
+
+    Read access: IT staff / admins. Manual retry / cancel: System Admin only,
+    and every privileged action is recorded in the audit log.
+    """
+
+    permission_classes = [IsITStaff]
+
+    def list(self, request):
+        from common.models import NotificationOutboxEvent
+        from common.outbox import get_outbox_stats
+        from common.serializers import NotificationOutboxEventSerializer
+
+        qs = NotificationOutboxEvent.objects.all()
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        event_type = request.query_params.get("event_type")
+        if event_type:
+            qs = qs.filter(event_type=event_type)
+        limit = min(int(request.query_params.get("limit", "50")), 200)
+        qs = qs.order_by("-created_at")[:limit]
+        return Response({
+            "stats": get_outbox_stats(),
+            "events": NotificationOutboxEventSerializer(qs, many=True).data,
+        })
+
+    @action(detail=True, methods=["get"])
+    def inspect(self, request, pk=None):
+        """Full event detail including the structured payload (admins only)."""
+        if not is_system_admin(request.user):
+            return Response(
+                {"detail": "Only System Admin may inspect payloads."},
+                status=403)
+        from common.models import NotificationOutboxEvent
+        from common.serializers import NotificationOutboxEventSerializer
+        event = NotificationOutboxEvent.objects.filter(pk=pk).first()
+        if event is None:
+            return Response({"detail": "Not found."}, status=404)
+        data = NotificationOutboxEventSerializer(event).data
+        data["payload"] = event.payload
+        return Response(data)
+
+    @action(detail=True, methods=["post"],
+            permission_classes=[IsSystemAdmin])
+    def retry(self, request, pk=None):
+        """Re-queue a failed/cancelled event (System Admin only, audited)."""
+        from common.audit import log_action
+        from common.outbox import retry_event
+        ok, result = retry_event(pk)
+        if not ok:
+            return Response({"detail": result}, status=400)
+        log_action(actor=request.user, action="update",
+                   instance=result, reason="manual_outbox_retry",
+                   details={"event_type": result.event_type,
+                            "recipient_email": result.recipient_email})
+        return Response({"retried": True, "id": str(result.id),
+                         "status": result.status})
+
+    @action(detail=True, methods=["post"],
+            permission_classes=[IsSystemAdmin])
+    def cancel(self, request, pk=None):
+        """Cancel a pending/retry/processing event (System Admin, audited)."""
+        from common.audit import log_action
+        from common.outbox import cancel_event
+        reason = (request.data or {}).get("reason", "")
+        ok, result = cancel_event(pk, reason=reason)
+        if not ok:
+            return Response({"detail": result}, status=400)
+        log_action(actor=request.user, action="update", instance=result,
+                   reason="manual_outbox_cancel",
+                   details={"event_type": result.event_type,
+                            "recipient_email": result.recipient_email})
+        return Response({"cancelled": True, "id": str(result.id),
+                         "status": result.status})

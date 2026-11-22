@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
@@ -201,6 +201,7 @@ export function Tickets() {
           {canCreateTickets && <a className="btn-primary" href="#/tickets/new">+ New ticket</a>}
           {canCreateTickets && <button type="button" className="btn-secondary" onClick={() => setShowBulkCreate(true)}>Bulk create…</button>}
           <button type="button" className="btn-secondary" onClick={() => setExportOpen(true)}>Export…</button>
+          {isStaff && <a className="btn-ghost" href="#/tickets/bulk-imports">Import operations</a>}
         </>}
       />
       {showBulkCreate && <TicketBulkCreateModal onClose={() => setShowBulkCreate(false)} onCreated={() => loadUrl(buildUrl())} />}
@@ -1050,23 +1051,26 @@ export function RecycleBin() {
 }
 
 export function VerifyEmail() {
-  const [msg, setMsg] = useState('Verifying…');
-  const run = async () => {
+  const [msg, setMsg] = useState('Verifying...');
+  const done = useRef(false);
+  useEffect(() => {
+    if (done.current) return;
+    done.current = true;
     const q = new URLSearchParams(location.hash.split('?')[1] || '');
-    try {
-      const r = await api.get(
-        `/accounts/verify-email/confirm/?uid=${q.get('uid')}&token=${q.get('token')}`);
-      setMsg(r.data.detail);
-    } catch { setMsg('Invalid or expired link.'); }
-  };
-  useEffect(() => { run(); }, []);
+    const uid = q.get('uid');
+    const token = q.get('token');
+    if (!uid || !token) {
+      setMsg('Invalid or expired link.');
+      return;
+    }
+    api.get(`/accounts/verify-email/confirm/?uid=${uid}&token=${token}`)
+      .then((r) => setMsg(r.data.detail || 'Email verified.'))
+      .catch(() => setMsg('Invalid or expired link.'));
+  }, []);
   return (
-    <div className="login-wrap">
-      <div className="login-card">
-        <h2>Email verification</h2>
-        <p>{msg}</p>
-        <p><a href="#/tickets">Back to tickets</a></p>
-      </div>
+    <div className="py-8">
+      <PageHeader title="Verify Email" sub="Confirming your email address." />
+      <p>{msg}</p>
     </div>
   );
 }
@@ -1108,8 +1112,10 @@ export function ResetPassword() {
 }
 
 export function Profile() {
-  const { user, refreshProfile } = useAuth();
+  const { user, refreshProfile, resendVerificationEmail } = useAuth();
   const [saving, setSaving] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendMsg, setResendMsg] = useState('');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [pwCurrent, setPwCurrent] = useState('');
@@ -1152,9 +1158,38 @@ export function Profile() {
           <dt>Email</dt><dd>{user.email}</dd>
           <dt>Role</dt><dd>{user.role.replace(/_/g, ' ')}</dd>
           <dt>Email verified</dt>
-          <dd>{user.email_verified
-            ? <Badge kind="status" value="resolved" label="Verified" />
-            : <Badge kind="status" value="reopened" label="Unverified" />}</dd>
+          <dd>
+            {user.email_verified
+              ? <Badge kind="status" value="resolved" label="Verified" />
+              : <Badge kind="status" value="reopened" label="Unverified" />}
+            <div className="ms-2 small text-muted">
+              {user.email_verified ? (
+                <span>Check your inbox and spam folder.</span>
+              ) : (
+                <>
+                  <button
+                    className="btn-link text-primary small p-0"
+                    onClick={() => {
+                      setResendLoading(true);
+                      setResendMsg('');
+                      resendVerificationEmail().then(() => {
+                        setResendLoading(false);
+                        setResendMsg('Verification email sent.');
+                        setTimeout(() => setResendMsg(''), 3000);
+                      });
+                    }}
+                  >
+                    Resend Verification Email
+                  </button>
+                  {resendMsg && (
+                    <span className="text-success small">{resendMsg}</span>
+                  )}
+                  <span className="ms-2 small">—</span>
+                  <span className="small">A verification link will be sent to {user.email}.</span>
+                </>
+              )}
+            </div>
+          </dd>
         </dl>
         </div>
       </div>

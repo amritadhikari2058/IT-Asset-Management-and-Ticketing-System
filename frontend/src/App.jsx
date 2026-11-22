@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { HashRouter, useLocation } from 'react-router-dom';
 import { useAuth, AuthProvider } from './auth';
 import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, SLAConfig, SLAReport, Tickets, Users, VerifyEmail } from './pages';
@@ -27,6 +27,7 @@ import { CiTypesPage } from './cmdb-types';
 import { ServiceMappingPage } from './cmdb-services';
 import { TicketQueuesPage } from './ticket-queues';
 import { TicketOperationsDashboard } from './ticket-operations';
+import { TicketBulkImportDetailPage, TicketBulkImportsPage } from './ticket-bulk-imports';
 import { CannedResponsesPage } from './ticket-canned-responses';
 import { TicketTemplatesPage } from './ticket-templates';
 import { SavedTicketViews } from './ticket-saved-views';
@@ -69,6 +70,7 @@ const NAV = [
   { hash: '#/dashboard', label: 'Dashboard' },
   { section: 'Service Operations' },
   { hash: '#/tickets', label: 'Tickets' },
+  { hash: '#/tickets/bulk-imports', label: 'Import Operations', staffOnly: true },
   { hash: '#/monitoring', label: 'Monitoring', cap: 'canUseMonitoring' },
   { hash: '#/problem-management', label: 'Problems', cap: 'canUseProblemManagement' },
   { hash: '#/changes', label: 'Changes', staffOnly: true },
@@ -120,6 +122,7 @@ function visibleNav(nav, caps) {
 const TITLES = {
   '#/dashboard': 'Dashboard',
   '#/tickets': 'Tickets',
+  '#/tickets/bulk-imports': 'Import Operations',
   '#/tickets/queues': 'Ticket Queues',
   '#/tickets/operations': 'Operations Dashboard',
   '#/tickets/canned-responses': 'Canned Responses',
@@ -199,6 +202,8 @@ function crumbs(hash) {
     if (m[3]) trail.push('Edit');
     return trail;
   }
+  if (h === '#/tickets/bulk-imports') return ['Tickets', 'Import operations'];
+  if ((m = h.match(/^#\/tickets\/bulk-imports\/(\d+)$/))) return ['Tickets', 'Import operations', `#${m[1]}`];
   if (h === '#/tickets/new') return ['Tickets', 'New'];
   if (h === '#/assets/new') return ['Assets', 'New'];
   if (h === '#/assets/reports' || h.startsWith('#/assets/reports?')) return ['Assets', 'Asset Reports'];
@@ -323,6 +328,8 @@ function matchRoute(hash, auth) {
     if (route === '#/problem-management/new') return <UnavailableWorkflow title="New Problem" />;
     if ((m = route.match(/^#\/problem-management\/(\d+)$/))) return <ProblemDetail problemId={m[1]} />;
   }
+  if (route === '#/tickets/bulk-imports') return auth.isStaff ? <TicketBulkImportsPage /> : <AccessDenied />;
+  if ((m = route.match(/^#\/tickets\/bulk-imports\/(\d+)$/))) return auth.isStaff ? <TicketBulkImportDetailPage id={m[1]} /> : <AccessDenied />;
   if ((m = route.match(/^#\/tickets\/(\d+)\/edit$/))) return <TicketForm id={m[1]} />;
   if (route === '#/tickets/new') return <TicketForm />;
   if ((m = route.match(/^#\/tickets\/(\d+)$/))) return <TicketDetail id={m[1]} />;
@@ -435,36 +442,14 @@ function Shell() {
   const hash = routerLocation.pathname === '/' ? '#/tickets' : `#${routerLocation.pathname}${routerLocation.search}`;
   const nav = useMemo(() => visibleNav(NAV, caps), [caps]);
   const [navOpen, setNavOpen] = useState(false);
-  // Sections the user has explicitly collapsed. Initialized with all sections
-  // collapsed except the one containing the active route.
-  const [collapsedSections, setCollapsedSections] = useState(() => {
-    // First pass: find which section contains the active route
-    let activeSection = null;
-    let currentSection = null;
-    for (let i = 0; i < nav.length; i += 1) {
-      if (nav[i].section) {
-        currentSection = nav[i].section;
-      } else if (isActive(hash, nav[i].hash)) {
-        activeSection = currentSection;
-      }
-    }
-    // Second pass: collapse all sections except the one containing the active route
-    const collapsed = new Set();
-    currentSection = null;
-    for (let i = 0; i < nav.length; i += 1) {
-      if (nav[i].section) {
-        currentSection = nav[i].section;
-        if (currentSection !== activeSection) {
-          collapsed.add(currentSection);
-        }
-      }
-    }
-    return collapsed;
-  });
+  // Collapsible sections are collapsed by default. Only sections the user has
+  // explicitly expanded are tracked here, so late-loading navigation data
+  // cannot accidentally leave sections open.
+  const [expandedSections, setExpandedSections] = useState(() => new Set());
 
   // Toggle a module section open/closed. Clicking one section never affects others.
   const toggleSection = (sectionName) => {
-    setCollapsedSections((prev) => {
+    setExpandedSections((prev) => {
       const next = new Set(prev);
       if (next.has(sectionName)) next.delete(sectionName);
       else next.add(sectionName);
@@ -472,26 +457,7 @@ function Shell() {
     });
   };
 
-  // Auto-expand the section that contains the currently active route when
-  // navigating, so the user is never dropped into a collapsed section.
-  useEffect(() => {
-    setCollapsedSections((prev) => {
-      const next = new Set(prev);
-      let currentSection = null;
-      for (let i = 0; i < nav.length; i += 1) {
-        if (nav[i].section) {
-          currentSection = nav[i].section;
-        } else if (isActive(hash, nav[i].hash) && currentSection) {
-          next.delete(currentSection);
-        }
-      }
-      return next;
-    });
-  }, [hash, nav]);
-
-  // A section is collapsed only if the user has collapsed it (and it has not
-  // been auto-expanded by navigation).
-  const isSectionCollapsed = (sectionName) => collapsedSections.has(sectionName);
+  const isSectionCollapsed = (sectionName) => !expandedSections.has(sectionName);
   if (!access) {
     if (hash.startsWith('#/verify-email')) return <VerifyEmail />;
     if (hash.startsWith('#/reset-password')) return <ResetPassword />;
