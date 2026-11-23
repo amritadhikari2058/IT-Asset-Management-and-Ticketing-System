@@ -594,7 +594,7 @@ def _restore_blockers(obj):
                 "Reactivate/restore it first, or reassign the asset."
             )
     # Uniqueness collisions on restore (tag / employee_id / email / names).
-    for field in ("asset_tag", "employee_id", "email", "name", "code"):
+    for field in ("asset_tag", "serial_number", "employee_id", "email", "name", "code"):
         if hasattr(obj, field):
             val = getattr(obj, field)
             if val:
@@ -634,11 +634,19 @@ def recycle_bin_restore(request, entity_type, pk):
         return Response(
             {"detail": "Restore blocked.", "blockers": blockers}, status=409
         )
-    with transaction.atomic():
-        obj.restore()
-        log_action(actor=request.user, action="restore", instance=obj,
-                   reason=request.data.get("reason", ""),
-                   details={"entity_type": entity_type})
+    from django.db import IntegrityError
+    try:
+        with transaction.atomic():
+            obj.restore()
+            log_action(actor=request.user, action="restore", instance=obj,
+                       reason=request.data.get("reason", ""),
+                       details={"entity_type": entity_type})
+    except IntegrityError:
+        return Response(
+            {"detail": "Cannot restore: a unique identifier conflicts with an "
+                       "existing active record."},
+            status=409,
+        )
     return Response({"restored": True, "entity_type": entity_type,
                      "object_id": str(obj.pk)})
 
@@ -838,89 +846,140 @@ class ScheduledReportRunViewSet(viewsets.ReadOnlyModelViewSet):
         # keep the retry atomic and visible). We call the shared task's
         # underlying logic inline so the response reflects the outcome.
         try:
-            _deliver_scheduled_report(sr)
-            return Response({"retried": True, "scheduled_report": sr.id})
+            new_run = _deliver_scheduled_report(sr)
+            return Response(
+                {"retried": True, "scheduled_report": sr.id,
+                 "run": new_run.id, "status": new_run.status})
         except Exception as exc:  # noqa: BLE001
             logger.exception("Scheduled report retry %s failed", sr.pk)
-            new_run = ScheduledReportRun.objects.create(
-                scheduled_report=sr,
-                status="failed", success=False,
-                error_summary=type(exc).__name__,
-                started_at=timezone.now(),
-                finished_at=timezone.now())
             return Response(
-                {"retried": False, "error": type(exc).__name__,
-                 "run": new_run.id}, status=500)
+                {"retried": False, "error": type(exc).__name__}, status=500)
 
 
 def _deliver_scheduled_report(sr):
-    """Deliver one scheduled report now (used by task + retry action).
+    """Deliver one scheduled report now (used by retry action).
 
-    Recipient policy: recipients are the explicit list configured on the
-    schedule (IT / staff authored) and do not inherit per-user notification
-    categories — see ``common.notifications.scheduled_report_delivery_enabled``.
+    Creates a tracked run with execution token/lease, delivers to explicit
+    recipients with per-run dedupe records, and finalizes with an accurate
+    outcome. Never marks a run succeeded when no recipients were delivered.
     """
-    from django.db import transaction
-    from common.models import ScheduledReportRun
+    import uuid as _uuid
+    from django.db.models import F
+    from common.models import ScheduledReportDelivery, ScheduledReportRun
+    from common.tasks import (
+        SCHEDULED_REPORT_MAX_DELIVERY_ATTEMPTS,
+        _delivery_dedupe_key, _lease_deadline,
+        _normalize_email, _render_report,
+    )
 
     now = timezone.now()
-    with transaction.atomic():
-        run = ScheduledReportRun.objects.create(
-            scheduled_report=sr,
-            status="running", success=False, started_at=now)
+    token = _uuid.uuid4().hex
+    run = ScheduledReportRun.objects.create(
+        scheduled_report=sr,
+        status="running", success=False, started_at=now,
+        execution_token=token,
+        lease_expires_at=_lease_deadline(now),
+        last_heartbeat_at=now)
 
-    from tickets.views import category_report, sla_report
-    from rest_framework.test import APIRequestFactory
-    from accounts import email_utils as _email_utils
-    from common.tasks import _advance_next_run, _render_report
+    try:
+        from tickets.views import category_report, sla_report
+        from rest_framework.test import APIRequestFactory
+        from accounts import email_utils as _email_utils
 
-    factory = APIRequestFactory()
-    req = factory.get("/api/tickets/reports/by-category/",
-                      data=sr.saved_report.filters or {})
-    req.user = sr.saved_report.user
+        factory = APIRequestFactory()
+        req = factory.get("/api/tickets/reports/by-category/",
+                          data=sr.saved_report.filters or {})
+        req.user = sr.saved_report.user
 
-    if sr.saved_report.report_type == "ticket_category":
-        resp = category_report(req)
-    elif sr.saved_report.report_type == "ticket_sla":
-        resp = sla_report(req)
-    else:
-        raise ValueError(f"Unknown report type: {sr.saved_report.report_type}")
+        if sr.saved_report.report_type == "ticket_category":
+            resp = category_report(req)
+        elif sr.saved_report.report_type == "ticket_sla":
+            resp = sla_report(req)
+        else:
+            raise ValueError(
+                f"Unknown report type: {sr.saved_report.report_type}")
 
-    payload = resp.data if hasattr(resp, "data") else resp
-    fmt = sr.format or "csv"
-    content = _render_report(payload, fmt)
-    filename = f"{sr.saved_report.name.replace(' ', '_')}_{now:%Y%m%d}.{fmt}"
-    content_type = {
-        "csv": "text/csv",
-        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "pdf": "application/pdf",
-        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    }.get(fmt, "application/octet-stream")
-    subject = f"Scheduled report: {sr.saved_report.name}"
-    body = "Please find the attached scheduled report."
+        payload = resp.data if hasattr(resp, "data") else resp
+        fmt = sr.format or "csv"
+        content = _render_report(payload, fmt)
+        filename = f"{sr.saved_report.name.replace(' ', '_')}_{now:%Y%m%d}.{fmt}"
+        content_type = {
+            "csv": "text/csv",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "pdf": "application/pdf",
+            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }.get(fmt, "application/octet-stream")
+        subject = f"Scheduled report: {sr.saved_report.name}"
+        body = "Please find the attached scheduled report."
 
-    recipients = sr.recipients or []
-    sent_count = 0
-    for to_email in recipients:
-        if _email_utils.send_scheduled_report_email(
-                to_email, subject, body, filename, content, content_type):
-            sent_count += 1
+        recipients = sr.recipients or []
+        sent_count = 0
+        delivery_failures = 0
+        for to_email in recipients:
+            normalized_email = _normalize_email(to_email)
+            dedupe_key = _delivery_dedupe_key(run, to_email)
+            delivery, _created = ScheduledReportDelivery.objects.get_or_create(
+                delivery_dedupe_key=dedupe_key,
+                defaults={
+                    "scheduled_report_run": run,
+                    "recipient_email": normalized_email,
+                    "status": "pending",
+                    "attempts": 1,
+                })
+            if delivery.status == "sent":
+                sent_count += 1
+                continue
+            if delivery.status == "failed" and delivery.attempts >= SCHEDULED_REPORT_MAX_DELIVERY_ATTEMPTS:
+                delivery_failures += 1
+                continue
+            if _email_utils.send_scheduled_report_email(
+                    to_email, subject, body, filename, content, content_type):
+                ScheduledReportDelivery.objects.filter(
+                    pk=delivery.pk).update(status="sent", sent_at=timezone.now())
+                sent_count += 1
+            else:
+                ScheduledReportDelivery.objects.filter(
+                    pk=delivery.pk).update(
+                    status="failed", error_message="smtp_send_failed",
+                    updated_at=timezone.now())
+                delivery_failures += 1
 
-    with transaction.atomic():
-        run.status = "succeeded"
-        run.success = True
-        run.finished_at = timezone.now()
-        run.recipient_count = sent_count
-        run.save(update_fields=["status", "success", "finished_at",
-                                "recipient_count"])
+        if not recipients:
+            run_status, run_success, error_summary = "failed", False, "no_recipients"
+        elif sent_count == 0:
+            run_status, run_success, error_summary = "failed", False, "all_deliveries_failed"
+        elif delivery_failures > 0:
+            run_status, run_success, error_summary = "failed", False, "partial_delivery_failure"
+        else:
+            run_status, run_success, error_summary = "succeeded", True, ""
 
-    _advance_next_run(sr)
-    return run
-
+        ScheduledReportRun.objects.filter(
+            pk=run.pk, status="running", execution_token=token,
+        ).update(
+            status=run_status, success=run_success,
+            error_summary=error_summary,
+            finished_at=timezone.now(),
+            recipient_count=sent_count)
+        run.refresh_from_db()
+        return run
+    except Exception as exc:  # noqa: BLE001
+        ScheduledReportRun.objects.filter(
+            pk=run.pk, status="running", execution_token=token,
+        ).update(
+            status="failed", success=False,
+            error_summary=type(exc).__name__,
+            finished_at=timezone.now())
+        run.refresh_from_db()
+        raise
 
 def _compute_next_run(obj):
-    """Set next_run_at based on schedule cadence."""
+    """Set next_run_at based on schedule cadence, or clear it when disabled."""
     from datetime import timedelta
+    if not obj.enabled:
+        if obj.next_run_at is not None:
+            obj.next_run_at = None
+            obj.save(update_fields=["next_run_at"])
+        return
     now = timezone.now()
     if obj.schedule == "daily":
         obj.next_run_at = now + timedelta(days=1)
@@ -928,6 +987,8 @@ def _compute_next_run(obj):
         obj.next_run_at = now + timedelta(weeks=1)
     elif obj.schedule == "monthly":
         obj.next_run_at = now + timedelta(days=30)
+    else:
+        obj.next_run_at = None
     obj.save(update_fields=["next_run_at"])
 
 

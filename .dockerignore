@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+!.env.example
+**/__pycache__
+**/*.py[cod]
+**/*.sqlite3*
+**/media
+**/staticfiles
+**/node_modules
+**/dist
+**/.pytest_cache
+**/test-results
+*.log

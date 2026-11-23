@@ -199,7 +199,7 @@ class Ticket(SoftDeleteModel):
             # Composite index for dashboard summary queries: status + priority + assignee
             models.Index(
                 fields=["status", "priority", "assignee"],
-                name="ticket_status_priority_assignee_idx",
+                name="ticket_status_prio_assignee",
             ),
             # Composite index for recent ticket queries: status + created_at
             models.Index(

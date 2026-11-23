@@ -13,6 +13,34 @@ import re
 _CRLF_RE = re.compile(r"[\r\n]+")
 # Control characters and path separators that must not reach the header.
 _UNSAFE_RE = re.compile(r"[\\/:*?\"<>|\x00-\x1f\x7f]")
+# Control characters only (kept separate from the header sanitiser so stored
+# display names keep spaces, dots, unicode and nothing dangerous).
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+#: Matches the ``original_filename`` column length on both attachment models.
+MAX_ORIGINAL_FILENAME = 255
+
+
+def safe_original_filename(name):
+    """Reduce an uploaded file name to a safe, displayable original name.
+
+    Django's ``UploadedFile`` normally strips directories, but its basename
+    uses the *host* OS rules: a name containing ``..\\..\\win\\x.txt`` keeps
+    the backslashes intact on POSIX. Normalise both separators here so the
+    stored/returned name can never contain a path, strip CRLF/control
+    characters, and cap the length to the model column. The original name is
+    otherwise preserved (spaces, dots, unicode, extension).
+
+    Returns "" when nothing usable remains; legacy rows keep a blank value
+    and callers fall back to the stored file's basename.
+    """
+    if not name:
+        return ""
+    base = str(name).replace("\\", "/").rsplit("/", 1)[-1]
+    base = _CRLF_RE.sub("", base)
+    base = _CONTROL_RE.sub("", base).strip()
+    return base[:MAX_ORIGINAL_FILENAME]
 
 
 def safe_content_disposition_filename(name):

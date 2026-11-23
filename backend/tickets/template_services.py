@@ -206,6 +206,29 @@ def create_template(validated_data, actor):
     return obj
 
 
+def update_template(obj, validated_data, actor):
+    is_shared = validated_data.get("is_shared", obj.is_shared)
+    if is_shared and not _can_manage_shared(actor):
+        raise PermissionDenied("Only IT Manager / System Admin manage shared templates.")
+    if obj.owner_id != actor.pk and not _can_manage_shared(actor):
+        raise PermissionDenied("You do not own this template.")
+    for field, value in validated_data.items():
+        if field in ("owner", "created_by"):
+            continue
+        setattr(obj, field, value)
+    obj.full_clean()
+    obj.save()
+    log_action(actor=actor, action="update", instance=obj)
+    return obj
+
+
+def delete_template(obj, actor):
+    if obj.owner_id != actor.pk and not _can_manage_shared(actor):
+        raise PermissionDenied("You do not own this template.")
+    obj.delete()  # soft delete
+    log_action(actor=actor, action="delete", instance=obj)
+
+
 def apply_template_to_ticket_data(template, actor, overrides):
     """Build ticket creation field defaults from a template, server-side.
 

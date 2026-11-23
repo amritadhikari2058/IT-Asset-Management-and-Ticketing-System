@@ -13,7 +13,7 @@ from rest_framework.response import Response
 
 from accounts.models import Department, User
 from common.audit import log_action
-from common.permissions import IsITStaff, IsSystemAdmin
+from common.permissions import IsActiveAuthenticated, IsITStaff, IsSystemAdmin
 from tickets.models import (
     Ticket, TicketQueue, TicketQueueMembership, TicketWatcher,
     CannedResponse, TicketTemplate, TicketRelation, TicketResolutionCode,
@@ -50,6 +50,24 @@ class TicketQueueViewSet(viewsets.ModelViewSet):
     queryset = TicketQueue.objects.filter(is_deleted=False)
     serializer_class = TicketQueueSerializer
     permission_classes = [IsAuthenticated, IsITStaff]
+
+    def get_permissions(self):
+        if self.action in ("create", "update", "partial_update",
+                           "deactivate", "hard_delete", "auto_assign"):
+            from rest_framework.permissions import BasePermission
+
+            class _ManagerPlus(BasePermission):
+                def has_permission(self, request, view):
+                    user = request.user
+                    return bool(
+                        user and user.is_authenticated
+                        and getattr(user, "is_active", False)
+                        and (getattr(user, "role", "") in ("system_admin", "it_manager")
+                             or getattr(user, "is_superuser", False))
+                    )
+
+            return [IsActiveAuthenticated(), _ManagerPlus()]
+        return super().get_permissions()
 
     def get_serializer_class(self):
         if self.action in ("create", "update", "partial_update"):
@@ -119,6 +137,10 @@ class TicketQueueViewSet(viewsets.ModelViewSet):
         try:
             data = queue_metrics(queue.pk, filters, request.user)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ in ("ConflictError",):
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response(data)
 
@@ -133,6 +155,10 @@ class TicketQueueViewSet(viewsets.ModelViewSet):
         try:
             data = queue_metrics(queue.pk, filters, request.user)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ in ("ConflictError",):
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response(data)
 
@@ -143,6 +169,10 @@ class TicketQueueViewSet(viewsets.ModelViewSet):
         try:
             assigned = auto_assign_queue(queue, request.user)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ in ("ConflictError",):
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response({"assigned": assigned})
 
@@ -151,6 +181,22 @@ class TicketQueueViewSet(viewsets.ModelViewSet):
 class TicketQueueMembershipViewSet(viewsets.ModelViewSet):
     serializer_class = TicketQueueMembershipSerializer
     permission_classes = [IsAuthenticated, IsITStaff]
+
+    def get_permissions(self):
+        # Queue membership administration is manager/admin-only.
+        from rest_framework.permissions import BasePermission
+
+        class _ManagerPlus(BasePermission):
+            def has_permission(self, request, view):
+                user = request.user
+                return bool(
+                    user and user.is_authenticated
+                    and getattr(user, "is_active", False)
+                    and (getattr(user, "role", "") in ("system_admin", "it_manager")
+                         or getattr(user, "is_superuser", False))
+                )
+
+        return [IsActiveAuthenticated(), _ManagerPlus()]
 
     def get_queryset(self):
         user = self.request.user
@@ -171,11 +217,19 @@ class TicketQueueMembershipViewSet(viewsets.ModelViewSet):
         queue_id = request.data.get("queue") or request.query_params.get("queue")
         if not queue_id:
             return Response({"detail": "queue is required."}, status=400)
-        queue = TicketQueue.objects.get(pk=queue_id, is_deleted=False)
+        try:
+            queue = TicketQueue.objects.get(pk=queue_id, is_deleted=False)
+        except TicketQueue.DoesNotExist:
+            return Response({"detail": "Queue not found."}, status=404)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         from tickets.queue_services import add_membership
-        membership = add_membership(queue, serializer.validated_data, request.user)
+        try:
+            membership = add_membership(queue, serializer.validated_data, request.user)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            return Response({"detail": str(exc)}, status=400)
         return Response(
             TicketQueueMembershipSerializer(membership).data,
             status=status.HTTP_201_CREATED)
@@ -185,14 +239,24 @@ class TicketQueueMembershipViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         from tickets.queue_services import update_membership
-        update_membership(instance, serializer.validated_data, request.user)
+        try:
+            update_membership(instance, serializer.validated_data, request.user)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            return Response({"detail": str(exc)}, status=400)
         return Response(TicketQueueMembershipSerializer(instance).data)
 
     @action(detail=True, methods=["post"])
     def remove(self, request, pk=None):
         from tickets.queue_services import remove_membership
         membership = self.get_object()
-        remove_membership(membership, request.user)
+        try:
+            remove_membership(membership, request.user)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            return Response({"detail": str(exc)}, status=400)
         return Response({"detail": "Membership removed."})
 
 
@@ -222,6 +286,10 @@ class CannedResponseViewSet(viewsets.ModelViewSet):
         try:
             obj = create_canned_response(ser.validated_data, request.user)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ in ("ConflictError",):
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response(CannedResponseSerializer(obj).data,
                        status=status.HTTP_201_CREATED)
@@ -236,6 +304,10 @@ class CannedResponseViewSet(viewsets.ModelViewSet):
             obj = update_canned_response(instance, ser.validated_data,
                                          request.user)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ in ("ConflictError",):
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response(CannedResponseSerializer(obj).data)
 
@@ -245,6 +317,10 @@ class CannedResponseViewSet(viewsets.ModelViewSet):
         try:
             delete_canned_response(instance, request.user)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ in ("ConflictError",):
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -273,10 +349,49 @@ class TicketTemplateViewSet(viewsets.ModelViewSet):
         ser.is_valid(raise_exception=True)
         try:
             obj = create_template(ser.validated_data, request.user)
+        except PermissionDenied as exc:
+            return Response({"detail": str(exc)}, status=403)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ in ("ConflictError",):
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response(TicketTemplateSerializer(obj).data,
                        status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        from tickets.template_services import update_template
+        instance = self.get_object()
+        ser = TicketTemplateCreateSerializer(instance, data=request.data,
+                                            partial=kwargs.pop("partial", False))
+        ser.is_valid(raise_exception=True)
+        try:
+            obj = update_template(instance, ser.validated_data, request.user)
+        except PermissionDenied as exc:
+            return Response({"detail": str(exc)}, status=403)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ in ("ConflictError",):
+                return Response({"detail": str(exc)}, status=409)
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketTemplateSerializer(obj).data)
+
+    def destroy(self, request, *args, **kwargs):
+        from tickets.template_services import delete_template
+        instance = self.get_object()
+        try:
+            delete_template(instance, request.user)
+        except PermissionDenied as exc:
+            return Response({"detail": str(exc)}, status=403)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ in ("ConflictError",):
+                return Response({"detail": str(exc)}, status=409)
+            return Response({"detail": str(exc)}, status=400)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class TicketResolutionCodeViewSet(viewsets.ModelViewSet):
@@ -342,8 +457,13 @@ class SavedTicketViewViewSet(viewsets.ModelViewSet):
             "You can only modify or delete your own saved views.")
 
     def perform_update(self, serializer):
-        self._assert_can_modify(self.get_object())
-        serializer.save()
+        view = self.get_object()
+        self._assert_can_modify(view)
+        obj = serializer.save()
+        if obj.is_default:
+            SavedTicketView.objects.filter(
+                owner=obj.owner, is_deleted=False, is_default=True).exclude(
+                pk=obj.pk).update(is_default=False)
 
     def perform_destroy(self, instance):
         self._assert_can_modify(instance)
@@ -365,20 +485,52 @@ class SavedTicketViewViewSet(viewsets.ModelViewSet):
     def results(self, request, pk=None):
         view = self.get_object()
         from tickets.views import _ticket_visible_qs
+        from tickets.serializers import TicketSerializer
+
         qs = _ticket_visible_qs(request.user).filter(is_deleted=False)
-        # Apply validated filters (minimal allowlist).
-        filters = view.filters or {}
-        for key, val in filters.items():
-            if key in ("status", "priority", "category", "department", "queue",
-                       "assignee", "requester"):
+
+        allowed_filters = {
+            "status", "priority", "category", "department", "queue",
+            "assignee", "requester",
+        }
+        raw_filters = view.filters if isinstance(view.filters, dict) else {}
+        for key, val in raw_filters.items():
+            if key not in allowed_filters:
+                continue
+            # Only allow simple scalar IDs/strings; reject operator objects/lists
+            # to prevent arbitrary ORM lookups from stored JSON.
+            if isinstance(val, bool) or not isinstance(val, (str, int)):
+                continue
+            if isinstance(val, str) and val == "":
+                continue
+            try:
                 qs = qs.filter(**{key: val})
-        ordering = view.ordering or "-created_at"
-        qs = qs.order_by(ordering)
-        page = int(request.query_params.get("page", 1) or 1)
-        size = int(request.query_params.get("page_size", 20) or 20)
+            except Exception:
+                continue
+
+        allowed_ordering = {
+            "created_at", "updated_at", "priority", "sla_due_at",
+            "resolved_at", "queue", "assignee",
+        }
+        ordering = view.ordering if isinstance(view.ordering, str) else ""
+        order_field = ordering.lstrip("-")
+        if order_field not in allowed_ordering:
+            ordering = "-created_at"
+        try:
+            qs = qs.order_by(ordering, "-id")
+        except Exception:
+            qs = qs.order_by("-created_at", "-id")
+
+        try:
+            page = max(1, int(request.query_params.get("page", 1) or 1))
+        except Exception:
+            page = 1
+        try:
+            size = min(100, max(1, int(request.query_params.get("page_size", 20) or 20)))
+        except Exception:
+            size = 20
         start = (page - 1) * size
         end = start + size
-        from tickets.serializers import TicketSerializer
         return Response({
             "results": TicketSerializer(qs[start:end], many=True).data,
             "count": qs.count(),
@@ -399,10 +551,13 @@ class SavedTicketViewViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def duplicate(self, request, pk=None):
         view = self.get_object()
+        from tickets.advanced_serializers import SAVED_VIEW_ALLOWED_COLUMNS
+        raw_cols = view.columns if isinstance(view.columns, list) else []
+        safe_cols = [c for c in raw_cols if isinstance(c, str) and c in SAVED_VIEW_ALLOWED_COLUMNS]
         new_view = SavedTicketView.objects.create(
             owner=request.user, name=f"{view.name} (copy)",
             description=view.description, filters=dict(view.filters or {}),
-            ordering=view.ordering, columns=list(view.columns or []),
+            ordering=view.ordering, columns=safe_cols,
             is_shared=False, is_default=False)
         return Response(SavedTicketViewSerializer(new_view).data,
                        status=status.HTTP_201_CREATED)
@@ -412,6 +567,25 @@ class TicketMergeRecordViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = TicketMergeRecord.objects.filter(is_deleted=False)
     serializer_class = TicketMergeRecordSerializer
     permission_classes = [IsAuthenticated, IsITStaff]
+
+    def get_permissions(self):
+        # Merge is a manager/admin-only operation (merge_services enforces this).
+        # Keep record visibility consistent with that policy.
+        if self.action in ("list", "retrieve"):
+            from rest_framework.permissions import BasePermission
+
+            class _ManagerPlus(BasePermission):
+                def has_permission(self, request, view):
+                    user = request.user
+                    return bool(
+                        user and user.is_authenticated
+                        and getattr(user, "is_active", False)
+                        and (getattr(user, "role", "") in ("system_admin", "it_manager")
+                             or getattr(user, "is_superuser", False))
+                    )
+
+            return [IsActiveAuthenticated(), _ManagerPlus()]
+        return super().get_permissions()
 
     def get_queryset(self):
         user = self.request.user

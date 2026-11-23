@@ -44,8 +44,14 @@ class AssetAssignSerializer(serializers.Serializer):
 class AssetAttachmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = AssetAttachment
-        fields = ["id", "asset", "file", "uploaded_by", "created_at", "is_deleted"]
-        read_only_fields = ["id", "uploaded_by", "created_at", "is_deleted"]
+        # ``original_filename`` is the user's original upload name (set by the
+        # view from the uploaded file) and is read-only: clients must not be
+        # able to relabel an existing attachment. It matches the ticket
+        # attachment contract; blank means a legacy row with no stored name.
+        fields = ["id", "asset", "file", "original_filename",
+                  "uploaded_by", "created_at", "is_deleted"]
+        read_only_fields = ["id", "uploaded_by", "created_at", "is_deleted",
+                            "original_filename"]
 
     def get_fields(self):
         # asset is writable at creation (perform_create validates visibility)

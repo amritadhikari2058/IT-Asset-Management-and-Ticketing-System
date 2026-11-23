@@ -155,7 +155,10 @@ class TicketAttachmentSerializer(serializers.ModelSerializer):
         model = TicketAttachment
         fields = ["id", "ticket", "file", "original_filename",
                   "uploaded_by", "created_at"]
-        read_only_fields = ["id", "uploaded_by", "created_at"]
+        # original_filename is server-controlled (set from the uploaded file
+        # by the view) so a client cannot relabel an existing attachment.
+        read_only_fields = ["id", "uploaded_by", "created_at",
+                            "original_filename"]
 
     def get_fields(self):
         # ticket is writable at creation (perform_create validates it) but
@@ -269,6 +272,7 @@ class TicketBulkImportOperationSerializer(serializers.ModelSerializer):
     is_expired = serializers.SerializerMethodField()
     is_stale_processing = serializers.SerializerMethodField()
     result_available = serializers.SerializerMethodField()
+    error_detail = serializers.SerializerMethodField()
 
     class Meta:
         from tickets.models import TicketBulkImportOperation
@@ -298,4 +302,8 @@ class TicketBulkImportOperationSerializer(serializers.ModelSerializer):
     def get_result_available(self, obj):
         return obj.status == obj.STATUS_COMPLETED and bool(
             obj.result_format and (obj.result_json is not None or obj.result_csv))
+
+    def get_error_detail(self, obj):
+        from tickets.bulk_import_reconciliation import sanitize_import_diagnostic
+        return sanitize_import_diagnostic(getattr(obj, "error_detail", ""))
 

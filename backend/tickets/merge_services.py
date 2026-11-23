@@ -45,6 +45,10 @@ def merge_tickets(primary_ticket, duplicate_ticket, actor, reason, options=None)
     """
     if not _is_it_staff(actor):
         raise MergeError("Only IT Manager / System Admin may execute a merge.")
+    from tickets.views import _ticket_visible_qs
+    visible = _ticket_visible_qs(actor)
+    if not visible.filter(pk=primary_ticket.pk, is_deleted=False).exists() or not visible.filter(pk=duplicate_ticket.pk, is_deleted=False).exists():
+        raise MergeError("Primary or duplicate ticket not found.")
     options = options or {}
 
     if primary_ticket.pk == duplicate_ticket.pk:

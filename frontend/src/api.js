@@ -5,6 +5,14 @@ const api = axios.create({ baseURL: 'http://127.0.0.1:8000/api' });
 api.interceptors.request.use((cfg) => {
   const t = localStorage.getItem('access');
   if (t) cfg.headers.Authorization = `Bearer ${t}`;
+  // axios auto-set `Content-Type: application/json` only when there is no
+  // existing Content-Type. FormData needs a multipart boundary, so we must
+  // never let the request interceptor stamp JSON on a multipart body.
+  if (cfg.data instanceof FormData && cfg.headers['Content-Type'] === undefined) {
+    // Remove any inherited JSON content type so axios leaves the boundary
+    // alone and the browser sends the correct multipart envelope.
+    delete cfg.headers['Content-Type'];
+  }
   return cfg;
 });
 

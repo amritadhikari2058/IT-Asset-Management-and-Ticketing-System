@@ -70,6 +70,10 @@ export function PhotoThumbnail({ id, getUrl, onPreview, label }) {
     api.get(getUrl(id), { responseType: 'blob' })
       .then((r) => {
         if (!cancelled) {
+          // Replacement is handled by the cleanup effect below: it runs when
+          // `src` changes (revoking the superseded URL exactly once) and on
+          // unmount (revoking the last one). Revoking here as well would
+          // revoke every superseded URL twice.
           setSrc(URL.createObjectURL(r.data));
           setError(false);
         }
@@ -79,7 +83,7 @@ export function PhotoThumbnail({ id, getUrl, onPreview, label }) {
     return () => { cancelled = true; };
   }, [id, getUrl]);
 
-  useEffect(() => () => { if (src) URL.revokeObjectURL(src); }, [src]);
+  useEffect(() => () => { if (src) { try { URL.revokeObjectURL(src); } catch { /* ignore */ } } }, [src]);
 
   const open = () => { if (onPreview) onPreview(id); };
   const content = busy ? (
@@ -90,13 +94,13 @@ export function PhotoThumbnail({ id, getUrl, onPreview, label }) {
     <img src={src} alt="" className="photo-thumb" />
   );
   return (
-    <div className="photo-cell" role="button" tabIndex={0}
-         onClick={open}
-         onKeyDown={(e) => { if (e.key === 'Enter') open(); }}
-         aria-label={label || 'Photo'}
-         title={label || 'Photo'}>
+    <button type="button" className="photo-cell" onClick={open}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } }}
+      aria-label={label || 'Photo'}
+      title={label || 'Photo'}
+      disabled={error && !src}>
       {content}
-    </div>
+    </button>
   );
 }
 

@@ -6,8 +6,17 @@ def is_system_admin(user):
     return bool(
         user
         and user.is_authenticated
+        and getattr(user, "is_active", False)
         and (getattr(user, "role", "") == "system_admin" or user.is_superuser)
     )
+
+
+class IsActiveAuthenticated(BasePermission):
+    """Authenticated and active account. Disabled users must be denied."""
+
+    def has_permission(self, request, view):
+        user = getattr(request, "user", None)
+        return bool(user and user.is_authenticated and getattr(user, "is_active", False))
 
 
 class IsSystemAdmin(BasePermission):
@@ -19,10 +28,13 @@ class IsITStaff(BasePermission):
     """IT Manager, IT Support, or System Admin."""
 
     def has_permission(self, request, view):
+        user = getattr(request, "user", None)
         return bool(
-            request.user
-            and request.user.is_authenticated
-            and getattr(request.user, "role", "") in
-            ("system_admin", "it_manager", "it_support")
-            or getattr(request.user, "is_superuser", False)
+            user
+            and user.is_authenticated
+            and getattr(user, "is_active", False)
+            and (
+                getattr(user, "role", "") in ("system_admin", "it_manager", "it_support")
+                or getattr(user, "is_superuser", False)
+            )
         )

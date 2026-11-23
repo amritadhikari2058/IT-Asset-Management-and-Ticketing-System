@@ -22,12 +22,18 @@ OPEN_STATUSES = {"open", "in_progress", "waiting_requester", "waiting_third_part
 
 
 def _staff_qs():
-    return User.objects.filter(is_active=True, is_deleted=False)
+    return User.objects.filter(
+        is_active=True, is_deleted=False
+    ).filter(
+        Q(role__in=("system_admin", "it_manager", "it_support")) | Q(is_superuser=True)
+    )
 
 
 def _is_it_staff(user):
     return bool(
         user and user.is_authenticated
+        and getattr(user, "is_active", False)
+        and not getattr(user, "is_deleted", False)
         and (getattr(user, "role", "") in ("system_admin", "it_manager", "it_support")
              or getattr(user, "is_superuser", False))
     )
@@ -36,6 +42,8 @@ def _is_it_staff(user):
 def _can_manage_queues(user):
     return bool(
         user and user.is_authenticated
+        and getattr(user, "is_active", False)
+        and not getattr(user, "is_deleted", False)
         and (getattr(user, "role", "") in ("system_admin", "it_manager")
              or getattr(user, "is_superuser", False))
     )
@@ -180,10 +188,17 @@ def remove_membership(membership, actor):
 # Claim / unclaim / reassign / move-queue / auto-assign
 # ---------------------------------------------------------------------------
 
+def _can_view_ticket(actor, ticket):
+    from tickets.views import _ticket_visible_qs
+    return _ticket_visible_qs(actor).filter(pk=ticket.pk).exists()
+
+
 def claim_ticket(ticket, actor):
     """Claim an unassigned ticket for the actor."""
     if not _is_it_staff(actor):
         raise PermissionDenied("Only IT staff can claim tickets.")
+    if not _can_view_ticket(actor, ticket):
+        raise PermissionDenied("You cannot access this ticket.")
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket.pk)
         if ticket.assignee_id is not None:
@@ -228,6 +243,8 @@ def unclaim_ticket(ticket, actor, reason):
     """Release an assigned ticket back to its queue."""
     if not _is_it_staff(actor):
         raise PermissionDenied("Only IT staff can unclaim tickets.")
+    if not _can_view_ticket(actor, ticket):
+        raise PermissionDenied("You cannot access this ticket.")
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket.pk)
         if ticket.assignee_id != actor.pk and not _can_manage_queues(actor):
@@ -254,6 +271,8 @@ def reassign_ticket(ticket, target_user, actor, reason):
     """Reassign a ticket to another IT staff member."""
     if not _is_it_staff(actor):
         raise PermissionDenied("Only IT staff can reassign tickets.")
+    if not _can_view_ticket(actor, ticket):
+        raise PermissionDenied("You cannot access this ticket.")
     if not _staff_qs().filter(pk=target_user.pk).exists():
         raise ValidationError("Target must be an active IT staff member.")
     with transaction.atomic():
@@ -286,6 +305,8 @@ def move_queue(ticket, target_queue, actor, reason):
     """Move a ticket between queues (requires reason)."""
     if not _is_it_staff(actor):
         raise PermissionDenied("Only IT staff can move tickets between queues.")
+    if not _can_view_ticket(actor, ticket):
+        raise PermissionDenied("You cannot access this ticket.")
     if not target_queue.is_active:
         raise ValidationError("Cannot move a ticket to an inactive queue.")
     with transaction.atomic():

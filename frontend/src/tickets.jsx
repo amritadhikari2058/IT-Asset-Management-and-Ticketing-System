@@ -313,6 +313,15 @@ export function TicketForm({ id }) {
   );
 }
 
+/** Keep only this ticket's attachment rows. The list endpoint can return
+ * rows for every ticket when the `ticket` filter is not honored server-side;
+ * a detail page must never list (or offer to download) another ticket's file. */
+function onlyTicketAttachments(rows, ticketId) {
+  const list = Array.isArray(rows) ? rows : [];
+  const want = Number(ticketId);
+  return list.filter((a) => a?.ticket == null || Number(a.ticket) === want);
+}
+
 export function TicketDetail({ id }) {
   const { isStaff, user, isManagerOrAdmin, isSupportOrAbove, isEmployee } = useAuth();
   const [ticket, setTicket] = useState(null);
@@ -355,7 +364,7 @@ export function TicketDetail({ id }) {
       } catch { setNotes([]); }
       try {
         const at = await api.get('/tickets/attachments/', { params: { ticket: id } });
-        setAttachments(at.data.results ?? at.data ?? []);
+        setAttachments(onlyTicketAttachments(at.data.results ?? at.data, id));
       } catch { setAttachments([]); }
       try {
         setWatchers((await api.get(`/tickets/${id}/watchers/`)).data ?? []);
@@ -427,7 +436,7 @@ export function TicketDetail({ id }) {
   const reloadAttachments = async () => {
     try {
       const at = await api.get('/tickets/attachments/', { params: { ticket: id } });
-      setAttachments(at.data.results ?? at.data ?? []);
+      setAttachments(onlyTicketAttachments(at.data.results ?? at.data, id));
     } catch {
       setAttachments([]);
     }
@@ -470,6 +479,8 @@ export function TicketDetail({ id }) {
       const a = document.createElement('a');
       a.href = url;
       a.download = name;
+      // Same-origin blob URL: never let the synthetic link gain an opener.
+      a.rel = 'noopener';
       document.body.appendChild(a);
       a.click();
       a.remove();

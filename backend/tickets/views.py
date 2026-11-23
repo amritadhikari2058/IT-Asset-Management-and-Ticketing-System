@@ -10,10 +10,13 @@ from django.db.models import Count, Prefetch, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
+
+from common.permissions import IsActiveAuthenticated
 from rest_framework.response import Response
 
+from common.attachment_security import safe_original_filename
 from common.audit import log_action
 from common.notifications import (
     TICKET_ASSIGNMENT_CATEGORY, TICKET_STATUS_CATEGORY, email_enabled_for,
@@ -50,6 +53,21 @@ def _ticket_visible_qs(user):
     if getattr(user, "home_department_id", None):
         filt |= Q(department_id=user.home_department_id)
     return qs.filter(filt)
+
+
+def _positive_pk_param(raw):
+    """Parse a query-string id into a positive int, or None when malformed.
+
+    List filters must never let an arbitrary string reach ``filter()`` (that
+    raises ValueError and turns a bad request into a 500) and must never
+    widen a query when a filter was asked for. Callers treat None as
+    "no matching rows".
+    """
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 #: Fields only IT staff may change (PERMISSIONS.md). Employees editing
@@ -314,7 +332,8 @@ def _record_ticket_bulk_import_row_failure(operation, row_index, row_number,
     if operation is None:
         return
     try:
-        msg = _flatten_ticket_message(error)
+        from tickets.bulk_import_reconciliation import sanitize_import_diagnostic
+        msg = sanitize_import_diagnostic(_flatten_ticket_message(error))
         fp = _ticket_bulk_import_row_fingerprint(row_data)
         existing = TicketBulkImportRowOutcome.objects.filter(
             operation=operation, row_index=row_index).first()
@@ -436,11 +455,26 @@ class TicketViewSet(viewsets.ModelViewSet):
         # employees can edit their own tickets, but staff-only *fields*
         # are guarded per-change in perform_update. Deletion (single +
         # bulk) is staff-only: employees cannot soft-delete tickets.
-        # Resolution/merge are IT-staff workflows; services enforce the
-        # same rule as defense in depth.
+        # Resolution/merge and staff dashboards are IT-staff workflows;
+        # services enforce the same rules as defense in depth.
         if self.action in ("bulk_update", "destroy", "bulk_delete",
-                           "resolve", "close", "merge"):
+                           "resolve", "close", "merge",
+                           "operations_dashboard", "agent_workload"):
             return [IsITStaff()]
+        if self.action == "satisfaction_report":
+            from rest_framework.permissions import BasePermission
+
+            class _ManagerPlus(BasePermission):
+                def has_permission(self, request, view):
+                    user = request.user
+                    return bool(
+                        user and user.is_authenticated
+                        and getattr(user, "is_active", False)
+                        and (getattr(user, "role", "") in ("system_admin", "it_manager")
+                             or getattr(user, "is_superuser", False))
+                    )
+
+            return [_ManagerPlus()]
         return super().get_permissions()
 
     def get_queryset(self):
@@ -502,7 +536,7 @@ class TicketViewSet(viewsets.ModelViewSet):
         if (target and getattr(user, "home_department_id", None)
                 and target.pk != user.home_department_id
                 and not serializer.validated_data.get("on_behalf_reason")):
-            from rest_framework.exceptions import ValidationError
+            from rest_framework.exceptions import PermissionDenied, ValidationError
             raise ValidationError({"on_behalf_reason":
                                    "Required when filing for another department."})
         obj = None
@@ -631,7 +665,7 @@ class TicketViewSet(viewsets.ModelViewSet):
             _reject_staff_only_changes(old, serializer.validated_data)
         new_status = serializer.validated_data.get("status")
         if new_status and not Ticket.can_transition(obj.status, new_status):
-            from rest_framework.exceptions import ValidationError
+            from rest_framework.exceptions import PermissionDenied, ValidationError
             raise ValidationError(
                 {"status": f"Invalid transition {obj.status} -> {new_status}."})
         # Cross-department changes require justification (same rule as
@@ -644,7 +678,7 @@ class TicketViewSet(viewsets.ModelViewSet):
                 and getattr(actor, "home_department_id", None)
                 and new_dept.pk != actor.home_department_id
                 and not serializer.validated_data.get("on_behalf_reason")):
-            from rest_framework.exceptions import ValidationError
+            from rest_framework.exceptions import PermissionDenied, ValidationError
             raise ValidationError({"on_behalf_reason":
                                    "Required when moving a ticket to another department."})
         # Stamp/clear the resolution timestamps on REAL transitions so the
@@ -805,6 +839,11 @@ class TicketViewSet(viewsets.ModelViewSet):
             if getattr(request.user, "role", "") == "employee":
                 notes = notes.filter(is_internal=False)
             return Response(TicketNoteSerializer(notes, many=True).data)
+        if (not _is_ticket_staff(request.user)
+                and ticket.requester_id != request.user.pk):
+            return Response(
+                {"detail": "You can only add notes to tickets you requested."},
+                status=403)
         body = request.data.get("body", "").strip()
         if not body:
             return Response({"detail": "Body required."}, status=400)
@@ -1397,8 +1436,10 @@ class TicketViewSet(viewsets.ModelViewSet):
                     status=409)
             if operation.status == TicketBulkImportOperation.STATUS_FAILED:
                 # Failed before completion: require a new import token to avoid ambiguity.
+                from tickets.bulk_import_reconciliation import sanitize_import_diagnostic
+                safe_detail = sanitize_import_diagnostic(operation.error_detail) or "This import confirmation failed. Start a new import."
                 return Response(
-                    {"detail": operation.error_detail or "This import confirmation failed. Start a new import."},
+                    {"detail": safe_detail},
                     status=409)
             # Claim previewed operation for processing.
             with transaction.atomic():
@@ -1611,7 +1652,8 @@ class TicketViewSet(viewsets.ModelViewSet):
                             transaction.on_commit(_send_bulk_followups)
                             ok.append({"row": i, "id": obj.pk, "title": obj.title})
                     except Exception as exc:
-                        failed.append({"row": i, "errors": str(exc)})
+                        from tickets.bulk_import_reconciliation import sanitize_import_diagnostic
+                        failed.append({"row": i, "errors": sanitize_import_diagnostic(str(exc))})
                         if operation is not None:
                             _record_ticket_bulk_import_row_failure(
                                 operation, idx, i, data, exc)
@@ -1629,17 +1671,19 @@ class TicketViewSet(viewsets.ModelViewSet):
                         "successful_count": len(ok),
                         "failed_count": len(failed),
                     }
+                    from tickets.bulk_import_reconciliation import sanitize_import_diagnostic
+                    safe_err = sanitize_import_diagnostic(_flatten_ticket_message(exc))
                     TicketBulkImportOperation.objects.filter(
                         pk=operation.pk, user=user).update(
                         status=TicketBulkImportOperation.STATUS_FAILED,
-                        error_detail=_flatten_ticket_message(exc),
+                        error_detail=safe_err,
                         updated_at=now,
                         **counts)
                     op = TicketBulkImportOperation.objects.filter(
                         pk=operation.pk, user=user).first()
                     if op and op.status != TicketBulkImportOperation.STATUS_FAILED:
                         op.status = TicketBulkImportOperation.STATUS_FAILED
-                        op.error_detail = _flatten_ticket_message(exc)
+                        op.error_detail = safe_err
                         op.updated_at = now
                         for k, v in counts.items():
                             setattr(op, k, v)
@@ -1856,6 +1900,222 @@ class TicketViewSet(viewsets.ModelViewSet):
         return Response({"successful": ok, "failed": failed})
 
 
+    @action(detail=True, methods=["post"])
+    def resolve(self, request, pk=None):
+        from tickets.resolution_services import resolve_ticket
+        from tickets.advanced_serializers import ResolveTicketSerializer
+        ticket = self.get_object()
+        ser = ResolveTicketSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            ticket = resolve_ticket(ticket, ser.validated_data, request.user)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+    @action(detail=True, methods=["post"])
+    def close(self, request, pk=None):
+        from tickets.resolution_services import close_ticket
+        from tickets.advanced_serializers import CloseTicketSerializer
+        ticket = self.get_object()
+        ser = CloseTicketSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            ticket = close_ticket(ticket, request.user,
+                                 ser.validated_data.get("reason", ""),
+                                 ser.validated_data.get("expected_ticket_version"))
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+
+    @action(detail=True, methods=["post"])
+    def reopen(self, request, pk=None):
+        from tickets.resolution_services import reopen_ticket
+        from tickets.advanced_serializers import ReopenTicketSerializer
+        ticket = self.get_object()
+        ser = ReopenTicketSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            ticket = reopen_ticket(ticket, ser.validated_data, request.user)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSerializer(ticket).data)
+
+    @action(detail=True, methods=["post"])
+    def merge(self, request, pk=None):
+        from tickets.merge_services import merge_tickets
+        from tickets.advanced_serializers import TicketMergeSerializer
+        primary = self.get_object()
+        ser = TicketMergeSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        duplicate_id = ser.validated_data["duplicate_ticket_id"]
+        try:
+            duplicate = _ticket_visible_qs(request.user).get(
+                pk=duplicate_id, is_deleted=False)
+        except Ticket.DoesNotExist:
+            return Response({"detail": "Duplicate ticket not found."}, status=404)
+        options = {"transfer_watchers": ser.validated_data.get(
+            "transfer_watchers", True)}
+        try:
+            primary, duplicate, record = merge_tickets(
+                primary, duplicate, request.user,
+                ser.validated_data["reason"], options)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
+            return Response({"detail": str(exc)}, status=400)
+        return Response({"primary": primary.pk, "merged": duplicate.pk,
+                         "record": record.pk})
+
+    @action(detail=True, methods=["get"])
+    def timeline(self, request, pk=None):
+        from tickets.models import TicketHistory
+        ticket = self.get_object()
+        user = request.user
+        role = getattr(user, "role", "")
+        is_admin_or_manager = role in ("system_admin", "it_manager") or getattr(
+            user, "is_superuser", False)
+        is_support = role == "it_support"
+        if is_admin_or_manager:
+            pass
+        elif is_support and not user.has_perm("tickets.view_ticket_history"):
+            return Response(
+                {"detail": "You do not have permission to view ticket history."},
+                status=403)
+        elif not is_admin_or_manager and not is_support:
+            return Response(
+                {"detail": "You do not have permission to view ticket history."},
+                status=403)
+        qs = TicketHistory.objects.filter(ticket=ticket).order_by("timestamp")
+        events = []
+        for h in qs:
+            events.append({
+                "id": str(h.pk),
+                "source": "history",
+                "actor": str(h.actor) if h.actor else None,
+                "actor_email": getattr(h.actor, "email", None),
+                "timestamp": h.timestamp,
+                "action": h.action,
+                "summary": h.note or h.action,
+                "internal": False,
+                "url": None,
+            })
+        page = int(request.query_params.get("page", 1) or 1)
+        size = int(request.query_params.get("page_size", 20) or 20)
+        start = (page - 1) * size
+        end = start + size
+        return Response({"results": events[start:end], "count": len(events)})
+
+    @action(detail=True, methods=["get"])
+    def satisfaction(self, request, pk=None):
+        from tickets.satisfaction_services import get_survey
+        from tickets.advanced_serializers import TicketSatisfactionSurveySerializer
+        ticket = self.get_object()
+        survey = get_survey(ticket, request.user)
+        if not survey:
+            return Response({"detail": "No survey found."}, status=404)
+        return Response(TicketSatisfactionSurveySerializer(survey).data)
+
+    @action(detail=True, methods=["post"], url_path="satisfaction/submit")
+    def satisfaction_submit(self, request, pk=None):
+        from tickets.satisfaction_services import submit_survey
+        from tickets.advanced_serializers import (
+            SatisfactionSubmitSerializer, TicketSatisfactionSurveySerializer)
+        ticket = self.get_object()
+        ser = SatisfactionSubmitSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            survey = submit_survey(ticket, ser.validated_data, request.user)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
+            return Response({"detail": str(exc)}, status=400)
+        return Response(TicketSatisfactionSurveySerializer(survey).data)
+
+
+    @action(detail=False, methods=["post"], url_path="check-duplicates")
+    def check_duplicates(self, request):
+        from tickets.duplicate_services import find_duplicates
+        from tickets.advanced_serializers import DuplicateCheckSerializer, DuplicateSuggestionSerializer
+        ser = DuplicateCheckSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        candidates = find_duplicates(ser.validated_data, request.user)
+        return Response({"results": candidates})
+
+    @action(detail=False, methods=["get"], url_path="operations-dashboard")
+    def operations_dashboard(self, request):
+        from tickets.metrics_services import operations_dashboard
+        filters = {
+            "date_from": request.query_params.get("date_from"),
+            "date_to": request.query_params.get("date_to"),
+            "department": request.query_params.get("department"),
+            "queue": request.query_params.get("queue"),
+            "assignee": request.query_params.get("assignee"),
+            "category": request.query_params.get("category"),
+            "priority": request.query_params.get("priority"),
+        }
+        try:
+            data = operations_dashboard(filters, request.user)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
+            return Response({"detail": str(exc)}, status=400)
+        return Response(data)
+
+    @action(detail=False, methods=["get"], url_path="agent-workload")
+    def agent_workload(self, request):
+        from tickets.metrics_services import agent_workload
+        filters = {
+            "date_from": request.query_params.get("date_from"),
+            "date_to": request.query_params.get("date_to"),
+            "department": request.query_params.get("department"),
+            "queue": request.query_params.get("queue"),
+            "assignee": request.query_params.get("assignee"),
+            "category": request.query_params.get("category"),
+            "priority": request.query_params.get("priority"),
+        }
+        try:
+            data = agent_workload(filters, request.user)
+        except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
+            return Response({"detail": str(exc)}, status=400)
+        return Response(data)
+
+    @action(detail=False, methods=["get"], url_path="satisfaction-report")
+    def satisfaction_report(self, request):
+        from tickets.satisfaction_services import satisfaction_report
+        filters = {
+            "date_from": request.query_params.get("date_from"),
+            "date_to": request.query_params.get("date_to"),
+        }
+        try:
+            data = satisfaction_report(filters, request.user)
+        except PermissionDenied as exc:
+            return Response({"detail": str(exc)}, status=403)
+        return Response(data)
+
 class TicketHistoryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = TicketHistory.objects.select_related("ticket", "actor").all()
     serializer_class = TicketHistorySerializer
@@ -1891,8 +2151,21 @@ class TicketAttachmentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # Only attachments on visible tickets (private files, no public URLs).
+        # The visibility scope is applied FIRST so a ``?ticket=`` value can
+        # only ever narrow the result set, never widen it: naming another
+        # user's ticket id yields an empty list, not that ticket's files.
         visible_ids = _ticket_visible_qs(self.request.user).values("pk")
-        return TicketAttachment.objects.filter(ticket_id__in=visible_ids)
+        qs = TicketAttachment.objects.filter(ticket_id__in=visible_ids)
+        raw = self.request.query_params.get("ticket")
+        if raw not in (None, ""):
+            ticket_pk = _positive_pk_param(raw)
+            if ticket_pk is None:
+                # Malformed ids match nothing. Returning 200 with an empty
+                # list (rather than 400) keeps the response identical to an
+                # inaccessible/nonexistent ticket and so discloses nothing.
+                return qs.none()
+            qs = qs.filter(ticket_id=ticket_pk)
+        return qs
 
     def perform_create(self, serializer):
         ticket = serializer.validated_data.get("ticket")
@@ -1902,8 +2175,13 @@ class TicketAttachmentViewSet(viewsets.ModelViewSet):
             if not visible:
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied("Cannot attach to this ticket.")
+            if (not _is_ticket_staff(self.request.user)
+                    and ticket.requester_id != self.request.user.pk):
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied(
+                    "You can only attach files to tickets you requested.")
         upload = serializer.validated_data.get("file")
-        filename = (getattr(upload, "name", "") or "")[:255]
+        filename = safe_original_filename(getattr(upload, "name", ""))
         size = getattr(upload, "size", None)
         # Write the physical file first so the exact storage object this
         # request created is known. Django's own FileField.save() writes the
@@ -1950,7 +2228,7 @@ class TicketAttachmentViewSet(viewsets.ModelViewSet):
                 if stored_name:
                     save_kwargs["file"] = stored_name
                     save_kwargs["original_filename"] = (
-                        getattr(upload, "name", "") or "")[:255]
+                        safe_original_filename(getattr(upload, "name", "")))
                 obj = serializer.save(**save_kwargs)
                 if stored_name:
                     _write_history(
@@ -2131,7 +2409,7 @@ def sla_report(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsActiveAuthenticated])
 def category_report(request):
     """Tickets-by-category aggregation (ORM, permission-aware, date filter).
 
@@ -2182,6 +2460,11 @@ def category_report(request):
         from tickets.advanced_serializers import TicketWatcherCreateSerializer
         from accounts.models import User
         ticket = self.get_object()
+        if (not _is_ticket_staff(request.user)
+                and ticket.requester_id != request.user.pk):
+            return Response(
+                {"detail": "You can only modify tickets you requested."},
+                status=403)
         ser = TicketWatcherCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         user_id = ser.validated_data.get("user")
@@ -2192,6 +2475,10 @@ def category_report(request):
                                                "watch_type", "watcher")},
                                   request.user)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response({"detail": "watcher added", "id": watcher.pk})
 
@@ -2200,11 +2487,20 @@ def category_report(request):
         from tickets.collaboration_services import remove_watcher
         from accounts.models import User
         ticket = self.get_object()
+        if (not _is_ticket_staff(request.user)
+                and ticket.requester_id != request.user.pk):
+            return Response(
+                {"detail": "You can only modify tickets you requested."},
+                status=403)
         user_id = request.data.get("user")
         user = User.objects.get(pk=user_id) if user_id else request.user
         try:
             remove_watcher(ticket, user, request.user)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response({"detail": "watcher removed"})
 
@@ -2227,6 +2523,10 @@ def category_report(request):
             ticket, note, pause = request_information(
                 ticket, ser.validated_data, request.user)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response(TicketSerializer(ticket).data)
 
@@ -2241,6 +2541,10 @@ def category_report(request):
         try:
             note = apply_canned_response(ticket, ser.validated_data, request.user)
         except Exception as exc:
+            if exc.__class__.__name__ == "PermissionDenied":
+                return Response({"detail": str(exc)}, status=403)
+            if exc.__class__.__name__ == "ConflictError":
+                return Response({"detail": str(exc)}, status=409)
             return Response({"detail": str(exc)}, status=400)
         return Response({"detail": "applied", "note_id": note.pk})
 
@@ -2259,11 +2563,15 @@ class TicketBulkImportOperationViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
+        user = self.request.user
+        role = getattr(user, "role", "")
+        if not (is_system_admin(user) or role == "it_manager"):
+            qs = qs.filter(user=user)
         status_param = self.request.query_params.get("status")
         if status_param:
             qs = qs.filter(status=status_param)
         user_id = self.request.query_params.get("user")
-        if user_id:
+        if user_id and (is_system_admin(user) or role == "it_manager"):
             qs = qs.filter(user_id=user_id)
         return qs.order_by("-created_at")
 
@@ -2424,192 +2732,3 @@ class TicketBulkImportOperationViewSet(viewsets.ReadOnlyModelViewSet):
                 "integrity_assessment": details.get("integrity_assessment"),
             })
         return Response({"operation_id": op.pk, "audit": entries})
-
-    @action(detail=True, methods=["post"])
-    def resolve(self, request, pk=None):
-        from tickets.resolution_services import resolve_ticket
-        from tickets.advanced_serializers import ResolveTicketSerializer
-        ticket = self.get_object()
-        ser = ResolveTicketSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        try:
-            ticket = resolve_ticket(ticket, ser.validated_data, request.user)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response(TicketSerializer(ticket).data)
-
-    @action(detail=True, methods=["post"])
-    def close(self, request, pk=None):
-        from tickets.resolution_services import close_ticket
-        from tickets.advanced_serializers import CloseTicketSerializer
-        ticket = self.get_object()
-        ser = CloseTicketSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        try:
-            ticket = close_ticket(ticket, request.user,
-                                 ser.validated_data.get("reason", ""),
-                                 ser.validated_data.get("expected_ticket_version"))
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response(TicketSerializer(ticket).data)
-
-
-    @action(detail=True, methods=["post"])
-    def reopen(self, request, pk=None):
-        from tickets.resolution_services import reopen_ticket
-        from tickets.advanced_serializers import ReopenTicketSerializer
-        ticket = self.get_object()
-        ser = ReopenTicketSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        try:
-            ticket = reopen_ticket(ticket, ser.validated_data, request.user)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response(TicketSerializer(ticket).data)
-
-    @action(detail=True, methods=["post"])
-    def merge(self, request, pk=None):
-        from tickets.merge_services import merge_tickets
-        from tickets.advanced_serializers import TicketMergeSerializer
-        primary = self.get_object()
-        ser = TicketMergeSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        duplicate_id = ser.validated_data["duplicate_ticket_id"]
-        try:
-            duplicate = _ticket_visible_qs(request.user).get(
-                pk=duplicate_id, is_deleted=False)
-        except Ticket.DoesNotExist:
-            return Response({"detail": "Duplicate ticket not found."}, status=404)
-        options = {"transfer_watchers": ser.validated_data.get(
-            "transfer_watchers", True)}
-        try:
-            primary, duplicate, record = merge_tickets(
-                primary, duplicate, request.user,
-                ser.validated_data["reason"], options)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response({"primary": primary.pk, "merged": duplicate.pk,
-                         "record": record.pk})
-
-    @action(detail=True, methods=["get"])
-    def timeline(self, request, pk=None):
-        from tickets.models import TicketHistory
-        ticket = self.get_object()
-        user = request.user
-        role = getattr(user, "role", "")
-        is_admin_or_manager = role in ("system_admin", "it_manager") or getattr(
-            user, "is_superuser", False)
-        is_support = role == "it_support"
-        if is_admin_or_manager:
-            pass
-        elif is_support and not user.has_perm("tickets.view_ticket_history"):
-            return Response(
-                {"detail": "You do not have permission to view ticket history."},
-                status=403)
-        elif not is_admin_or_manager and not is_support:
-            return Response(
-                {"detail": "You do not have permission to view ticket history."},
-                status=403)
-        qs = TicketHistory.objects.filter(ticket=ticket).order_by("timestamp")
-        events = []
-        for h in qs:
-            events.append({
-                "id": str(h.pk),
-                "source": "history",
-                "actor": str(h.actor) if h.actor else None,
-                "actor_email": getattr(h.actor, "email", None),
-                "timestamp": h.timestamp,
-                "action": h.action,
-                "summary": h.note or h.action,
-                "internal": False,
-                "url": None,
-            })
-        page = int(request.query_params.get("page", 1) or 1)
-        size = int(request.query_params.get("page_size", 20) or 20)
-        start = (page - 1) * size
-        end = start + size
-        return Response({"results": events[start:end], "count": len(events)})
-
-    @action(detail=True, methods=["get"])
-    def satisfaction(self, request, pk=None):
-        from tickets.satisfaction_services import get_survey
-        from tickets.advanced_serializers import TicketSatisfactionSurveySerializer
-        ticket = self.get_object()
-        survey = get_survey(ticket, request.user)
-        if not survey:
-            return Response({"detail": "No survey found."}, status=404)
-        return Response(TicketSatisfactionSurveySerializer(survey).data)
-
-    @action(detail=True, methods=["post"], url_path="satisfaction/submit")
-    def satisfaction_submit(self, request, pk=None):
-        from tickets.satisfaction_services import submit_survey
-        from tickets.advanced_serializers import (
-            SatisfactionSubmitSerializer, TicketSatisfactionSurveySerializer)
-        ticket = self.get_object()
-        ser = SatisfactionSubmitSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        try:
-            survey = submit_survey(ticket, ser.validated_data, request.user)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response(TicketSatisfactionSurveySerializer(survey).data)
-
-
-    @action(detail=False, methods=["post"], url_path="check-duplicates")
-    def check_duplicates(self, request):
-        from tickets.duplicate_services import find_duplicates
-        from tickets.advanced_serializers import DuplicateCheckSerializer, DuplicateSuggestionSerializer
-        ser = DuplicateCheckSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        candidates = find_duplicates(ser.validated_data, request.user)
-        return Response({"results": candidates})
-
-    @action(detail=False, methods=["get"], url_path="operations-dashboard")
-    def operations_dashboard(self, request):
-        from tickets.metrics_services import operations_dashboard
-        filters = {
-            "date_from": request.query_params.get("date_from"),
-            "date_to": request.query_params.get("date_to"),
-            "department": request.query_params.get("department"),
-            "queue": request.query_params.get("queue"),
-            "assignee": request.query_params.get("assignee"),
-            "category": request.query_params.get("category"),
-            "priority": request.query_params.get("priority"),
-        }
-        try:
-            data = operations_dashboard(filters, request.user)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response(data)
-
-    @action(detail=False, methods=["get"], url_path="agent-workload")
-    def agent_workload(self, request):
-        from tickets.metrics_services import agent_workload
-        filters = {
-            "date_from": request.query_params.get("date_from"),
-            "date_to": request.query_params.get("date_to"),
-            "department": request.query_params.get("department"),
-            "queue": request.query_params.get("queue"),
-            "assignee": request.query_params.get("assignee"),
-            "category": request.query_params.get("category"),
-            "priority": request.query_params.get("priority"),
-        }
-        try:
-            data = agent_workload(filters, request.user)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=400)
-        return Response(data)
-
-    @action(detail=False, methods=["get"], url_path="satisfaction-report")
-    def satisfaction_report(self, request):
-        from tickets.satisfaction_services import satisfaction_report
-        filters = {
-            "date_from": request.query_params.get("date_from"),
-            "date_to": request.query_params.get("date_to"),
-        }
-        try:
-            data = satisfaction_report(filters, request.user)
-        except PermissionDenied as exc:
-            return Response({"detail": str(exc)}, status=403)
-        return Response(data)
-

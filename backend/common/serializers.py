@@ -84,6 +84,9 @@ class ScheduledReportSerializer(serializers.ModelSerializer):
                             "created_at", "updated_at"]
 
     def validate(self, attrs):
+        from django.core.validators import validate_email
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
         schedule = attrs.get("schedule") or getattr(
             self.instance, "schedule", None)
         if schedule not in dict(ScheduledReport.SCHEDULE_CHOICES):
@@ -93,11 +96,32 @@ class ScheduledReportSerializer(serializers.ModelSerializer):
         if fmt not in dict(ScheduledReport.FORMAT_CHOICES):
             raise serializers.ValidationError(
                 {"format": "Invalid format."})
-        recipients = attrs.get("recipients") or getattr(
+        recipients = attrs.get("recipients") if "recipients" in attrs else getattr(
             self.instance, "recipients", None)
         if not isinstance(recipients, list) or not recipients:
             raise serializers.ValidationError(
                 {"recipients": "Provide at least one recipient email."})
+        cleaned = []
+        seen = set()
+        for raw in recipients:
+            if not isinstance(raw, str):
+                raise serializers.ValidationError(
+                    {"recipients": "Each recipient must be an email string."})
+            email = raw.strip()
+            if not email:
+                raise serializers.ValidationError(
+                    {"recipients": "Recipient emails cannot be blank."})
+            try:
+                validate_email(email)
+            except DjangoValidationError:
+                raise serializers.ValidationError(
+                    {"recipients": f"Invalid recipient email: {email}"})
+            norm = email.lower()
+            if norm in seen:
+                continue
+            seen.add(norm)
+            cleaned.append(email)
+        attrs["recipients"] = cleaned
         return attrs
 
 

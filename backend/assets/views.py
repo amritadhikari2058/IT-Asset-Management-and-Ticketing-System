@@ -18,12 +18,14 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import APIException, NotFound, PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import IsActiveAuthenticated
 from rest_framework.response import Response
 
 from assets.models import (
     Asset, AssetAttachment, AssetCategory, AssetHistory, Assignment,
     Disposal, Maintenance, Vendor,
 )
+from common.attachment_security import safe_original_filename
 from assets import reports
 from assets import reports
 from assets.serializers import (
@@ -473,7 +475,8 @@ class AssetViewSet(viewsets.ModelViewSet):
                     att = AssetAttachment.objects.create(
                         asset=obj, file=upload,
                         uploaded_by=self.request.user,
-                        original_filename=(upload.name or "")[:255])
+                        original_filename=safe_original_filename(
+                            upload.name))
                     log_action(actor=self.request.user, action="create",
                                instance=att)
         except IntegrityError:
@@ -1232,6 +1235,19 @@ class AssetViewSet(viewsets.ModelViewSet):
                          "failed": failed})
 
 
+def _positive_pk_param(raw):
+    """Parse a query-string id into a positive int, or None when malformed.
+
+    List filters must never pass an arbitrary string to ``filter()`` (that
+    raises ValueError and yields a 500). Callers treat None as "no rows".
+    """
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def _asset_visible_qs(user):
     """Assets visible to the user (private files are exactly as visible as
     their asset — never more).
@@ -1330,11 +1346,15 @@ class AssetAttachmentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # Only attachments on visible assets (private files, no public URLs).
+        # Visibility is applied first; ``?asset=`` can only narrow it.
         visible_ids = _asset_visible_qs(self.request.user).values("pk")
         qs = AssetAttachment.objects.filter(asset_id__in=visible_ids)
-        asset_id = self.request.query_params.get("asset")
-        if asset_id:
-            qs = qs.filter(asset_id=asset_id)
+        raw = self.request.query_params.get("asset")
+        if raw not in (None, ""):
+            asset_pk = _positive_pk_param(raw)
+            if asset_pk is None:
+                return qs.none()
+            qs = qs.filter(asset_id=asset_pk)
         return qs
 
     def perform_create(self, serializer):
@@ -1345,10 +1365,11 @@ class AssetAttachmentViewSet(viewsets.ModelViewSet):
             if not visible:
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied("Cannot attach to this asset.")
+        upload = serializer.validated_data.get("file")
         obj = serializer.save(
             uploaded_by=self.request.user,
-            original_filename=getattr(
-                serializer.validated_data.get("file"), "name", "")[:255])
+            original_filename=safe_original_filename(
+                getattr(upload, "name", "")))
         log_action(actor=self.request.user, action="create", instance=obj)
 
     def destroy(self, request, *args, **kwargs):
@@ -1685,11 +1706,11 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     """
     queryset = KnowledgeBaseArticle.objects.filter(status="published")
     serializer_class = KnowledgeBaseArticleSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsActiveAuthenticated]
 
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
-            return [IsAuthenticated()]
+            return [IsActiveAuthenticated()]
         return [IsITStaff()]
 
     def get_serializer_class(self):
@@ -2135,11 +2156,11 @@ class KnowledgeBaseCategoryViewSet(viewsets.ModelViewSet):
 
     queryset = KnowledgeBaseCategory.objects.all()
     serializer_class = KnowledgeBaseCategorySerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsActiveAuthenticated]
 
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
-            return [IsAuthenticated()]
+            return [IsActiveAuthenticated()]
         return [IsITStaff()]
 
     def get_serializer_class(self):
@@ -2161,11 +2182,11 @@ class KnowledgeBaseTagViewSet(viewsets.ModelViewSet):
 
     queryset = KnowledgeBaseTag.objects.all()
     serializer_class = KnowledgeBaseTagSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsActiveAuthenticated]
 
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
-            return [IsAuthenticated()]
+            return [IsActiveAuthenticated()]
         return [IsITStaff()]
 
     def get_serializer_class(self):
@@ -2261,7 +2282,7 @@ class KnowledgeBaseFeedbackViewSet(viewsets.ModelViewSet):
     - IT staff can see all feedback (stats / ineffective-article detection).
     """
     serializer_class = KnowledgeBaseFeedbackSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsActiveAuthenticated]
 
     def get_queryset(self):
         user = self.request.user
@@ -2287,7 +2308,7 @@ class AssetReportViewSet(viewsets.ReadOnlyModelViewSet):
     - /assets/reports/utilization/ — asset utilization insights
     - /assets/reports/inventory/ — filtered asset inventory for export
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsActiveAuthenticated]
 
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
@@ -2356,7 +2377,7 @@ class VendorViewSet(viewsets.ModelViewSet):
         stock_item_count=Count("stock_items")
     ).all()
     serializer_class = VendorSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsActiveAuthenticated]
     filter_backends = []
     filterset_fields = ["is_active", "is_deleted", "name", "code", "email"]
     search_fields = ["name", "code", "contact_person", "email", "phone"]
@@ -2450,7 +2471,7 @@ class VendorViewSet(viewsets.ModelViewSet):
         # IT Support can list and retrieve non-deleted vendors (read-only)
         if role == "it_support":
             if self.action in ("list", "retrieve"):
-                return [IsAuthenticated()]
+                return [IsActiveAuthenticated()]
             from rest_framework.permissions import BasePermission
             class Deny(BasePermission):
                 def has_permission(self, request, view):

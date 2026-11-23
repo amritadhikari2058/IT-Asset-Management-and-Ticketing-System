@@ -205,6 +205,7 @@ class User(AbstractUser):
         upload_to=employee_photo_upload_to, null=True, blank=True)
 
     objects = UserManager()
+    all_objects = models.Manager()
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username", "employee_id"]

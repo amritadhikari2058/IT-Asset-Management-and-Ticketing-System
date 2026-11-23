@@ -146,6 +146,7 @@ class ScheduledReportTests(TestCase):
         auth(self.c, self.emp)
         res = self.c.post(f"/api/common/scheduled-report-runs/{run.pk}/retry/",
                           {}, format="json")
+        self.assertEqual(res.status_code, 403)
     # ---------- Lease and heartbeat tests ----------
 
     def _due_schedule(self):
@@ -330,6 +331,109 @@ class ScheduledReportTests(TestCase):
                 scheduled_report=sr, status="running").count(), 0)
 
 
+    def test_all_delivery_failures_mark_run_failed(self):
+        sr = self._due_schedule()
+        from unittest.mock import patch
+        with patch("accounts.email_utils.send_scheduled_report_email",
+                   return_value=False):
+            results = run_scheduled_reports()
+        self.assertEqual(results["sent"], 0)
+        self.assertEqual(results["failed"], 1)
+        run = ScheduledReportRun.objects.get(scheduled_report=sr)
+        self.assertEqual(run.status, "failed")
+        self.assertFalse(run.success)
+        self.assertEqual(run.error_summary, "all_deliveries_failed")
+        self.assertEqual(run.recipient_count, 0)
+
+    def test_invalid_recipient_email_rejected(self):
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/common/scheduled-reports/", {
+            "saved_report": self.sr.pk, "schedule": "weekly",
+            "recipients": ["not-an-email"], "format": "csv",
+            "enabled": True,
+        }, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_blank_recipient_rejected(self):
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/common/scheduled-reports/", {
+            "saved_report": self.sr.pk, "schedule": "weekly",
+            "recipients": ["ops@example.com", " "], "format": "csv",
+            "enabled": True,
+        }, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_disabled_schedule_has_no_next_run(self):
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/common/scheduled-reports/", {
+            "saved_report": self.sr.pk, "schedule": "daily",
+            "recipients": ["ops@example.com"], "format": "csv",
+            "enabled": False,
+        }, format="json")
+        self.assertEqual(res.status_code, 201)
+        sr = ScheduledReport.objects.get(pk=res.data["id"])
+        self.assertIsNone(sr.next_run_at)
+
+    def test_deleted_saved_report_schedule_is_skipped(self):
+        sr = self._due_schedule()
+        self.sr.soft_delete(by_user=self.admin, reason="test")
+        results = run_scheduled_reports()
+        self.assertEqual(results["failed"], 1)
+        sr.refresh_from_db()
+        self.assertGreater(sr.next_run_at, timezone.now())
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(scheduled_report=sr).count(), 0)
+
+    def test_inactive_owner_schedule_is_skipped(self):
+        sr = self._due_schedule()
+        self.mgr.is_active = False
+        self.mgr.save(update_fields=["is_active"])
+        results = run_scheduled_reports()
+        self.assertEqual(results["failed"], 1)
+        sr.refresh_from_db()
+        self.assertGreater(sr.next_run_at, timezone.now())
+
+    def test_employee_cannot_retry_run(self):
+        sr = self._schedule()
+        run = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="failed", success=False,
+            error_summary="SMTPRefused")
+        auth(self.c, self.emp)
+        res = self.c.post(f"/api/common/scheduled-report-runs/{run.pk}/retry/",
+                          {}, format="json")
+        self.assertEqual(res.status_code, 403)
+
+    def test_employee_cannot_access_other_users_run(self):
+        other_sr_report = SavedReport.objects.create(
+            user=self.mgr, report_type="ticket_category", name="Mgr only",
+            filters={})
+        sr = ScheduledReport.objects.create(
+            saved_report=other_sr_report, schedule="daily",
+            recipients=["x@example.com"], format="csv", enabled=True)
+        run = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="succeeded", success=True)
+        auth(self.c, self.emp)
+        res = self.c.get(f"/api/common/scheduled-report-runs/{run.pk}/")
+        self.assertEqual(res.status_code, 404)
+
+    def test_employee_cannot_modify_other_users_schedule(self):
+        sr = self._schedule()
+        auth(self.c, self.emp)
+        res = self.c.patch(f"/api/common/scheduled-reports/{sr.pk}/",
+                           {"enabled": False}, format="json")
+        self.assertIn(res.status_code, (403, 404))
+
+    def test_duplicate_recipients_deduped(self):
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/common/scheduled-reports/", {
+            "saved_report": self.sr.pk, "schedule": "weekly",
+            "recipients": ["ops@example.com", "OPS@example.com"],
+            "format": "csv", "enabled": True,
+        }, format="json")
+        self.assertEqual(res.status_code, 201)
+        sr = ScheduledReport.objects.get(pk=res.data["id"])
+        self.assertEqual(sr.recipients, ["ops@example.com"])
+
 class ScheduledReportLeaseTaskTests(TestCase):
     """Isolated lease tests that assert on delivery outcomes."""
 
@@ -382,3 +486,4 @@ class ScheduledReportLeaseTaskTests(TestCase):
         self.assertEqual(results["checked"], 0)
         self.assertEqual(
             ScheduledReportRun.objects.filter(scheduled_report=sr).count(), 0)
+

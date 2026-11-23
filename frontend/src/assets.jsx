@@ -21,6 +21,19 @@ function isImageFilename(name) {
   const ext = (name || '').split('.').pop().toLowerCase();
   return IMAGE_EXTENSIONS.includes(ext);
 }
+
+/** Display name for an attachment. The asset attachment API omits
+ * `original_filename` (ticket attachments include it), so fall back to the
+ * stored file's basename instead of showing an opaque "File #id" — this also
+ * keeps the image check and preview button working for asset images. */
+function attachmentName(f) {
+  if (f?.original_filename) return f.original_filename;
+  const last = typeof f?.file === 'string' ? f.file.split('?')[0].split('/').pop() : '';
+  if (last) {
+    try { return decodeURIComponent(last); } catch { return last; }
+  }
+  return `File #${f?.id ?? ''}`;
+}
 const ATTACHMENT_MAX_MB = 10;
 
 const fmtDate = (d) => (d ? new Date(`${d}T00:00:00`).toLocaleDateString() : '—');
@@ -409,9 +422,24 @@ export function AssetDetail({ id }) {
   const { isStaff } = useAuth();
   const requestIdRef = useRef(0);
   const mountedRef = useRef(true);
+  const activeDownloadUrl = useRef(null);
+  // Mirrors the preview object URL so unmount can revoke it: closing the
+  // preview modal runs `closeAttachmentPreview`, but unmounting the page with
+  // the modal still open does not, which used to leak that one blob URL.
+  const previewUrlRef = useRef(null);
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+      if (activeDownloadUrl.current) {
+        try { URL.revokeObjectURL(activeDownloadUrl.current); } catch { /* ignore */ }
+        activeDownloadUrl.current = null;
+      }
+      if (previewUrlRef.current) {
+        try { URL.revokeObjectURL(previewUrlRef.current); } catch { /* ignore */ }
+        previewUrlRef.current = null;
+      }
+    };
   }, []);
   const [asset, setAsset] = useState(null);
   const [assignments, setAssignments] = useState([]);
@@ -548,8 +576,11 @@ export function AssetDetail({ id }) {
       fd.append('asset', id);
       fd.append('file', uploadFile);
       const r = await api.post('/assets/attachments/', fd);
+      // The upload response may omit original_filename; the picked file's own
+      // name is the most useful label in that case.
+      const uploadedName = r.data.original_filename || uploadFile.name;
       setUploadFile(null);
-      setUploadMsg(`Uploaded "${r.data.original_filename || 'file'}".`);
+      setUploadMsg(`Uploaded "${uploadedName}".`);
       await reloadAttachments();
     } catch (e) {
       const p = parseApiError(e);
@@ -559,8 +590,13 @@ export function AssetDetail({ id }) {
     }
   };
 
+  // One object URL per in-flight download so a rapid click on two files
+  // never leaves an old blob pinned in memory.
   const doDownload = async (f) => {
     if (dlBusy) return;
+    if (activeDownloadUrl.current) {
+      try { URL.revokeObjectURL(activeDownloadUrl.current); } catch { /* ignore */ }
+    }
     setDlBusy(f.id);
     setDlError((d) => ({ ...d, [f.id]: '' }));
     try {
@@ -569,15 +605,20 @@ export function AssetDetail({ id }) {
       });
       const cd = r.headers?.['content-disposition'] || '';
       const m = cd.match(/filename="([^"]+)"/);
-      const name = (m && m[1]) || f.original_filename || `attachment-${f.id}`;
+      const name = (m && m[1]) || attachmentName(f);
       const url = URL.createObjectURL(r.data);
+      activeDownloadUrl.current = url;
       const a = document.createElement('a');
       a.href = url;
       a.download = name;
+      a.rel = 'noopener';
       document.body.appendChild(a);
       a.click();
       a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      setTimeout(() => {
+        try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+        if (activeDownloadUrl.current === url) activeDownloadUrl.current = null;
+      }, 5000);
     } catch (e) {
       const msg = e?.response?.status === 410
         ? 'File is missing from storage.'
@@ -592,6 +633,23 @@ export function AssetDetail({ id }) {
     }
   };
 
+  /** Single owner of the preview object URL: revokes the superseded URL
+   * exactly once and keeps `previewUrlRef` in sync for unmount cleanup. */
+  const setPreviewObjectUrl = (url) => {
+    const prev = previewUrlRef.current;
+    previewUrlRef.current = url;
+    setPreviewUrl(url);
+    if (prev && prev !== url) {
+      try { URL.revokeObjectURL(prev); } catch { /* ignore */ }
+    }
+  };
+
+  const closeAttachmentPreview = () => {
+    setPreviewObjectUrl(null);
+    setPreviewName('');
+    setPreviewError('');
+  };
+
   const openAttachmentPreview = async (f) => {
     if (previewBusy) return;
     setPreviewBusy(true);
@@ -600,12 +658,8 @@ export function AssetDetail({ id }) {
       const r = await api.get(`/assets/attachments/${f.id}/download/`, {
         responseType: 'blob',
       });
-      const url = URL.createObjectURL(r.data);
-      setPreviewUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return url;
-      });
-      setPreviewName(f.original_filename || `attachment-${f.id}`);
+      setPreviewObjectUrl(URL.createObjectURL(r.data));
+      setPreviewName(attachmentName(f));
     } catch (e) {
       const msg = e?.response?.status === 403
         ? 'You do not have permission to preview this file.'
@@ -616,15 +670,6 @@ export function AssetDetail({ id }) {
     } finally {
       setPreviewBusy(false);
     }
-  };
-
-  const closeAttachmentPreview = () => {
-    setPreviewUrl((url) => {
-      if (url) URL.revokeObjectURL(url);
-      return null;
-    });
-    setPreviewName('');
-    setPreviewError('');
   };
 
   const doDeleteAttachment = async () => {
@@ -906,18 +951,18 @@ export function AssetDetail({ id }) {
             {attachments.map((f) => (
               <li key={f.id} className="file-row">
                 <div className="file-main">
-                  <div className="file-name">{f.original_filename || `File #${f.id}`}</div>
+                  <div className="file-name">{attachmentName(f)}</div>
                   <div className="file-meta">
                     {f.created_at ? new Date(f.created_at).toLocaleString() : ''}
                   </div>
                 </div>
                 <div className="file-actions">
-                  {isImageFilename(f.original_filename) && (
+                  {isImageFilename(attachmentName(f)) && (
                     <button
                       type="button" className="btn-small"
                       onClick={() => openAttachmentPreview(f)}
                       disabled={previewBusy}
-                      aria-label={`Preview ${f.original_filename || f.id}`}
+                      aria-label={`Preview ${attachmentName(f)}`}
                     >
                       {previewBusy ? 'Loading…' : 'Preview'}
                     </button>
@@ -932,7 +977,7 @@ export function AssetDetail({ id }) {
                     <button
                       type="button" className="btn-small btn-danger"
                       onClick={() => setAttToDelete(f)}
-                      aria-label={`Delete attachment ${f.original_filename || f.id}`}
+                      aria-label={`Delete attachment ${attachmentName(f)}`}
                     >
                       Delete…
                     </button>
@@ -959,7 +1004,7 @@ export function AssetDetail({ id }) {
         {attToDelete && (
           <ConfirmDialog
             title="Delete attachment?"
-            message={`"${attToDelete.original_filename || 'This file'}" will be soft-deleted (kept in storage, restorable by a System Admin).`}
+            message={`"${attachmentName(attToDelete)}" will be soft-deleted (kept in storage, restorable by a System Admin).`}
             confirmLabel="Delete attachment" danger busy={attBusy}
             onConfirm={doDeleteAttachment}
             onCancel={() => setAttToDelete(null)}

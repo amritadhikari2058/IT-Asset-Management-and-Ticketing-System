@@ -771,6 +771,8 @@ class ScheduledReport(SoftDeleteModel):
 class ScheduledReportRun(SoftDeleteModel):
     """Execution history for scheduled report delivery."""
     STATUS_CHOICES = (
+        ("pending", "Pending"),
+        ("running", "Running"),
         ("succeeded", "Succeeded"),
         ("failed", "Failed"),
         ("skipped", "Skipped"),

@@ -745,78 +745,99 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
-        po = self.get_object()
-        if not is_manager_or_admin(request.user):
-            raise PermissionDenied("Forbidden")
-        if po.created_by == request.user:
-            return Response({"detail": "Cannot approve own PO"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if po.status != "pending_approval":
-            return Response({"detail": "Not pending approval"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if po.requires_system_admin_approval and getattr(
-                request.user, "role", "") != "system_admin":
-            return Response({"detail": "System Admin approval required"},
-                            status=status.HTTP_403_FORBIDDEN)
+        with transaction.atomic():
+            po = get_object_or_404(
+                PurchaseOrder.objects.select_for_update(), pk=pk)
+            if not is_manager_or_admin(request.user):
+                raise PermissionDenied("Forbidden")
+            if po.created_by == request.user:
+                return Response({"detail": "Cannot approve own PO"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if po.status != "pending_approval":
+                return Response({"detail": "Not pending approval"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if _check_version(po, request.data):
+                return Response(
+                    {"detail": "This order changed since you loaded it. "
+                               "Reload and retry."},
+                    status=status.HTTP_409_CONFLICT)
+            if po.requires_system_admin_approval and getattr(
+                    request.user, "role", "") != "system_admin":
+                return Response({"detail": "System Admin approval required"},
+                                status=status.HTTP_403_FORBIDDEN)
 
-        po.status = "approved"
-        po.approver = request.user
-        po.approval_decision = "approved"
-        po.approval_reason = request.data.get("reason", "")
-        po.approved_at = timezone.now()
-        po.version = (po.version or 1) + 1
-        po.save()
-        ProcurementHistory.objects.create(
-            purchase_order=po, actor=request.user, action="approved",
-            detail=po.approval_reason or "Approved")
-        log_action(actor=request.user, action="approve", instance=po,
-                   reason="purchase order approved")
+            po.status = "approved"
+            po.approver = request.user
+            po.approval_decision = "approved"
+            po.approval_reason = request.data.get("reason", "")
+            po.approved_at = timezone.now()
+            po.version = (po.version or 1) + 1
+            po.save()
+            ProcurementHistory.objects.create(
+                purchase_order=po, actor=request.user, action="approved",
+                detail=po.approval_reason or "Approved")
+            log_action(actor=request.user, action="approve", instance=po,
+                       reason="purchase order approved")
         return Response(self.get_serializer(po).data)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
-        po = self.get_object()
-        if not is_manager_or_admin(request.user):
-            raise PermissionDenied("Forbidden")
-        if po.status != "pending_approval":
-            return Response({"detail": "Not pending approval"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if po.requires_system_admin_approval and getattr(
-                request.user, "role", "") != "system_admin":
-            return Response({"detail": "System Admin approval required"},
-                            status=status.HTTP_403_FORBIDDEN)
+        with transaction.atomic():
+            po = get_object_or_404(
+                PurchaseOrder.objects.select_for_update(), pk=pk)
+            if not is_manager_or_admin(request.user):
+                raise PermissionDenied("Forbidden")
+            if po.status != "pending_approval":
+                return Response({"detail": "Not pending approval"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if _check_version(po, request.data):
+                return Response(
+                    {"detail": "This order changed since you loaded it. "
+                               "Reload and retry."},
+                    status=status.HTTP_409_CONFLICT)
+            if po.requires_system_admin_approval and getattr(
+                    request.user, "role", "") != "system_admin":
+                return Response({"detail": "System Admin approval required"},
+                                status=status.HTTP_403_FORBIDDEN)
 
-        po.status = "rejected"
-        po.approver = request.user
-        po.approval_decision = "rejected"
-        po.approval_reason = request.data.get("reason", "")
-        po.version = (po.version or 1) + 1
-        po.save()
-        ProcurementHistory.objects.create(
-            purchase_order=po, actor=request.user, action="rejected",
-            detail=po.approval_reason or "Rejected")
-        log_action(actor=request.user, action="reject", instance=po,
-                   reason="purchase order rejected")
+            po.status = "rejected"
+            po.approver = request.user
+            po.approval_decision = "rejected"
+            po.approval_reason = request.data.get("reason", "")
+            po.version = (po.version or 1) + 1
+            po.save()
+            ProcurementHistory.objects.create(
+                purchase_order=po, actor=request.user, action="rejected",
+                detail=po.approval_reason or "Rejected")
+            log_action(actor=request.user, action="reject", instance=po,
+                       reason="purchase order rejected")
         return Response(self.get_serializer(po).data)
 
     @action(detail=True, methods=["post"])
     def send_to_vendor(self, request, pk=None):
-        po = self.get_object()
-        if not is_manager_or_admin(request.user):
-            raise PermissionDenied("Forbidden")
-        if po.status != "approved":
-            return Response({"detail": "PO must be approved first"},
-                            status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            po = get_object_or_404(
+                PurchaseOrder.objects.select_for_update(), pk=pk)
+            if not is_manager_or_admin(request.user):
+                raise PermissionDenied("Forbidden")
+            if po.status != "approved":
+                return Response({"detail": "PO must be approved first"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if _check_version(po, request.data):
+                return Response(
+                    {"detail": "This order changed since you loaded it. "
+                               "Reload and retry."},
+                    status=status.HTTP_409_CONFLICT)
 
-        po.status = "sent_to_vendor"
-        po.sent_at = timezone.now()
-        po.version = (po.version or 1) + 1
-        po.save()
-        ProcurementHistory.objects.create(
-            purchase_order=po, actor=request.user, action="sent",
-            detail="Sent to vendor")
-        log_action(actor=request.user, action="update", instance=po,
-                   reason="purchase order sent to vendor")
+            po.status = "sent_to_vendor"
+            po.sent_at = timezone.now()
+            po.version = (po.version or 1) + 1
+            po.save()
+            ProcurementHistory.objects.create(
+                purchase_order=po, actor=request.user, action="sent",
+                detail="Sent to vendor")
+            log_action(actor=request.user, action="update", instance=po,
+                       reason="purchase order sent to vendor")
         return Response(self.get_serializer(po).data)
 
     @action(detail=True, methods=["post"])

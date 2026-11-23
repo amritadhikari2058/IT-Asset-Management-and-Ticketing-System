@@ -561,6 +561,25 @@ class LicenseAgreement(SoftDeleteModel):
             models.Index(fields=["department"], name="lic_agr_dept_idx"),
             models.Index(fields=["owner"], name="lic_agr_owner_idx"),
         ]
+        constraints = [
+            models.CheckConstraint(
+                name="lic_agr_reserved_within_purchased",
+                condition=models.Q(quantity_reserved__lte=models.F("quantity_purchased")),
+            ),
+            models.CheckConstraint(
+                name="lic_agr_allocated_within_available",
+                condition=models.Q(
+                    quantity_allocated__lte=models.F("quantity_purchased") - models.F("quantity_reserved")
+                ),
+            ),
+            models.CheckConstraint(
+                name="lic_agr_concurrent_limit_set",
+                condition=(
+                    ~models.Q(license_model="concurrent")
+                    | models.Q(concurrent_limit__gt=0)
+                ),
+            ),
+        ]
 
     def __str__(self):
         return f"{self.agreement_number} - {self.software_product.name} ({self.status})"

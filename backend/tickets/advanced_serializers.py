@@ -64,7 +64,7 @@ class TicketQueueMembershipSerializer(serializers.ModelSerializer):
         fields = ["id", "queue", "user", "user_email", "user_role", "role",
                   "is_active", "can_claim", "can_assign_others", "can_view_all",
                   "joined_at", "created_at", "updated_at"]
-        read_only_fields = ["id", "joined_at", "created_at", "updated_at"]
+        read_only_fields = ["id", "queue", "user", "joined_at", "created_at", "updated_at"]
 
 
 class TicketQueueMembershipCreateSerializer(serializers.ModelSerializer):
@@ -97,8 +97,8 @@ class TicketWatcherSerializer(serializers.ModelSerializer):
         fields = ["id", "ticket", "user", "user_email", "watch_type",
                   "added_by", "added_by_email", "is_active", "muted_until",
                   "is_muted", "created_at", "updated_at"]
-        read_only_fields = ["id", "added_by", "is_muted", "created_at",
-                            "updated_at"]
+        read_only_fields = ["id", "ticket", "user", "added_by", "is_muted",
+                            "created_at", "updated_at"]
 
     def get_is_muted(self, obj):
         return obj.is_muted()
@@ -363,6 +363,33 @@ class SatisfactionSubmitSerializer(serializers.Serializer):
                                      max_length=1000)
 
 
+SAVED_VIEW_ALLOWED_COLUMNS = {
+    "id", "title", "status", "priority", "category", "category_name",
+    "requester", "requester_email", "assignee", "assignee_email",
+    "department", "department_name", "created_at", "updated_at",
+    "sla_due_at", "sla_breached", "is_overdue", "resolved_at", "closed_at",
+}
+
+
+def _validate_saved_view_columns(value):
+    if not isinstance(value, list):
+        raise serializers.ValidationError("Columns must be a list.")
+    if len(value) > 32:
+        raise serializers.ValidationError("Too many columns.")
+    cleaned = []
+    seen = set()
+    for col in value:
+        if not isinstance(col, str):
+            raise serializers.ValidationError("Column names must be strings.")
+        if col not in SAVED_VIEW_ALLOWED_COLUMNS:
+            raise serializers.ValidationError(f"Column '{col}' is not allowed.")
+        if col in seen:
+            continue
+        seen.add(col)
+        cleaned.append(col)
+    return cleaned
+
+
 class SavedTicketViewSerializer(serializers.ModelSerializer):
     class Meta:
         model = SavedTicketView
@@ -370,6 +397,25 @@ class SavedTicketViewSerializer(serializers.ModelSerializer):
                   "columns", "is_shared", "is_default", "created_at",
                   "updated_at"]
         read_only_fields = ["id", "owner", "created_at", "updated_at"]
+
+    def validate_filters(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Filters must be a JSON object.")
+        return value
+
+    def validate_ordering(self, value):
+        allowed = {"created_at", "updated_at", "priority", "sla_due_at",
+                   "age", "resolved_at", "satisfaction_rating", "queue",
+                   "assignee"}
+        if value:
+            field = value.lstrip("-")
+            if field not in allowed:
+                raise serializers.ValidationError(
+                    f"Ordering '{value}' is not allowed.")
+        return value
+
+    def validate_columns(self, value):
+        return _validate_saved_view_columns(value)
 
 
 class SavedTicketViewCreateSerializer(serializers.ModelSerializer):
@@ -395,9 +441,7 @@ class SavedTicketViewCreateSerializer(serializers.ModelSerializer):
         return value
 
     def validate_columns(self, value):
-        if not isinstance(value, list):
-            raise serializers.ValidationError("Columns must be a list.")
-        return value
+        return _validate_saved_view_columns(value)
 
 
 class TimelineEventSerializer(serializers.Serializer):

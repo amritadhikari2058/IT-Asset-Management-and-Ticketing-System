@@ -134,14 +134,14 @@ class Asset(SoftDeleteModel):
             models.Index(
                 fields=["status", "assigned_to"],
                 name="asset_status_assigned_to_idx",
-# Partial unique index on serial_number for active (non-deleted) assets
+            ),
+            # Partial unique index on serial_number for active (non-deleted) assets
             # to prevent collisions during restoration. Soft-deleted assets may have
             # duplicate serials to preserve historical data (see migration 0003 report).
             models.Index(
                 fields=["serial_number"],
-                name="asset_serial_number_active_unique",
+                name="asset_serial_active_unique",
                 condition=~models.Q(is_deleted=True),
-            ),
             ),
             # Composite index for category-based queries: status + category
             models.Index(
@@ -753,7 +753,7 @@ class Assignment(models.Model):
             if asset.is_deleted:
                 raise ValidationError(
                     {"asset": "Cannot assign a soft-deleted asset."})
-            if asset.status in ("retired", "lost"):
+            if asset.status in ("retired", "lost", "disposed"):
                 raise ValidationError(
                     {"asset": f"Cannot assign a {asset.get_status_display()} "
                              "asset."})

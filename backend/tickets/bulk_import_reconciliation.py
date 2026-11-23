@@ -48,6 +48,34 @@ class BulkImportConflict(BulkImportReconciliationError):
     code = "conflict"
 
 
+_SENSITIVE_DIAGNOSTIC_RE = None
+
+
+def sanitize_import_diagnostic(text: str | None) -> str:
+    """Redact secrets/internal details from bulk-import diagnostics.
+
+    Preserves human-readable validation feedback while removing common secret
+    patterns, tracebacks, and internal filesystem paths.
+    """
+    import re
+
+    global _SENSITIVE_DIAGNOSTIC_RE
+    if not text:
+        return ""
+    value = str(text)
+    # Drop traceback-like content.
+    value = re.sub(r"Traceback \(most recent call last\):[\s\S]*", "[redacted traceback]", value)
+    value = re.sub(r"File \"[^\"]+\", line \d+[^\n]*", "[redacted traceback]", value)
+    # Redact common secrets/tokens/fingerprints.
+    value = re.sub(r"\b[A-Fa-f0-9]{32,}\b", "[redacted]", value)
+    value = re.sub(r"(?i)\bBearer\s+\S+", "[redacted]", value)
+    value = re.sub(r"(?i)\b(?:token|secret|password|api[_-]?key|authorization)\s*[:=]\s*\S+", "[redacted]", value)
+    # Redact internal absolute paths (Windows/Unix) but keep filename-like hints.
+    value = re.sub(r"[A-Za-z]:\\[^\s\"'<>]+", "[redacted-path]", value)
+    value = re.sub(r"(?<!\w)/(?:var|srv|app|home|usr|etc|tmp|opt)/[^\s\"'<>]+", "[redacted-path]", value)
+    return " ".join(value.split())[:1000]
+
+
 @dataclass
 class ReconciliationAssessment:
     operation_id: int
@@ -171,7 +199,7 @@ def _build_reconstructed_result(op: TicketBulkImportOperation) -> dict[str, Any]
         elif o.outcome == TicketBulkImportRowOutcome.OUTCOME_FAILED:
             failed.append({
                 "row": o.row_number,
-                "errors": o.error_message or "Import row failed.",
+                "errors": sanitize_import_diagnostic(o.error_message) or "Import row failed.",
             })
     return {
         "successful": successful,
@@ -503,6 +531,7 @@ def finalize_operation(*, operation_id: int, user_id: int, actor,
     reason = (reason or "").strip()
     if not reason:
         raise BulkImportReconciliationError("A reason is required for finalization.")
+    reason = sanitize_import_diagnostic(reason)
 
     locked = (TicketBulkImportOperation.objects
               .select_for_update()

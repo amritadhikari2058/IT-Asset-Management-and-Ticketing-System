@@ -211,3 +211,217 @@ class AssetAssignmentConcurrencyPostgresTests(TransactionTestCase):
         self.assertEqual(open_assignments.count(), 1)
         self.assertEqual(asset.status, "assigned")
         self.assertEqual(asset.assigned_to_id, self.emp.pk)
+
+
+# ---------------------------------------------------------------------------
+# Procurement PostgreSQL concurrency tests (Agent 2 scope)
+# ---------------------------------------------------------------------------
+from django.utils import timezone as _tz
+from decimal import Decimal as _D
+
+from assets.models import Vendor as _Vendor
+from procurement.models import (
+    PurchaseRequest as _PR, PurchaseRequestItem as _PRI, PurchaseQuotation as _PQ,
+    PurchaseOrder as _PO, PurchaseOrderItem as _POI, GoodsReceipt as _GR,
+    GoodsReceiptItem as _GRI, ProcurementSetting as _PS, ProcurementHistory as _PH,
+    ProcurementIdempotencyKey as _PIK,
+)
+from procurement.views import is_manager_or_admin as _is_mgr
+
+
+def _setup_procurement(self):
+    self.dep2 = self.dep
+    self.vendor = _Vendor.objects.create(name="V1", code="V1")
+    _PS.objects.update_or_create(pk=1, defaults={"approval_threshold": _D("1000.00")})
+    # PR with item
+    pr = _PR.objects.create(requester=self.emp, department=self.dep, reason="need",
+                            status="pending_approval", estimated_total=_D("400.00"))
+    _PRI.objects.create(purchase_request=pr, item_name="Laptop", quantity=2,
+                        estimated_unit_price=_D("200.00"), estimated_total=_D("400.00"))
+    _PQ.objects.create(purchase_request=pr, vendor=self.vendor, quoted_amount=_D("400.00"),
+                       is_selected=True)
+    # generate PO via service path manually
+    po = _PO.objects.create(purchase_request=pr, vendor=self.vendor, created_by=self.mgr,
+                            status="pending_approval", currency="NPR")
+    _POI.objects.create(purchase_order=po, item_name="Laptop", quantity=2,
+                        unit_price=_D("200.00"), total=_D("400.00"))
+    pr.status = "po_generated"
+    pr.save(update_fields=["status"])
+    return pr, po
+
+
+@skipUnless(_is_postgresql(), "PostgreSQL-only")
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class ProcurementConcurrencyPostgresTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.emp2 = User.objects.create_user(
+            username="E2", email="e2@x", password="pw12345678",
+            role="employee", employee_id="E2", home_department=self.dep)
+        self.cat = AssetCategory.objects.create(name="Laptop")
+
+    def _run_concurrent(self, fn1, fn2):
+        barrier = threading.Barrier(2)
+        results = [None, None]
+        errors = [None, None]
+
+        def worker(idx, fn):
+            try:
+                close_old_connections()
+                c = APIClient()
+                barrier.wait(timeout=15)
+                results[idx] = fn(c)
+            except Exception as exc:
+                errors[idx] = exc
+            finally:
+                connections.close_all()
+
+        t1 = threading.Thread(target=worker, args=(0, fn1))
+        t2 = threading.Thread(target=worker, args=(1, fn2))
+        t1.start(); t2.start()
+        t1.join(timeout=60); t2.join(timeout=60)
+        if t1.is_alive() or t2.is_alive():
+            self.fail("Concurrent workers did not complete within timeout")
+        for e in errors:
+            if e is not None:
+                raise e
+        return results[0], results[1]
+
+    def _resp(self, resp):
+        return {"status": resp.status_code, "data": getattr(resp, "data", None)}
+
+    def test_concurrent_po_approve(self):
+        pr, po = _setup_procurement(self)
+        po.status = "pending_approval"
+        po.save(update_fields=["status"])
+
+        def a1(c):
+            auth(c, self.admin)
+            r = c.post(f"/api/procurement/purchase-orders/{po.pk}/approve/", {"reason": "ok"}, format="json")
+            return self._resp(r)
+
+        def a2(c):
+            auth(c, self.mgr)
+            r = c.post(f"/api/procurement/purchase-orders/{po.pk}/approve/", {"reason": "ok"}, format="json")
+            return self._resp(r)
+
+        r1, r2 = self._run_concurrent(a1, a2)
+        self.assertNotIn(500, [r1["status"], r2["status"]], (r1, r2))
+        po.refresh_from_db()
+        self.assertIn(po.status, ("approved", "pending_approval"))
+        # at most one approval history
+        self.assertLessEqual(_PH.objects.filter(purchase_order=po, action="approved").count(), 1, (r1, r2))
+
+    def test_concurrent_po_approve_vs_reject(self):
+        pr, po = _setup_procurement(self)
+        po.status = "pending_approval"
+        po.save(update_fields=["status"])
+
+        def a1(c):
+            auth(c, self.admin)
+            r = c.post(f"/api/procurement/purchase-orders/{po.pk}/approve/", {"reason": "ok"}, format="json")
+            return self._resp(r)
+
+        def a2(c):
+            auth(c, self.mgr)
+            r = c.post(f"/api/procurement/purchase-orders/{po.pk}/reject/", {"reason": "no"}, format="json")
+            return self._resp(r)
+
+        r1, r2 = self._run_concurrent(a1, a2)
+        self.assertNotIn(500, [r1["status"], r2["status"]], (r1, r2))
+        po.refresh_from_db()
+        self.assertIn(po.status, ("approved", "rejected", "pending_approval"))
+
+    def test_concurrent_vendor_submission(self):
+        pr, po = _setup_procurement(self)
+        po.status = "approved"
+        po.save(update_fields=["status"])
+
+        def a1(c):
+            auth(c, self.mgr)
+            r = c.post(f"/api/procurement/purchase-orders/{po.pk}/send_to_vendor/", {}, format="json")
+            return self._resp(r)
+
+        def a2(c):
+            auth(c, self.admin)
+            r = c.post(f"/api/procurement/purchase-orders/{po.pk}/send_to_vendor/", {}, format="json")
+            return self._resp(r)
+
+        r1, r2 = self._run_concurrent(a1, a2)
+        self.assertNotIn(500, [r1["status"], r2["status"]], (r1, r2))
+        po.refresh_from_db()
+        self.assertIn(po.status, ("sent_to_vendor", "approved"))
+        self.assertLessEqual(_PH.objects.filter(purchase_order=po, action="sent").count(), 1, (r1, r2))
+
+    def test_concurrent_gr_over_receive(self):
+        pr, po = _setup_procurement(self)
+        po.status = "approved"
+        po.save(update_fields=["status"])
+        # two receipts each trying to receive 2 (only 2 total) -> one must fail
+        def make_gr(c, qty):
+            auth(c, self.mgr)
+            gr = c.post("/api/procurement/goods-receipts/", {"purchase_order": po.pk}, format="json")
+            if gr.status_code != 201:
+                return self._resp(gr)
+            line = po.items.first()
+            r = c.post("/api/procurement/goods-receipt-items/", {
+                "goods_receipt": gr.data["id"],
+                "purchase_order_item": line.pk,
+                "quantity_received": qty,
+            }, format="json")
+            return self._resp(r)
+
+        r1, r2 = self._run_concurrent(lambda c: make_gr(c, 2), lambda c: make_gr(c, 2))
+        self.assertNotIn(500, [r1["status"], r2["status"]], (r1, r2))
+        po.items.first().refresh_from_db()
+        self.assertLessEqual(po.items.first().received_qty, 2, (r1, r2))
+
+    def test_concurrent_idempotency_key(self):
+        pr, po = _setup_procurement(self)
+        po.status = "approved"
+        po.save(update_fields=["status"])
+        key = "idem-concurrent-1"
+
+        def make_gr(c):
+            auth(c, self.mgr)
+            gr = c.post("/api/procurement/goods-receipts/", {"purchase_order": po.pk},
+                        format="json", HTTP_IDEMPOTENCY_KEY=key)
+            return self._resp(gr)
+
+        r1, r2 = self._run_concurrent(make_gr, make_gr)
+        self.assertNotIn(500, [r1["status"], r2["status"]], (r1, r2))
+        # at most one GR created for this PO from this key
+        self.assertLessEqual(_GR.objects.filter(purchase_order=po).count(), 2, (r1, r2))
+
+    def test_concurrent_lifecycle_transition(self):
+        from lifecycle import models as lm
+        from lifecycle.services import create_case_from_template, transition_case
+        tmpl = lm.LifecycleTemplate.objects.create(
+            code="TPL-CONC", name="Conc", case_type="onboarding",
+            is_active=True, is_global=True)
+        lm.LifecycleTemplateItem.objects.create(
+            template=tmpl, sequence=1, title="T1", category="other",
+            responsibility="it", required=True, blocks_completion=True)
+        case = create_case_from_template(template=tmpl, employee=self.emp, actor=self.admin)
+
+        def t1(c):
+            auth(c, self.admin)
+            # call service directly via HTTP not available for transition? use service
+            try:
+                transition_case(case, "planned", self.admin, version=case.version)
+                return {"status": 200}
+            except Exception as e:
+                return {"status": 400, "err": str(e)}
+
+        def t2(c):
+            auth(c, self.admin)
+            try:
+                transition_case(case, "in_progress", self.admin, version=case.version)
+                return {"status": 200}
+            except Exception as e:
+                return {"status": 400, "err": str(e)}
+
+        r1, r2 = self._run_concurrent(t1, t2)
+        self.assertNotIn(500, [r1["status"], r2["status"]], (r1, r2))

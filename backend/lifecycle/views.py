@@ -7,6 +7,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -190,20 +191,29 @@ class LifecycleCaseViewSet(viewsets.ModelViewSet):
                 case, next_status, self.request.user,
                 reason=ser.validated_data.get("reason", ""),
                 version=ser.validated_data.get("version"))
-        except ValidationError as exc:
+        except (ValidationError, DjangoValidationError) as exc:
             if getattr(exc, "code", None) == 409:
-                return Response(exc.detail, status=status.HTTP_409_CONFLICT)
-            raise
+                return Response(getattr(exc, "detail", str(exc)), status=status.HTTP_409_CONFLICT)
+            detail = getattr(exc, "detail", None)
+            if detail is None:
+                detail = getattr(exc, "message", None) or str(exc)
+            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=["post"])
     def plan(self, request, pk=None):
-        case = self._transition("planned")
+        result = self._transition("planned")
+        if isinstance(result, Response):
+            return result
+        case = result
         return Response(sl.LifecycleCaseDetailSerializer(
             case, context={"request": request}).data)
 
     @action(detail=True, methods=["post"])
     def start(self, request, pk=None):
-        case = self._transition("in_progress")
+        result = self._transition("in_progress")
+        if isinstance(result, Response):
+            return result
+        case = result
         return Response(sl.LifecycleCaseDetailSerializer(
             case, context={"request": request}).data)
 
@@ -213,7 +223,10 @@ class LifecycleCaseViewSet(viewsets.ModelViewSet):
         if case.case_type != CASE_TYPE_ONBOARDING:
             return Response({"detail": "Onboarding only."},
                             status=status.HTTP_400_BAD_REQUEST)
-        case = self._transition("ready_for_employee")
+        result = self._transition("ready_for_employee")
+        if isinstance(result, Response):
+            return result
+        case = result
         return Response(sl.LifecycleCaseDetailSerializer(
             case, context={"request": request}).data)
 
@@ -223,31 +236,46 @@ class LifecycleCaseViewSet(viewsets.ModelViewSet):
         if case.case_type != CASE_TYPE_ONBOARDING:
             return Response({"detail": "Onboarding only."},
                             status=status.HTTP_400_BAD_REQUEST)
-        case = self._transition("employee_started")
+        result = self._transition("employee_started")
+        if isinstance(result, Response):
+            return result
+        case = result
         return Response(sl.LifecycleCaseDetailSerializer(
             case, context={"request": request}).data)
 
     @action(detail=True, methods=["post"])
     def complete(self, request, pk=None):
-        case = self._transition("completed")
+        result = self._transition("completed")
+        if isinstance(result, Response):
+            return result
+        case = result
         return Response(sl.LifecycleCaseDetailSerializer(
             case, context={"request": request}).data)
 
     @action(detail=True, methods=["post"])
     def block(self, request, pk=None):
-        case = self._transition("blocked")
+        result = self._transition("blocked")
+        if isinstance(result, Response):
+            return result
+        case = result
         return Response(sl.LifecycleCaseDetailSerializer(
             case, context={"request": request}).data)
 
     @action(detail=True, methods=["post"])
     def unblock(self, request, pk=None):
-        case = self._transition("in_progress")
+        result = self._transition("in_progress")
+        if isinstance(result, Response):
+            return result
+        case = result
         return Response(sl.LifecycleCaseDetailSerializer(
             case, context={"request": request}).data)
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
-        case = self._transition("cancelled")
+        result = self._transition("cancelled")
+        if isinstance(result, Response):
+            return result
+        case = result
         return Response(sl.LifecycleCaseDetailSerializer(
             case, context={"request": request}).data)
 

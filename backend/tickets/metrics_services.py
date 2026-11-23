@@ -4,12 +4,12 @@ All figures calculated from real ticket data via database aggregation.
 No fabricated trends.
 """
 from django.contrib.auth import get_user_model
-from django.db.models import Avg, Case, Count, Q, DurationField, ExpressionWrapper, F, OuterRef, Value
+from django.db.models import Avg, Case, Count, DateTimeField, DurationField, ExpressionWrapper, F, OuterRef, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from datetime import timedelta
 
-from tickets.models import Ticket, TicketQueue, TicketSatisfactionSurvey
+from tickets.models import Ticket, TicketQueue, TicketSatisfactionSurvey, TicketSlaPause
 from tickets.queue_services import _is_it_staff
 
 User = get_user_model()
@@ -73,12 +73,18 @@ def _compute_overdue_and_breached(qs, now):
 
     overdue_count = annotated.filter(effective_due__lt=now).count()
 
-    # A ticket is breached if it's open/closed and past its effective deadline,
-    # or if it's resolved after its effective deadline.
-    breached_count = qs.filter(
-        Q(status__in=OPEN_STATUSES, effective_due__lt=now) |
-        Q(status="resolved", resolved_at__gt=F('effective_due'))
-    ).count()
+    # A ticket is breached if it's open and past its effective deadline,
+    # or if it was resolved after its effective deadline.
+    resolved_annotated = qs.filter(status="resolved", sla_due_at__isnull=False).annotate(
+        effective_due=ExpressionWrapper(
+            F('sla_due_at') + Coalesce(pause_subquery, Value(timedelta(0))),
+            output_field=DateTimeField()
+        )
+    )
+    breached_count = (
+        annotated.filter(effective_due__lt=now).count()
+        + resolved_annotated.filter(resolved_at__gt=F('effective_due')).count()
+    )
 
     return overdue_count, breached_count
 

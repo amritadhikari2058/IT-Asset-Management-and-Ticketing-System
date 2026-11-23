@@ -319,6 +319,21 @@ class _ScheduledReportLeaseKeeper:
         return False
 
 
+def _advance_next_run(sr):
+    """Move next_run_at forward by one cadence."""
+    from datetime import timedelta
+    now = timezone.now()
+    base = sr.next_run_at or now
+    if sr.schedule == "daily":
+        sr.next_run_at = base + timedelta(days=1)
+    elif sr.schedule == "weekly":
+        sr.next_run_at = base + timedelta(weeks=1)
+    elif sr.schedule == "monthly":
+        sr.next_run_at = base + timedelta(days=30)
+    else:
+        sr.next_run_at = base + timedelta(days=1)
+    sr.save(update_fields=["next_run_at"])
+
 @shared_task(bind=True, max_retries=2, retry_backoff=300)
 def run_scheduled_reports(self):
     """Due scheduled reports: render, export, email, record history.
@@ -341,7 +356,7 @@ def run_scheduled_reports(self):
     notification categories (see ``common.notifications``).
     """
     from django.db import transaction
-    from common.models import ScheduledReport, ScheduledReportRun
+    from common.models import ScheduledReport, ScheduledReportDelivery, ScheduledReportRun
 
     now = timezone.now()
 
@@ -391,6 +406,25 @@ def run_scheduled_reports(self):
         results["checked"] += 1
         run = None
         token = uuid.uuid4().hex
+        try:
+            saved_report = sr.saved_report
+        except Exception:
+            saved_report = None
+        if saved_report is None or getattr(saved_report, "is_deleted", False):
+            logger.warning(
+                "Scheduled report %s skipped: saved report missing or deleted",
+                sr.pk)
+            _advance_next_run(sr)
+            results["failed"] += 1
+            continue
+        report_owner = getattr(saved_report, "user", None)
+        if report_owner is None or not getattr(report_owner, "is_active", True):
+            logger.warning(
+                "Scheduled report %s skipped: report owner missing or inactive",
+                sr.pk)
+            _advance_next_run(sr)
+            results["failed"] += 1
+            continue
         # Serialize workers per scheduled report so two scanners cannot both
         # start a run for the same report and double-deliver it. The row lock
         # is held only for the quick claim + next_run_at advance; rendering
@@ -426,6 +460,11 @@ def run_scheduled_reports(self):
                         # Someone else recovered it first; back off.
                         continue
                     results["recovered"] += 1
+                    ScheduledReportDelivery.objects.filter(
+                        scheduled_report_run=existing_run.pk, status="pending"
+                    ).update(status="failed",
+                             error_message="worker_crashed_before_send",
+                             updated_at=now)
                 run = ScheduledReportRun.objects.create(
                     scheduled_report=locked,
                     status="running", success=False,
@@ -495,8 +534,10 @@ def run_scheduled_reports(self):
                 # filters.
                 recipients = sr.recipients or []
                 sent_count = 0
-                from common.models import ScheduledReportDelivery
+                delivery_failures = 0
                 for to_email in recipients:
+                    if keeper.lost:
+                        raise _ScheduledReportOwnershipLost()
                     normalized_email = _normalize_email(to_email)
                     dedupe_key = _delivery_dedupe_key(run, to_email)
 
@@ -516,16 +557,32 @@ def run_scheduled_reports(self):
                                 and existing.attempts >= \
                                 SCHEDULED_REPORT_MAX_DELIVERY_ATTEMPTS:
                             # Bounded retry exhausted; skip this recipient.
+                            delivery_failures += 1
                             continue
                         # Pending or retryable failed: attempt delivery.
                         delivery = existing
                     else:
-                        delivery = ScheduledReportDelivery.objects.create(
-                            scheduled_report_run=run,
-                            recipient_email=normalized_email,
-                            delivery_dedupe_key=dedupe_key,
-                            status="pending",
-                            attempts=1)
+                        try:
+                            delivery = ScheduledReportDelivery.objects.create(
+                                scheduled_report_run=run,
+                                recipient_email=normalized_email,
+                                delivery_dedupe_key=dedupe_key,
+                                status="pending",
+                                attempts=1)
+                        except Exception:
+                            # Race: another worker inserted the same dedupe key.
+                            delivery = ScheduledReportDelivery.objects.filter(
+                                delivery_dedupe_key=dedupe_key).first()
+                            if delivery is None:
+                                raise
+                            if delivery.status == "sent":
+                                sent_count += 1
+                                continue
+                            if delivery.status == "failed" \
+                                    and delivery.attempts >= \
+                                    SCHEDULED_REPORT_MAX_DELIVERY_ATTEMPTS:
+                                delivery_failures += 1
+                                continue
 
                     # Atomic claim: only this worker may deliver this row.
                     claimed = ScheduledReportDelivery.objects.filter(
@@ -533,12 +590,21 @@ def run_scheduled_reports(self):
                         attempts__lt=SCHEDULED_REPORT_MAX_DELIVERY_ATTEMPTS,
                     ).update(
                         status="pending",
-                        attempts=models.F("attempts") + 1,
+                        attempts=F("attempts") + 1,
                     )
                     if not claimed:
                         # Another worker already claimed this delivery or
                         # retry budget is exhausted; skip.
+                        latest = ScheduledReportDelivery.objects.filter(
+                            pk=delivery.pk).first()
+                        if latest and latest.status == "sent":
+                            sent_count += 1
+                        elif latest and latest.status == "failed":
+                            delivery_failures += 1
                         continue
+
+                    if keeper.lost:
+                        raise _ScheduledReportOwnershipLost()
 
                     if _email_utils.send_scheduled_report_email(
                             to_email, subject, body, filename, content,
@@ -548,20 +614,53 @@ def run_scheduled_reports(self):
                             status="sent", sent_at=timezone.now())
                         if updated:
                             sent_count += 1
+                        else:
+                            latest = ScheduledReportDelivery.objects.filter(
+                                pk=delivery.pk).first()
+                            if latest and latest.status == "sent":
+                                sent_count += 1
+                            else:
+                                delivery_failures += 1
                     else:
                         ScheduledReportDelivery.objects.filter(
                             pk=delivery.pk, status="pending").update(
                             status="failed",
                             error_message="smtp_send_failed",
                             updated_at=timezone.now())
+                        delivery_failures += 1
+
+            if not recipients:
+                run_status = "failed"
+                run_success = False
+                error_summary = "no_recipients"
+            elif sent_count == 0:
+                run_status = "failed"
+                run_success = False
+                error_summary = "all_deliveries_failed"
+            elif delivery_failures > 0:
+                run_status = "failed"
+                run_success = False
+                error_summary = "partial_delivery_failure"
+            else:
+                run_status = "succeeded"
+                run_success = True
+                error_summary = ""
 
             finalized = _finalize_scheduled_report_run(
                 run.pk, token,
-                status="succeeded", success=True,
+                status=run_status, success=run_success,
+                error_summary=error_summary,
                 finished_at=timezone.now(),
                 recipient_count=sent_count)
             if finalized:
-                results["sent"] += 1
+                if run_success:
+                    results["sent"] += 1
+                else:
+                    results["failed"] += 1
+                    logger.warning(
+                        "Scheduled report %s run %s completed with delivery "
+                        "issues: %s (sent=%s, failed=%s)", sr.pk, run.pk,
+                        error_summary, sent_count, delivery_failures)
             else:
                 # We lost the lease while delivering; another worker owns the
                 # report now. Do not count this attempt or touch its state.
@@ -592,18 +691,6 @@ class _ScheduledReportOwnershipLost(Exception):
 
 
 
-def _advance_next_run(sr):
-    """Move next_run_at forward by one cadence."""
-    from datetime import timedelta
-    now = timezone.now()
-    base = sr.next_run_at or now
-    if sr.schedule == "daily":
-        sr.next_run_at = base + timedelta(days=1)
-    elif sr.schedule == "weekly":
-        sr.next_run_at = base + timedelta(weeks=1)
-    elif sr.schedule == "monthly":
-        sr.next_run_at = base + timedelta(days=30)
-    sr.save(update_fields=["next_run_at"])
 
 
 def _render_report(payload, fmt):

@@ -291,6 +291,67 @@ def _is_staff(user):
     return _is_manager(user) or _role_of(user) == "it_support"
 
 
+_ALLOWED_TRANSITIONS = {
+    "onboarding": [
+        ("draft", "planned"), ("draft", "in_progress"), ("draft", "blocked"),
+        ("draft", "cancelled"),
+        ("planned", "in_progress"), ("planned", "blocked"), ("planned", "cancelled"),
+        ("in_progress", "ready_for_employee"), ("in_progress", "employee_started"),
+        ("in_progress", "awaiting_asset_return"), ("in_progress", "awaiting_access_revocation"),
+        ("in_progress", "ready_for_closure"), ("in_progress", "access_updated"),
+        ("in_progress", "asset_changes_completed"), ("in_progress", "blocked"),
+        ("in_progress", "cancelled"), ("in_progress", "completed"),
+        ("ready_for_employee", "employee_started"), ("ready_for_employee", "in_progress"),
+        ("ready_for_employee", "blocked"), ("ready_for_employee", "cancelled"),
+        ("employee_started", "in_progress"), ("employee_started", "awaiting_asset_return"),
+        ("employee_started", "awaiting_access_revocation"), ("employee_started", "ready_for_closure"),
+        ("employee_started", "blocked"), ("employee_started", "cancelled"),
+        ("awaiting_asset_return", "awaiting_access_revocation"),
+        ("awaiting_asset_return", "ready_for_closure"), ("awaiting_asset_return", "asset_changes_completed"),
+        ("awaiting_asset_return", "blocked"), ("awaiting_asset_return", "cancelled"),
+        ("awaiting_access_revocation", "ready_for_closure"), ("awaiting_access_revocation", "asset_changes_completed"),
+        ("awaiting_access_revocation", "blocked"), ("awaiting_access_revocation", "cancelled"),
+        ("ready_for_closure", "completed"), ("ready_for_closure", "blocked"), ("ready_for_closure", "cancelled"),
+        ("access_updated", "asset_changes_completed"), ("access_updated", "ready_for_closure"),
+        ("access_updated", "completed"), ("access_updated", "blocked"), ("access_updated", "cancelled"),
+        ("asset_changes_completed", "ready_for_closure"), ("asset_changes_completed", "completed"),
+        ("asset_changes_completed", "blocked"), ("asset_changes_completed", "cancelled"),
+        ("blocked", "in_progress"), ("blocked", "cancelled"),
+    ],
+    "offboarding": [
+        ("draft", "planned"), ("draft", "in_progress"), ("draft", "blocked"), ("draft", "cancelled"),
+        ("planned", "in_progress"), ("planned", "blocked"), ("planned", "cancelled"),
+        ("in_progress", "awaiting_asset_return"), ("in_progress", "awaiting_access_revocation"),
+        ("in_progress", "ready_for_closure"), ("in_progress", "access_updated"),
+        ("in_progress", "asset_changes_completed"), ("in_progress", "blocked"),
+        ("in_progress", "cancelled"), ("in_progress", "completed"),
+        ("awaiting_asset_return", "awaiting_access_revocation"), ("awaiting_asset_return", "ready_for_closure"),
+        ("awaiting_asset_return", "asset_changes_completed"), ("awaiting_asset_return", "blocked"),
+        ("awaiting_asset_return", "cancelled"),
+        ("awaiting_access_revocation", "ready_for_closure"), ("awaiting_access_revocation", "asset_changes_completed"),
+        ("awaiting_access_revocation", "blocked"), ("awaiting_access_revocation", "cancelled"),
+        ("ready_for_closure", "completed"), ("ready_for_closure", "blocked"), ("ready_for_closure", "cancelled"),
+        ("access_updated", "asset_changes_completed"), ("access_updated", "ready_for_closure"),
+        ("access_updated", "completed"), ("access_updated", "blocked"), ("access_updated", "cancelled"),
+        ("asset_changes_completed", "ready_for_closure"), ("asset_changes_completed", "completed"),
+        ("asset_changes_completed", "blocked"), ("asset_changes_completed", "cancelled"),
+        ("blocked", "in_progress"), ("blocked", "cancelled"),
+    ],
+    "transfer": [
+        ("draft", "planned"), ("draft", "in_progress"), ("draft", "blocked"), ("draft", "cancelled"),
+        ("planned", "in_progress"), ("planned", "blocked"), ("planned", "cancelled"),
+        ("in_progress", "access_updated"), ("in_progress", "asset_changes_completed"),
+        ("in_progress", "ready_for_closure"), ("in_progress", "blocked"),
+        ("in_progress", "cancelled"), ("in_progress", "completed"),
+        ("access_updated", "asset_changes_completed"), ("access_updated", "ready_for_closure"),
+        ("access_updated", "completed"), ("access_updated", "blocked"), ("access_updated", "cancelled"),
+        ("asset_changes_completed", "ready_for_closure"), ("asset_changes_completed", "completed"),
+        ("asset_changes_completed", "blocked"), ("asset_changes_completed", "cancelled"),
+        ("ready_for_closure", "completed"), ("ready_for_closure", "blocked"), ("ready_for_closure", "cancelled"),
+        ("blocked", "in_progress"), ("blocked", "cancelled"),
+    ],
+}
+
 def _require_transition(case, next_status):
     allowed = [t[1] for t in _ALLOWED_TRANSITIONS.get(case.case_type, [])
                if t[0] == case.status]
@@ -323,6 +384,7 @@ def transition_case(case, next_status, actor, reason="", version=None):
             code=409)
     if case.is_deleted:
         raise ValidationError("Case is deleted.")
+    _require_transition(case, next_status)
     if case.is_terminal and next_status != "cancelled":
         raise ValidationError("Case is already terminal.")
 
@@ -775,24 +837,30 @@ def _resolve_asset(case, asset, resolution, actor, related_task=None, note=""):
                 res.related_task = related_task
                 res.save(update_fields=["resolution", "notes", "resolved_by",
                                         "resolved_at", "related_task", "updated_at"])
+            _history(case, related_task, actor, "asset_returned",
+                     new_status=resolution, detail=note or resolution)
+            if resolution in ("returned", "transferred"):
+                _return_asset_via_workflow(asset, actor)
+            recalc_progress(case)
     except IntegrityError:
         res = lm.LifecycleAssetResolution.objects.get(case=case, asset=asset)
         if res.resolution != "pending":
             raise ValidationError(
                 {"detail": f"Asset {asset.asset_tag} already resolved as "
                            f"{res.resolution}."})
-        res.resolution = resolution
-        res.notes = note
-        res.resolved_by = actor
-        res.resolved_at = timezone.now() if resolution != "pending" else None
-        res.related_task = related_task
-        res.save(update_fields=["resolution", "notes", "resolved_by",
-                                "resolved_at", "related_task", "updated_at"])
-    _history(case, related_task, actor, "asset_returned",
-             new_status=resolution, detail=note or resolution)
-    if resolution in ("returned", "transferred"):
-        _return_asset_via_workflow(asset, actor)
-    recalc_progress(case)
+        with transaction.atomic():
+            res.resolution = resolution
+            res.notes = note
+            res.resolved_by = actor
+            res.resolved_at = timezone.now() if resolution != "pending" else None
+            res.related_task = related_task
+            res.save(update_fields=["resolution", "notes", "resolved_by",
+                                    "resolved_at", "related_task", "updated_at"])
+            _history(case, related_task, actor, "asset_returned",
+                     new_status=resolution, detail=note or resolution)
+            if resolution in ("returned", "transferred"):
+                _return_asset_via_workflow(asset, actor)
+            recalc_progress(case)
     return res
 
 

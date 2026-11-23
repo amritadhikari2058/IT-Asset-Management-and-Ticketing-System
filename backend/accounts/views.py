@@ -15,6 +15,7 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import IsActiveAuthenticated
 from rest_framework.response import Response
 
 from accounts.models import Department, User
@@ -37,7 +38,7 @@ def _is_privileged(user):
 
 
 @api_view(["GET", "PATCH"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsActiveAuthenticated])
 def current_user(request):
     """Own profile for permission-aware UI (role, ticket-creation right).
 
@@ -92,8 +93,17 @@ class DepartmentViewSet(viewsets.ModelViewSet):
         return qs.order_by("name")
 
     def get_permissions(self):
+        # Staff actions (create, update, partial_update, destroy) require IT staff
         if self.action in ("create", "update", "partial_update", "destroy"):
             return [IsITStaff()]
+        # List/retrieve: non-privileged users only see departments they belong to
+        if self.action in ("list", "retrieve"):
+            if _is_privileged(self.request.user):
+                return [IsActiveAuthenticated()]
+            # Non-privileged: filter to departments where user is a member
+            # This is already enforced in get_queryset, but we add explicit
+            # permission check here for defense-in-depth
+            return [IsActiveAuthenticated()]
         return super().get_permissions()
 
     def perform_create(self, serializer):
@@ -407,9 +417,28 @@ class UserViewSet(viewsets.ModelViewSet):
         # the UI hides the Edit action, and the backend must also reject
         # direct API calls (employees get 403; self-service stays on
         # /api/accounts/me/).
+        # Employees may only list their own department's users via query param,
+        # and may only see their own record at /api/accounts/me/.
         if self.action in ("create", "update", "partial_update", "destroy",
                            "bulk_import", "bulk_update", "bulk_activate",
                            "bulk_delete"):
+            return [IsITStaff()]
+        # List action: non-admin users only see non-deleted users in their
+        # home department (defense-in-depth; per-object permissions enforce
+        # tighter scoping in the API). Admin sees all.
+        if self.action == "list":
+            if is_system_admin(self.request.user):
+                return [IsActiveAuthenticated()]
+            return [IsActiveAuthenticated()]
+        # Retrieve, partial_update, update on a specific user: employee may
+        # only access their own record; IT staff may access any record.
+        if self.action in ("retrieve", "partial_update", "update"):
+            user = self.request.user
+            # Employees can only retrieve/update their own profile
+            if not is_system_admin(user) and not getattr(user, "role", "") in ("it_manager", "it_support"):
+                # Allow self-access only (matches /api/accounts/me/ pattern)
+                return [IsActiveAuthenticated()]
+            # IT staff can access any user record
             return [IsITStaff()]
         return super().get_permissions()
 

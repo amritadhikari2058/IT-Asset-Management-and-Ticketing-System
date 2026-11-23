@@ -124,6 +124,15 @@ class PurchaseRequest(SoftDeleteModel):
             ("approve_pr", "Can approve purchase requests"),
             ("reject_pr", "Can reject purchase requests"),
         ]
+        constraints = [
+            # Ensure pr_number is unique across non-deleted requests.
+            # Soft-deleted rows may retain historical pr_numbers.
+            models.UniqueConstraint(
+                fields=["pr_number"],
+                name="unique_pr_number_active",
+                condition=models.Q(is_deleted=False),
+            ),
+        ]
 
     def __str__(self):
         return self.pr_number
@@ -230,6 +239,15 @@ class PurchaseOrder(SoftDeleteModel):
             ("reject_po", "Can reject purchase orders"),
             ("generate_po_pdf", "Can generate purchase order PDF"),
             ("receive_goods", "Can receive goods"),
+        ]
+        constraints = [
+            # Ensure po_number is unique across non-deleted orders.
+            # Soft-deleted rows may retain historical po_numbers.
+            models.UniqueConstraint(
+                fields=["po_number"],
+                name="unique_po_number_active",
+                condition=models.Q(is_deleted=False),
+            ),
         ]
 
     def __str__(self):
@@ -618,6 +636,15 @@ class SupplierInvoice(SoftDeleteModel):
             models.Index(fields=["vendor", "normalized_invoice_number"], name="inv_vendor_norm_idx"),
             models.Index(fields=["purchase_order", "status"], name="inv_po_status_idx"),
             models.Index(fields=["status", "payment_status"], name="inv_status_pay_idx"),
+        ]
+        constraints = [
+            # Ensure invoice_number is unique across non-deleted invoices.
+            # Soft-deleted rows may retain historical invoice_numbers.
+            models.UniqueConstraint(
+                fields=["invoice_number"],
+                name="unique_invoice_number_active",
+                condition=models.Q(is_deleted=False),
+            ),
         ]
 
     def clean(self):
