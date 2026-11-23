@@ -51,7 +51,7 @@ export function CmdbReports() {
     }
   };
 
-  useEffect(() => { load(); }, [kind]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [kind]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const summaryEntries = useMemo(() => Object.entries(report?.summary || {}), [report]);
   const rows = safeResults(report?.rows);

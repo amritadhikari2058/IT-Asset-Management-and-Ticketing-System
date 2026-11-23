@@ -6,12 +6,12 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Badge, Button, Form, Input, Select, EmptyState } from './components';
+import { PageHeader, Badge, Button, Form, Input, EmptyState } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError, formatDateTime, statusBadgeVariant, riskBadgeVariant, priorityBadgeVariant } from './changes-utils';
 
 export function ChangeSchedule({ match }) {
-  const { isStaff, role } = useAuth();
+  const { isStaff } = useAuth();
   const [change, setChange] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

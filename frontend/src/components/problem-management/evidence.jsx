@@ -38,7 +38,7 @@ export function Evidence({ problemId: problemIdProp }) {
     }
   }, [problemId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const selectFile = (ev) => {
     const chosen = ev.target.files?.[0] ?? null;
@@ -68,7 +68,7 @@ export function Evidence({ problemId: problemIdProp }) {
     }
   };
 
-  const archive = async (row) => {
+  const archive = useCallback(async (row) => {
     if (archivingId) return;
     setArchivingId(row.id);
     setError('');
@@ -82,7 +82,7 @@ export function Evidence({ problemId: problemIdProp }) {
     } finally {
       setArchivingId(null);
     }
-  };
+  }, [archivingId, archiveEvidence, load]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const columns = useMemo(() => [
     { key: 'original_filename', label: 'Stored filename' },
@@ -100,13 +100,13 @@ export function Evidence({ problemId: problemIdProp }) {
             kind="ghost"
             size="small"
             disabled={!isStaff || archivingId === r.id}
-            onClick={() => archive(r)}
+            onClick={() => archive(r)} // eslint-disable-line react-hooks/exhaustive-deps
           >
             {archivingId === r.id ? 'Archiving…' : 'Archive'}
           </Button>
         )),
     },
-  ], [isStaff, archivingId]);
+  ], [isStaff, archivingId, archive, formatSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div>

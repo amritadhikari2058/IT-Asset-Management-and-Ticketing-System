@@ -118,9 +118,9 @@ describe('TicketDetail attachments', () => {
   });
   it('downloads through the protected endpoint as a blob', async () => {
     staff();
-    mockGet.mockImplementation(async (url, cfg) => {
+    mockGet.mockImplementation(async (url, _cfg) => {
       if (String(url).endsWith('/download/')) {
-        return { data: new Blob(['x']), headers: { 'content-disposition': 'attachment; filename=\"test.pdf\"' } };
+        return { data: new Blob(['x']), headers: { 'content-disposition': 'attachment; filename="test.pdf"' } };
       }
       return detailRoute(url);
     });
@@ -150,7 +150,7 @@ describe('TicketDetail history', () => {
   });
   it('shows empty state when no history entries', async () => {
     staff();
-    mockGet.mockImplementation(async (url) => {
+    mockGet.mockImplementation(async (url, _cfg) => {
       if (String(url).includes('histories')) return { data: [] };
       return detailRoute(url);
     });
@@ -194,7 +194,7 @@ describe('TicketDetail permission-related UI behavior', () => {
 describe('TicketDetail cleanup during navigation', () => {
   it('cleans up object URLs when navigating away', async () => {
     staff();
-    mockGet.mockImplementation(async (url, cfg) => {
+    mockGet.mockImplementation(async (url, _cfg) => {
       if (String(url).endsWith('/download/')) return { data: new Blob(['x']), headers: { 'content-disposition': 'attachment; filename="test.pdf"' } };
       return detailRoute(url);
     });

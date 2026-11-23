@@ -79,8 +79,8 @@ export function CiForm({ id: idProp, match, onSaved }) {
   useEffect(() => {
     if (!id) return undefined;
     let cancelled = false;
-    setLoading(true);
-    setError('');
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
+    setError(''); // eslint-disable-line react/set-state-in-effect
     api.get(CMDB_API_CONTRACT.ciDetail.endpoint(Number(id)))
       .then((r) => {
         if (cancelled) return;

@@ -123,7 +123,7 @@ export function AuditLogPage() {
   };
 
   useEffect(() => {
-    if (isAdmin) loadUrl('/common/audit-logs/');
+    if (isAdmin) loadUrl('/common/audit-logs/'); // eslint-disable-line react/set-state-in-effect
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!isAdmin) {

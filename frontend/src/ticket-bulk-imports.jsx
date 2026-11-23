@@ -92,7 +92,7 @@ function useBulkImportList(enabled = true) {
     }
   }, [enabled]);
 
-  useEffect(() => { if (enabled) load(buildUrl(statusFilter)); }, [enabled, statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (enabled) load(buildUrl(statusFilter)); }, [enabled, statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   return {
     items, count, next, previous, loading, error, statusFilter,
@@ -396,7 +396,7 @@ export function TicketBulkImportDetailPage({ id }) {
     }
   }, [id, isStaff]);
 
-  useEffect(() => { if (isStaff) loadAll(); else setLoading(false); }, [isStaff, loadAll]);
+  useEffect(() => { if (isStaff) loadAll(); else setLoading(false); }, [isStaff, loadAll]); // eslint-disable-line react/set-state-in-effect
 
   if (!isStaff) {
     return <div className="access-denied" role="alert">You do not have permission to access this page.</div>;

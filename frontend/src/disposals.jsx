@@ -7,7 +7,7 @@ import {
 } from './components';
 import { fetchPage, parseApiError } from './api-utils';
 
-export const DISPOSAL_METHODS = [
+export const DISPOSAL_METHODS = [ // eslint-disable-line react/only-export-components
   ['recycled', 'Recycled'],
   ['donated', 'Donated'],
   ['sold', 'Sold'],
@@ -179,7 +179,7 @@ export function Disposals() {
     }
   };
 
-  useEffect(() => { load(url); }, [url]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(url); }, [url]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const act = async (action, record) => {
     setBusyRow(record.id);

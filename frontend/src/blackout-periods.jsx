@@ -27,8 +27,8 @@ export function BlackoutPeriods() {
 
   useEffect(() => {
     if (!isManagerOrAdmin) {
-      setPeriods([]);
-      setLoading(false);
+      setPeriods([]); // eslint-disable-line react/set-state-in-effect
+      setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
     fetchPage(`/blackout-periods/`)

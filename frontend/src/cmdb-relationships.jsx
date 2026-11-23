@@ -337,9 +337,9 @@ export function CiRelationshipsPage({ id: idProp, match }) {
 
   useEffect(() => {
     const cancelledRef = { current: false };
-    load(cancelledRef);
+    load(cancelledRef); // eslint-disable-line react/set-state-in-effect
     return () => { cancelledRef.current = true; };
-  }, [id]);
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const grouped = useMemo(() => {
     const outgoing = relationships.filter((r) => Number(r.source_ci) === id);

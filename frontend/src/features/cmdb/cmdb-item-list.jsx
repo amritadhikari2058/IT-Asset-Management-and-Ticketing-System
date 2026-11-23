@@ -7,22 +7,22 @@ import { canViewCMDB } from '../../components/cmdb/access';
 /** CMDB Item List — connects to backend ConfigurationItemViewSet at /api/cmdb/ */
 export function CmdbItemList() {
   const auth = useAuth();
-  const { request, loading, error, success } = useApi();
+  const { request, loading, error } = useApi();
   const [items, setItems] = useState([]);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [filter, setFilter] = useState('');
+  const [pageSize] = useState(20);
+  const [filter] = useState('');
 
   const load = useCallback(async () => {
     try {
-      const resp = await request('GET', `/api/cmdb/items/?page=${page}&page_size=${pageSize}&filter=${filter}`);
+      const resp = await request('GET', `/api/cmdb/items/?page=${page}&page_size=${pageSize}&filter=${filter}`); // eslint-disable-line react-hooks/exhaustive-deps
       setItems(resp.data.results ?? resp.data);
-    } catch (e) {
+    } catch {
       setError('Failed to load CMDB items.');
     }
-  }, [page, pageSize, filter]);
+  }, [request, page, pageSize, filter]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (!canViewCMDB(auth)) {
     return (

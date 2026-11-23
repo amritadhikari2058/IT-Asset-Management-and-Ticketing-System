@@ -525,6 +525,13 @@ class UserViewSet(viewsets.ModelViewSet):
     def change_role(self, request, pk=None):
         """Dedicated role/permission change (never part of bulk update)."""
         obj = self.get_object()
+        from common.throttling import account_action_cooldown
+        if account_action_cooldown(
+            f"change_role:{obj.pk}", 60,
+        ):
+            return Response({"detail": "Too many role changes. Try again later."},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
+
         role = request.data.get("role")
         if role not in dict(User.ROLE_CHOICES):
             return Response({"detail": "Invalid role."}, status=400)
@@ -707,11 +714,15 @@ class UserViewSet(viewsets.ModelViewSet):
         obj.save(update_fields=["photo"])
         log_action(actor=request.user, action="update", instance=obj,
                    details={"photo": True})
-        return Response(UserSerializer(obj).data)
-
-    @action(detail=True, methods=["post"],
-            permission_classes=[IsSystemAdmin])
+        return Response(UserSerializer(obj).data)@action(detail=True, methods=["post"], permission_classes=[IsSystemAdmin])
     def hard_delete(self, request, pk=None):
+        from common.throttling import account_action_cooldown
+        if account_action_cooldown(
+            f"hard_delete:{pk}", 60,
+        ):
+            return Response({"detail": "Too many hard-delete attempts. Try again later."},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
+
         if request.data.get("confirm") != str(pk):
             return Response({"detail": "Confirmation required."}, status=400)
         obj = User.objects.with_deleted().get(pk=pk)

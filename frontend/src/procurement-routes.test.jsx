@@ -44,7 +44,7 @@ function makeAuth(role) {
 }
 
 function setupApi() {
-  mockGet.mockImplementation(async (url) => {
+  mockGet.mockImplementation(async () => {
     return { data: { results: [], count: 0 } };
   });
 }

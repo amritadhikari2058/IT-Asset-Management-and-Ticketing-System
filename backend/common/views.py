@@ -37,6 +37,82 @@ from tickets.views import _is_ticket_staff
 logger = logging.getLogger(__name__)
 
 
+# ---------- JWT refresh token, optional httpOnly cookie path ----------
+# Intended path (opt-in via ``JWT_REFRESH_COOKIE_ENABLED``): the refresh
+# endpoint can return the new refresh token as an httpOnly / secure /
+# sameSite=Lax cookie instead of in the JSON body, so the refresh token is
+# not directly readable by frontend script. The access token stays short-
+# lived and is returned in the JSON body (kept in memory on the frontend).
+# This is wired only to the refresh flow today; login still returns both
+# tokens in JSON until a full cookie-based login path is added.
+
+from django.conf import settings as django_settings
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+
+class TokenRefreshViewWithOptionalRefreshCookie(TokenRefreshView):
+    """Token refresh that may serve the new refresh token as an httpOnly cookie.
+
+    Behaviour when ``JWT_REFRESH_COOKIE_ENABLED`` is True:
+
+    * Accepts the refresh token from ``request.data['refresh']`` as usual, but
+      also accepts it from the cookie named by ``JWT_REFRESH_COOKIE_NAME`` when
+      the body omits it (so a purely cookie-based client can refresh).
+    * On success, sets an httpOnly / secure / sameSite=Lax cookie containing
+      the new refresh token (when refresh rotation is on / a new refresh is
+      returned) and omits ``refresh`` from the JSON body so script cannot read
+      it from either place.
+    * When the setting is False, behaves exactly like the stock refresh view.
+
+    This is intentionally a thin opt-in wrapper so flipping the setting off
+    reverts to body-based tokens without code changes.
+    """
+
+    def get_serializer(self, *args, **kwargs):
+        serializer = super().get_serializer(*args, **kwargs)
+        if not django_settings.JWT_REFRESH_COOKIE_ENABLED:
+            return serializer
+        # Allow the refresh token to come from the cookie when the client
+        # sends only the cookie (no body refresh).
+        if not (kwargs.get('data') or {}).get('refresh'):
+            cookie = self.request.COOKIES.get(
+                django_settings.JWT_REFRESH_COOKIE_NAME)
+            if cookie:
+                kwargs = dict(kwargs)
+                kwargs.setdefault('data', {})
+                kwargs['data']['refresh'] = cookie
+        return super().get_serializer(*args, **kwargs)
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        if not django_settings.JWT_REFRESH_COOKIE_ENABLED:
+            return response
+        token = getattr(response, 'data', None) and response.data.get('refresh')
+        if token:
+            cookie_secure = bool(
+                getattr(django_settings, 'SESSION_COOKIE_SECURE', False))
+            try:
+                lifetime = RefreshToken(token).lifetime.total_seconds()
+            except Exception:
+                lifetime = 86400
+            response.set_cookie(
+                django_settings.JWT_REFRESH_COOKIE_NAME,
+                token,
+                max_age=int(lifetime),
+                httponly=True,
+                secure=cookie_secure,
+                samesite='Lax',
+                path='/',
+            )
+            # Omit refresh from the body when it is served from a cookie, so
+            # script cannot read it from either place.
+            if hasattr(response, 'data') and isinstance(response.data, dict):
+                response.data.pop('refresh', None)
+        return response
+
+
 def _deleted_entries(entity_filter=None, date_from=None, date_to=None,
                      deleted_by_id=None):
     """Collect soft-deleted rows across entity types (admin view)."""

@@ -48,7 +48,7 @@ export function SourceManagement() {
     } finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const viewDetail = (id) => { setDetailId(id); setDetailLoading(true); setDetail(null); };
   const closeDetail = () => { setDetailId(null); setDetail(null); };

@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { Form, Input, Select, Textarea, Button, Row, Col } from './components';
 import { useAuth } from './auth';
-import { STATUS_LABELS, CHANGE_TYPE_LABELS, CATEGORY_LABELS, PRIORITY_LABELS } from './changes-utils';
+import { CHANGE_TYPE_LABELS, CATEGORY_LABELS, PRIORITY_LABELS } from './changes-utils';
 
 const STEP1 = 'classification';
 const STEP2 = 'description';
@@ -16,7 +16,7 @@ const STEP5 = 'affected-records';
 const STEP6 = 'review';
 
 export function ChangeForm({ changeId = null }) {
-  const { isStaff, role } = useAuth();
+  useAuth();
   const [step, setStep] = useState(STEP1);
   const [change, setChange] = useState({
     title: '',
@@ -46,8 +46,7 @@ export function ChangeForm({ changeId = null }) {
     related_tickets: [],
     knowledge_base_references: [],
   });
-  const [errors, setErrors] = useState({});
-  const [submitting, setSubmitting] = useState(false);
+  const [, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (changeId) {

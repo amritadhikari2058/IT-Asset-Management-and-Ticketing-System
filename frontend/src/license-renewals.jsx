@@ -1,10 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from './auth';
-import { Badge, Field, EmptyState, DataTable, Pager, PageHeader } from './components';
-import { fetchPage } from './api-utils';
-import { parseApiError } from './api-utils';
-import api from './api';
-import { licensingCapabilities, buildFindingListUrl } from './licensing-utils';
+import { Field, DataTable, Pager, PageHeader } from './components';
+import { fetchPage, parseApiError } from './api-utils';
 import { RENEWAL_STATUS_LABELS, AGREEMENT_STATUS_LABELS } from './licensing-utils';
 
 function LicenseRenewalsPage() {
@@ -14,7 +11,7 @@ function LicenseRenewalsPage() {
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
   const [previous, setPrevious] = useState(null);
-  const [page, setPage] = useState(1);
+  const [page] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [f, setF] = useState({ search: '', status: '' });
@@ -23,7 +20,7 @@ function LicenseRenewalsPage() {
     try { const pg = await fetchPage(url); setItems(pg.items); setCount(pg.count); setNext(pg.next); setPrevious(pg.previous); } catch { setError('Could not load renewals.'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { loadUrl(`/licensing/renewals/?page=${page}${f.status ? '&status=' + f.status : ''}`); }, [page, f.status]);
+  useEffect(() => { loadUrl(`/licensing/renewals/?page=${page}${f.status ? '&status=' + f.status : ''}`); }, [page, f.status]); // eslint-disable-line react/set-state-in-effect
   const [busyId, setBusyId] = useState(null);
   const doAction = async (id, action, body = {}) => {
     if (busyId) return;

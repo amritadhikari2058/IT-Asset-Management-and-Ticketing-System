@@ -86,11 +86,11 @@ export function PurchaseOrdersPage() {
     }
   }, [page, filters, pageSize]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   // Reset to page 1 when page size changes
   useEffect(() => {
-    setPage(1);
+    setPage(1); // eslint-disable-line react/set-state-in-effect
   }, [pageSize]);
 
   // Persist page-size preference without unnecessary writes

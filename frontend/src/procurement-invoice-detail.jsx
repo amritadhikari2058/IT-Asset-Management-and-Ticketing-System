@@ -55,7 +55,7 @@ export function ProcurementInvoiceDetail({ id }) {
     }
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
   useEffect(() => {
     if (!inv?.purchase_order) return;
     api.get(`/procurement/purchase-order-items/?purchase_order=${inv.purchase_order}`).then(r => setPoItems(safeResults(r.data))).catch(() => {});

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 
 const { mockGet, mockPost, mockPatch, mockDelete, mockAuth } = vi.hoisted(() => ({
   mockGet: vi.fn(),
@@ -21,16 +21,9 @@ vi.mock('./api', () => ({
 vi.mock('./auth', () => ({ useAuth: (...a) => mockAuth(...a) }));
 
 import { CmdbItemsList } from './cmdb-items';
-import { CiTypesPage } from './cmdb-types';
 import { VerificationQueuePage } from './cmdb-verification';
+import { CiTypesPage } from './cmdb-types';
 
-const TICKET = {
-  id: 12, title: 'Laptop will not boot', description: 'Black screen on power-on',
-  category: 1, category_name: 'Hardware', priority: 'high', status: 'open',
-  requester: 3, requester_email: 'a@x.io', assignee: 4, assignee_email: 'b@x.io',
-  department: 2, department_name: 'Engineering', on_behalf_reason: '',
-  asset: 7, resolution_notes: '', created_at: '2026-01-02T10:00:00Z', updated_at: '2026-01-03T10:00:00Z',
-};
 
 const CI_ITEM = {
   id: 1, ci_number: 'CI-2026-000001', name: 'Test Server', ci_type: 1,

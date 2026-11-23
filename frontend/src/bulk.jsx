@@ -15,7 +15,7 @@ const ALL_ROLES = [
 
 /** Bulk ticket creation: CSV/XLSX import, preview, confirm, report. */
 export function TicketBulkCreateModal({ onClose, onCreated }) {
-  const [file, setFile, pickFile] = useCsvFile();
+  const [file, , pickFile] = useCsvFile();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [preview, setPreview] = useState(null);
@@ -319,7 +319,7 @@ async function downloadTemplate(url, filename, setError) {
 
 /** Bulk employee import: template → upload → preview → confirm → report. */
 export function EmployeeImportModal({ onClose, onImported }) {
-  const [file, setFile, pick] = useCsvFile();
+  const [file, , pick] = useCsvFile();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [preview, setPreview] = useState(null);

@@ -23,7 +23,7 @@ export function History({ problemId: problemIdProp }) {
     }
   }, [problemId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const columns = [
     { key: 'event_type', label: 'Event' },

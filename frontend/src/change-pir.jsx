@@ -4,12 +4,12 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Badge, Form } from './components';
+import { PageHeader, Form, Row, Col, Button } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError } from './changes-utils';
 
 export function ChangePIR({ match }) {
-  const { isStaff, role } = useAuth();
+  const { role } = useAuth();
   const [pir, setPIR] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

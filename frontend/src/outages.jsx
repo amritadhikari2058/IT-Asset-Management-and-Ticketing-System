@@ -3,10 +3,9 @@
  * Route: #/outages
  */
 
-import React, { useEffect, useState } from 'react';
-import { PageHeader, Badge } from './components';
+import React, { useEffect } from 'react';
+import { PageHeader } from './components';
 import { useAuth } from './auth';
-import { fetchPage } from './changes-utils';
 
 export function EmployeeOutages() {
   const { role } = useAuth();

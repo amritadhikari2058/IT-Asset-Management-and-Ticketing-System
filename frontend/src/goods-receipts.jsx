@@ -51,7 +51,7 @@ export function GoodsReceiptsPage({ purchaseOrderId }) {
     }
   }, [page, filters, purchaseOrderId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const pageCount = Math.max(1, Math.ceil(count / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);

@@ -4,12 +4,12 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Badge, Form, Input, Select, Textarea, Button } from './components';
+import { PageHeader, Form, Input, Select, Button, Row, Col } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError } from './changes-utils';
 
 export function ChangeRisk({ match }) {
-  const { isStaff, role } = useAuth();
+  const { role } = useAuth();
   const [risk, setRisk] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

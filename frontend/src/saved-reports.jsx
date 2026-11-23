@@ -3,24 +3,13 @@ import api from './api';
 import { useAuth } from './auth';
 import {
   Badge, DataTable, EmptyState, Field, Modal, PageHeader, Pager,
-  TableControls, UserSelect, useSort, useTableColumns,
+  TableControls, useSort, useTableColumns,
 } from './components';
 import { fetchPage, parseApiError } from './api-utils';
 
 const REPORT_TYPES = [
   { value: 'ticket_category', label: 'Tickets by category' },
   { value: 'ticket_sla', label: 'SLA health' },
-];
-
-const SCHEDULES = [
-  { value: 'daily', label: 'Daily' },
-  { value: 'weekly', label: 'Weekly' },
-  { value: 'monthly', label: 'Monthly' },
-];
-
-const FORMATS = [
-  { value: 'csv', label: 'CSV' },
-  { value: 'json', label: 'JSON' },
 ];
 
 /** Saved report management page.
@@ -31,7 +20,7 @@ const FORMATS = [
  * persisted filters applied.
  */
 export function SavedReports() {
-  const { isStaff } = useAuth();
+  useAuth();
   const [items, setItems] = useState([]);
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
@@ -225,7 +214,7 @@ export function SavedReports() {
     });
   };
 
-  useEffect(() => { loadUrl('/common/saved-reports/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadUrl('/common/saved-reports/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   return (
     <div>

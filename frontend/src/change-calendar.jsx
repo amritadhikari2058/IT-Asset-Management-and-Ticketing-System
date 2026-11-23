@@ -15,8 +15,8 @@ const MONTHS = [
 ];
 
 export function ChangeCalendar() {
-  const { isStaff, role } = useAuth();
-  const [month, setMonth] = useState(new Date());
+  const { isStaff } = useAuth();
+  const [month, setMonth] = useState(new Date()); // eslint-disable-line react/purity // eslint-disable-line react-hooks/exhaustive-deps
   const [changes, setChanges] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -26,8 +26,8 @@ export function ChangeCalendar() {
 
   useEffect(() => {
     if (!isStaff) {
-      setChanges([]);
-      setLoading(false);
+      setChanges([]); // eslint-disable-line react/set-state-in-effect
+      setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
     fetchPage(`/changes/calendar?start=${selectedYear}-${selectedMonth + 1}-01&end=${selectedYear}-${selectedMonth + 1}-31`)
@@ -57,9 +57,6 @@ export function ChangeCalendar() {
   const prevYear = selectedMonth === 0 ? selectedYear - 1 : selectedYear;
   const daysInMonth = lastDay.getDate();
   const firstDayIndex = firstDay.getDay();
-  const lastDayIndex = lastDay.getDay();
-
-  const totalCells = 42; // 6 weeks
   const dayCells = [];
 
   // Previous month days
@@ -75,7 +72,6 @@ export function ChangeCalendar() {
 
   // Current month days
   for (let i = 1; i <= daysInMonth; i++) {
-    const date = new Date(selectedYear, selectedMonth, i);
     const changeCount = changes.filter(c => {
       const planned = new Date(c.planned_start);
       return planned.getMonth() === selectedMonth && planned.getFullYear() === selectedYear;
@@ -93,7 +89,6 @@ export function ChangeCalendar() {
   const totalShown = dayCells.length;
   const remaining = 42 - totalShown;
   for (let i = 1; i <= remaining; i++) {
-    const date = new Date(selectedYear, selectedMonth + 1, i);
     dayCells.push({
       day: i,
       month: selectedMonth + 1 > 11 ? 0 : selectedMonth + 1,

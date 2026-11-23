@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useMemo, useState } from 'react';
+import React, { Suspense, useMemo, useState } from 'react';
 import { HashRouter, useLocation } from 'react-router-dom';
 import { useAuth, AuthProvider } from './auth';
 import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, SLAConfig, SLAReport, Tickets, Users, VerifyEmail } from './pages';
@@ -12,29 +12,29 @@ import { AuditLogPage } from './audit';
 import { VendorForm, VendorsPage, VendorDetail } from './vendors';
 import { TicketForm, TicketDetail } from './tickets';
 import { ChangesPage } from './changes';
-const lazyNamed = (load, name) => lazy(() => load().then((module) => ({ default: module[name] })));
-const CmdbDashboard = lazy(() => import('./cmdb-dashboard'));
-const CmdbItemsList = lazyNamed(() => import('./cmdb-items'), 'CmdbItemsList');
-const CiForm = lazyNamed(() => import('./cmdb-item-form'), 'CiForm');
-const CiDetail = lazyNamed(() => import('./cmdb-item-detail'), 'CiDetail');
-const CiRelationshipsPage = lazyNamed(() => import('./cmdb-relationships'), 'CiRelationshipsPage');
-const BaselinesPage = lazyNamed(() => import('./cmdb-baselines'), 'BaselinesPage');
-const DriftFindingsPage = lazyNamed(() => import('./cmdb-drift'), 'DriftFindingsPage');
-const VerificationQueuePage = lazyNamed(() => import('./cmdb-verification'), 'VerificationQueuePage');
-const ImpactAnalysisPage = lazyNamed(() => import('./cmdb-impact'), 'ImpactAnalysisPage');
-const DependencyMap = lazyNamed(() => import('./cmdb-dependency-map'), 'DependencyMap');
-const CmdbReports = lazyNamed(() => import('./cmdb-reports'), 'CmdbReports');
-const CiTypesPage = lazyNamed(() => import('./cmdb-types'), 'CiTypesPage');
-const ServiceMappingPage = lazyNamed(() => import('./cmdb-services'), 'ServiceMappingPage');
+import CmdbDashboard from './cmdb-dashboard';
+import { CmdbItemsList } from './cmdb-items';
+import { CiForm } from './cmdb-item-form';
+import { CiDetail } from './cmdb-item-detail';
+import { CiRelationshipsPage } from './cmdb-relationships';
+import { BaselinesPage } from './cmdb-baselines';
+import { DriftFindingsPage } from './cmdb-drift';
+import { VerificationQueuePage } from './cmdb-verification';
+import { ImpactAnalysisPage } from './cmdb-impact';
+import { DependencyMap } from './cmdb-dependency-map';
+import { CmdbReports } from './cmdb-reports';
+import { CiTypesPage } from './cmdb-types';
+import { ServiceMappingPage } from './cmdb-services';
 import { TicketQueuesPage } from './ticket-queues';
 import { TicketOperationsDashboard } from './ticket-operations';
-import { TicketBulkImportDetailPage, TicketBulkImportsPage } from './ticket-bulk-imports';
+import { TicketBulkImportsPage, TicketBulkImportDetailPage } from './ticket-bulk-imports';
 import { CannedResponsesPage } from './ticket-canned-responses';
 import { TicketTemplatesPage } from './ticket-templates';
 import { SavedTicketViews } from './ticket-saved-views';
 import { TicketSatisfactionSurvey } from './ticket-satisfaction';
-import { TicketMergeDialog } from './ticket-merge';
 import { TicketTimeline } from './ticket-timeline';
+import { TicketMergeDialog } from './ticket-merge';
+import { ErrorBoundary } from './ErrorBoundary';
 import { Notifications, NotifBadge } from './notifications';
 import { Maintenance } from './maintenance';
 import { Disposals } from './disposals';
@@ -45,7 +45,7 @@ import { SavedReports } from './saved-reports';
 import { ScheduledReports } from './scheduled-reports';
 import { NotificationSettings } from './settings';
 import { Privacy } from './privacy';
-const Monitoring = lazyNamed(() => import('./monitoring'), 'Monitoring');
+import { Monitoring } from './monitoring';
 import { Retention } from './retention';
 import { Backup } from './backup';
 import { ServicesCatalogue, MyServiceRequests, ServiceRequestDetail } from './services';
@@ -56,15 +56,17 @@ import { ApprovalCenter } from './approvals';
 import {
   LifecycleDashboard, LifecycleCases, LifecycleForm, LifecycleDetail,
 } from './lifecycle';
-const ProcurementRouter = lazyNamed(() => import('./procurement'), 'ProcurementRouter');
-const LicensingRouter = lazyNamed(() => import('./licensing'), 'LicensingRouter');
-const ProblemList = lazyNamed(() => import('./components/problem-management/problem-list'), 'ProblemList');
-const ProblemDetail = lazyNamed(() => import('./components/problem-management/problem-detail'), 'ProblemDetail');
-const MonitoringOverview = lazyNamed(() => import('./features/monitoring/MonitoringOverview'), 'MonitoringOverview');
-const SourceManagement = lazyNamed(() => import('./features/monitoring/SourceManagement'), 'SourceManagement');
-const AlertList = lazyNamed(() => import('./features/monitoring/AlertList'), 'AlertList');
-const AlertDetail = lazyNamed(() => import('./features/monitoring/AlertDetail'), 'AlertDetail');
-const PolicyManagement = lazyNamed(() => import('./features/monitoring/PolicyManagement'), 'PolicyManagement');
+import { ProcurementRouter } from './procurement';
+import { LicensingRouter } from './licensing';
+import { ProblemList } from './components/problem-management/problem-list';
+import { ProblemDetail } from './components/problem-management/problem-detail';
+import { MonitoringOverview } from './features/monitoring/MonitoringOverview';
+import { SourceManagement } from './features/monitoring/SourceManagement';
+import { AlertList } from './features/monitoring/AlertList';
+import { AlertDetail } from './features/monitoring/AlertDetail';
+import { PolicyManagement } from './features/monitoring/PolicyManagement';
+import { ToastProvider, ToastList, useToast } from './toast';
+import { DirtyProvider, DirtyBlocker } from './dirty-form';
 
 const NAV = [
   { section: 'Overview' },
@@ -94,6 +96,7 @@ const NAV = [
   { hash: '#/departments', label: 'Departments', cap: 'isAdmin' },
   { hash: '#/sla-config', label: 'SLA', cap: 'isAdmin' },
   { hash: '#/notifications', label: 'Notifications', badge: true, cap: 'isAdmin' },
+  { hash: '#/audit', label: 'Audit Log', cap: 'isAdmin' },
 ];
 
 /** Drop staff-only entries, capability-gated entries, and any section left
@@ -284,15 +287,6 @@ function AccessDenied() {
   return <div className="access-denied" role="alert">You do not have permission to access this page.</div>;
 }
 
-function UnavailableWorkflow({ title }) {
-  return (
-    <div className="panel panel-pad">
-      <h1>{title}</h1>
-      <p>Problem workflow unavailable</p>
-    </div>
-  );
-}
-
 function matchRoute(hash, auth) {
   const route = hash.split('?')[0];
   let m;
@@ -326,7 +320,6 @@ function matchRoute(hash, auth) {
   if (route.startsWith('#/problem-management')) {
     if (!auth.canUseProblemManagement) return <AccessDenied />;
     if (route === '#/problem-management') return <ProblemList />;
-    if (route === '#/problem-management/new') return <UnavailableWorkflow title="New Problem" />;
     if ((m = route.match(/^#\/problem-management\/(\d+)$/))) return <ProblemDetail problemId={m[1]} />;
   }
   if (route === '#/tickets/bulk-imports') return auth.isStaff ? <TicketBulkImportsPage /> : <AccessDenied />;
@@ -554,9 +547,18 @@ function Shell() {
           </nav>
         </div>
         <main className="content" id="main-content">
-          <Suspense fallback={<p className="page-loading" role="status"><span className="spinner" aria-hidden="true" />Loading page…</p>}>
-            {el}
-          </Suspense>
+          <ErrorBoundary
+            fallback={
+              <div className="panel panel-pad" role="alert">
+                <h2>Something went wrong</h2>
+                <p>This page encountered an error and could not render.</p>
+              </div>
+            }
+          >
+            <Suspense fallback={<p className="page-loading" role="status"><span className="spinner" aria-hidden="true" />Loading page…</p>}>
+              {el}
+            </Suspense>
+          </ErrorBoundary>
         </main>
       </div>
     </div>
@@ -564,10 +566,31 @@ function Shell() {
 }
 
 export default function App() {
+  const { push } = useToast();
+  // Surface unhandled API errors (4xx/5xx that reach the interceptor catch) as toasts.
+  React.useEffect(() => {
+    import('./api').then(({ setApiErrorHandler }) => {
+      setApiErrorHandler((err, status) => {
+        const msg = err?.message || 'Request failed';
+        push(`${status ? `${status} - ` : ''}${msg}`, 'error');
+      });
+    });
+    // Give ErrorBoundary access to the toast push function.
+    import('./ErrorBoundary').then(({ setToastContext }) => {
+      setToastContext({ push });
+    });
+  }, [push]);
+
   return (
     <HashRouter>
       <AuthProvider>
-        <Shell />
+        <ToastProvider>
+          <DirtyProvider>
+            <Shell />
+            <ToastList />
+            <DirtyBlocker />
+          </DirtyProvider>
+        </ToastProvider>
       </AuthProvider>
     </HashRouter>
   );

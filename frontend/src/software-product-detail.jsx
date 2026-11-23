@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './auth';
-import { PageHeader, Badge, AccessDenied } from './components';
+import { PageHeader } from './components';
 import api from './api';
 import { licensingCapabilities } from './licensing-utils';
 import { PRODUCT_APPROVAL_STATUS_LABELS, RISK_LEVEL_LABELS, SUPPORT_STATUS_LABELS } from './licensing-utils';
@@ -14,7 +14,7 @@ function SoftwareProductDetail({ id, productId }) {
   const [error, setError] = useState('');
   useEffect(() => {
     if (!pid) return;
-    setLoading(true);
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
     api.get(`/licensing/products/${pid}/`).then((r) => setProduct(r.data)).catch((e) => setError(e.response?.data?.detail || 'Could not load product.')).finally(() => setLoading(false));
   }, [pid]);
   const doAction = async (action) => {

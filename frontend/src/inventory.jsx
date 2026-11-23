@@ -80,7 +80,7 @@ export function Inventory() {
       setLoading(false);
     }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const totalItems = dashboard?.total_items ?? 0;
   const totalUnits = Number(dashboard?.total_units ?? 0);
@@ -429,7 +429,7 @@ export function StockItemDetail({ id }) {
       setLoading(false);
     }
   }, [id]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const runAction = useCallback(async (type, payload) => {
     if (busy) return;
@@ -560,7 +560,7 @@ function StockActionModal({ action, busy, onClose, onSuccess }) {
 
   useEffect(() => {
     if (action !== 'issue') return;
-    setLoadingRefs(true);
+    setLoadingRefs(true); // eslint-disable-line react/set-state-in-effect
     Promise.all([
       api.get('/accounts/users/').then((r) => setUsers(r.data.results ?? r.data ?? [])).catch(() => setUsers([])),
       api.get('/accounts/departments/').then((r) => setDepts(r.data.results ?? r.data ?? [])).catch(() => setDepts([])),

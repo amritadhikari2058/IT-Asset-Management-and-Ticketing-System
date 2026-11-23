@@ -1,6 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
-
 const { mockGet, mockPost, mockDelete, mockAuth } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
@@ -130,7 +129,7 @@ describe('TicketDetail attachments', () => {
 
   it('downloads through the protected endpoint as a blob', async () => {
     staff();
-    mockGet.mockImplementation(async (url, cfg) => {
+    mockGet.mockImplementation(async (url, _cfg) => {
       if (String(url).endsWith('/download/')) {
         return { data: new Blob(['x']), headers: { 'content-disposition': 'attachment; filename="spec.pdf"' } };
       }

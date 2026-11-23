@@ -100,7 +100,6 @@ function HealthDashboard() {
   );
 
   const comps = data ? data.components : {};
-  const overallTone = STATE_TONE[data?.overall ?? 'unknown'] ?? 'gray';
   const overallLabel = STATE_LABEL[data?.overall ?? 'unknown'] ?? 'Unknown';
   const lastEvaluated = data?.components?.backend?.evaluated_at;
 
@@ -174,7 +173,7 @@ function HealthDashboard() {
 
 function HealthMonitor() {
   const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -219,7 +218,7 @@ function HealthMonitor() {
 
 function TaskMonitor() {
   const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [f, setF] = useState({ task_name: '', status: '' });
   const [retryBusy, setRetryBusy] = useState(null);
@@ -237,7 +236,7 @@ function TaskMonitor() {
       setError(parseApiError(e).global || 'Failed to load tasks.');
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [f.task_name, f.status]);
+  useEffect(() => { load(); }, [f.task_name, f.status]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const retry = async (taskName) => {
     setRetryBusy(taskName);
@@ -308,7 +307,7 @@ function TaskMonitor() {
 
 function ErrorMonitor() {
   const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [f, setF] = useState({ component: '', resolved: '' });
 
@@ -324,7 +323,7 @@ function ErrorMonitor() {
       setError(parseApiError(e).global || 'Failed to load errors.');
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [f.component, f.resolved]);
+  useEffect(() => { load(); }, [f.component, f.resolved]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const resolve = async (id) => {
     try {
@@ -389,7 +388,7 @@ function ErrorMonitor() {
 
 function AlertMonitor() {
   const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [f, setF] = useState({ component: '', severity: '', status: '' });
   const [busy, setBusy] = useState({});
@@ -407,7 +406,7 @@ function AlertMonitor() {
       setError(parseApiError(e).global || 'Failed to load alerts.');
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [f.component, f.severity, f.status]);
+  useEffect(() => { load(); }, [f.component, f.severity, f.status]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const act = async (id, action) => {
     setBusy({ ...busy, [id]: action });
@@ -491,7 +490,7 @@ function IncidentMonitor() {
   const auth = useAuth();
   const canCreateIncident = canAdministerMonitoring(auth);
   const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [openForm, setOpenForm] = useState(false);
   const [form, setForm] = useState({ title: '', description: '', severity: 'warning', affected_component: '', assigned_to: '', internal_notes: '' });
@@ -506,7 +505,7 @@ function IncidentMonitor() {
       setError(parseApiError(e).global || 'Failed to load incidents.');
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, []); // eslint-disable-line react/set-state-in-effect
 
   const save = async (ev) => {
     ev.preventDefault();
@@ -586,7 +585,7 @@ function IncidentMonitor() {
 
 function PerfMonitor() {
   const [data, setData] = useState({ endpoints: [] });
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [minutes, setMinutes] = useState(60);
 
@@ -599,7 +598,7 @@ function PerfMonitor() {
       setError(parseApiError(e).global || 'Failed to load performance metrics.');
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [minutes]);
+  useEffect(() => { load(); }, [minutes]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   return (
     <div>
@@ -637,7 +636,7 @@ function PerfMonitor() {
 
 function EmailStorageMonitor() {
   const [data, setData] = useState({ components: {} });
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {

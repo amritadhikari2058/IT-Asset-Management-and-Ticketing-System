@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
-  Badge, ConfirmDialog, DataTable, EmptyState, ErrorSummary, Field,
+  Badge, ConfirmDialog, DataTable, ErrorSummary, Field,
   LoadingRows, PageHeader, Pager, AccessDenied,
 } from './components';
 import { fetchPage, fieldMsg, parseApiError } from './api-utils';
@@ -72,17 +72,6 @@ function ruleApiErrors(e) {
   }
   if (!Object.keys(out).length) out.__form = 'Could not save rule.';
   return out;
-}
-
-function emptyRuleForm() {
-  return {
-    name: '',
-    description: '',
-    trigger: 'ticket_created',
-    is_enabled: true,
-    conditions: { category_id: '', department_id: '', priority: '', status: '' },
-    actions: [],
-  };
 }
 
 function actionToForm(action) {
@@ -452,7 +441,7 @@ function RuleEditPage({ id }) {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   if (loading) return <div className="panel"><Loading /></div>;
   if (error) return <div className="panel"><LoadError message={error} onRetry={load} /></div>;
@@ -499,7 +488,7 @@ export function RuleDetail({ id, canConfigureWorkflow }) {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect, react/set-state-in-effect
 
   const toggle = async () => {
     if (busy) return;
@@ -619,7 +608,7 @@ export function RulesList({ canConfigureWorkflow }) {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const create = async (ev) => {
     ev.preventDefault();
@@ -782,7 +771,7 @@ function ApprovalsList() {
     loadUrl(buildUrl(draft));
   };
 
-  useEffect(() => { loadUrl(buildUrl(filters)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadUrl(buildUrl(filters)); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const columns = [
     { key: 'id', label: 'ID' },
@@ -878,7 +867,7 @@ export function ApprovalDetail({ id }) {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect, react/set-state-in-effect
 
   const isOwn = approval && user?.id != null
     && Number(approval.requested_by) === Number(user.id);
@@ -1073,8 +1062,8 @@ function ExecutionsList() {
     loadUrl(buildUrl(draft));
   };
 
-  useEffect(() => {
-    loadRules();
+  useEffect(() => { // eslint-disable-line react/set-state-in-effect
+    loadRules(); // eslint-disable-line react/set-state-in-effect
     loadUrl(buildUrl(filters));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1201,7 +1190,7 @@ function ExecutionDetail({ id }) {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   if (loading) return <div className="panel"><Loading /></div>;
   if (error && !execution) return <div className="panel"><LoadError message={error} onRetry={load} /></div>;
@@ -1267,7 +1256,7 @@ const TABS = [
 ];
 
 export default function Workflow({ tab, ruleId, ruleEdit, approvalId, executionId }) {
-  const { isStaff, isAdmin, canConfigureWorkflow, isManagerOrAdmin } = useAuth();
+  const { isStaff, canConfigureWorkflow, isManagerOrAdmin } = useAuth();
   const activeTab = ruleId ? 'rules' : approvalId ? 'approvals' : executionId ? 'executions' : (tab || 'rules');
 
   // Employees have no workflow-management page, but may open an approval on

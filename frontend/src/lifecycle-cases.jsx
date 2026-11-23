@@ -109,7 +109,6 @@ export function LifecycleCases({ caseType }) {
   const rowActions = (c) => {
     const isTerminal = isTerminalCaseStatus(c.status);
     const isDraft = c.status === 'draft';
-    const isBlocked = c.status === 'blocked';
     const isPlanned = c.status === 'planned';
     const isInProgress = c.status === 'in_progress';
     const busy = !!actionBusy[c.id];
@@ -176,20 +175,6 @@ export function LifecycleCases({ caseType }) {
       <div className="row-gap" style={{ gap: 'var(--sp-05)' }}>{buttons}</div>
     ) : <span className="muted small">—</span>;
   };
-
-  const statusVariant = (s) => {
-    const map = {
-      draft: 'gray', planned: 'blue', in_progress: 'blue',
-      ready_for_employee: 'amber', employee_started: 'amber',
-      awaiting_asset_return: 'amber', awaiting_access_revocation: 'amber',
-      ready_for_closure: 'green', access_updated: 'blue',
-      asset_changes_completed: 'green', completed: 'green',
-      cancelled: 'gray', blocked: 'red',
-    };
-    return map[s] ?? 'gray';
-  };
-
-  const priorityVariant = (p) => ({ low: 'gray', medium: 'blue', high: 'amber', urgent: 'red' }[p] ?? 'gray');
 
   const columns = [
     {

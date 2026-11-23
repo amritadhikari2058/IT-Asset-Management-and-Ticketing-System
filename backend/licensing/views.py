@@ -567,6 +567,15 @@ class LicenseSecretViewSet(viewsets.ModelViewSet):
         secret.last_viewed_by = request.user
         secret.save(update_fields=["last_viewed_at", "last_viewed_by"])
 
+        # One reveal per account per window: stops a single account from
+        # scanning the secret store and probing which labels/agreements exist.
+        from common.throttling import account_action_cooldown
+        if account_action_cooldown(
+            f"secret_reveal:{secret.pk}", 60,
+        ):
+            return Response({"detail": "Too many reveal attempts. Try again later."},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
+
         # Audit and History (never include plaintext!)
         record_license_history(
             event_type="secret_revealed",
@@ -599,6 +608,13 @@ class LicenseSecretViewSet(viewsets.ModelViewSet):
     def rotate(self, request, pk=None):
         """Rotate secret with new value."""
         secret = self.get_object()
+        from common.throttling import account_action_cooldown
+        if account_action_cooldown(
+            f"secret_rotate:{secret.pk}", 60,
+        ):
+            return Response({"detail": "Too many rotation attempts. Try again later."},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
+
         serializer = LicenseSecretRotateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 

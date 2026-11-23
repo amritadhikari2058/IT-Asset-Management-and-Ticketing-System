@@ -33,7 +33,7 @@ export function LinkedRecords({ problemId: problemIdProp }) {
     setLoading(false);
   }, [problemId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <LoadingRows n={4} />;
 

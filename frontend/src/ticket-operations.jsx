@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
-import { Badge, Button, Input, Select, Option, Alert, Pager, DataTable, EmptyState, PageHeader } from './components';
+import { Badge, Button, Input, Select, Alert, DataTable, EmptyState, PageHeader } from './components';
 import { parseApiError } from './api-utils';
 
 /**
@@ -9,9 +9,9 @@ import { parseApiError } from './api-utils';
  * Route: #/tickets/operations
  */
 export function TicketOperationsDashboard() {
-  const { user, isStaff, isManagerOrAdmin, isSupportOrAbove, isEmployee } = useAuth();
+  useAuth();
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [, setError] = useState('');
   const [kpiActive, setKPIActive] = useState(0);
   const [kpiUnassigned, setKPIUnassigned] = useState(0);
   const [kpiInProgress, setKPIInProgress] = useState(0);
@@ -20,13 +20,9 @@ export function TicketOperationsDashboard() {
   const [kpiUrgent, setKPIUrgent] = useState(0);
   const [queues, setQueues] = useState([]);
   const [filterQueue, setFilterQueue] = useState('');
-  const [filterDept, setFilterDept] = useState('');
+  const [filterDept] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-
-  useEffect(() => {
-    fetchData();
-  }, [dateFrom, dateTo, filterQueue, filterDept]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -52,6 +48,10 @@ export function TicketOperationsDashboard() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchData(); // eslint-disable-line react/set-state-in-effect
+  }, [dateFrom, dateTo, filterQueue, filterDept]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isEmployee) {
     return (

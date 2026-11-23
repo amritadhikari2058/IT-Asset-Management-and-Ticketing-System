@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../auth';
 import { Badge, Button, DataTable, Field, Input, Option, PageHeader, Pager, Select, PageSizeSelector } from '../../components';
@@ -61,8 +61,8 @@ export function ProblemList() {
   useEffect(() => {
     let active = true;
     const params = Object.fromEntries(JSON.parse(queryKey));
-    setLoading(true);
-    setError('');
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
+    setError(''); // eslint-disable-line react/set-state-in-effect
     problemList({ ...params, page, page_size: pageSize })
       .then((data) => {
         if (!active) return;
@@ -79,7 +79,7 @@ export function ProblemList() {
 
   // Reset to page 1 when page size changes
   useEffect(() => {
-    setPage(1);
+    setPage(1); // eslint-disable-line react/set-state-in-effect
   }, [pageSize]);
 
   // Persist page-size preference without unnecessary writes
@@ -127,9 +127,9 @@ export function ProblemList() {
       render: (r) => {
         const count = r.linked_ticket_count || 0;
         if (count === 0) return <span className="muted">—</span>;
-        if (count >= 5) return <Tag kind="critical">High recurrence</Tag>;
-        if (count >= 3) return <Tag kind="warning">Medium recurrence</Tag>;
-        if (count >= 1) return <Tag kind="info">Low recurrence</Tag>;
+        if (count >= 5) return <Badge kind="critical">High recurrence</Badge>
+        if (count >= 3) return <Badge kind="warning">Medium recurrence</Badge>;
+        if (count >= 1) return <Badge kind="info">Low recurrence</Badge>;
         return <span className="muted">—</span>;
       },
     },

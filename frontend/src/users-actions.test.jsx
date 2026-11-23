@@ -234,7 +234,7 @@ describe('Users row actions', () => {
         new_password: 'brand-new-pass-99', confirm: 'brand-new-pass-99',
       });
     });
-    expect(await screen.findByText('Password reset for \"E5\" completed.')).toBeTruthy();
+    expect(await screen.findByText('Password reset for "E5" completed.')).toBeTruthy();
   });
 
   it('surfaces reset password errors', async () => {

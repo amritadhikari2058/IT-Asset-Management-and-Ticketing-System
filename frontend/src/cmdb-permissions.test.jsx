@@ -22,9 +22,6 @@ vi.mock('./auth', () => ({ useAuth: (...a) => mockAuth(...a) }));
 
 import { AccessDenied } from './components.jsx';
 import { parseApiError } from './api-utils';
-import { CmdbItemsList } from './cmdb-items';
-import { CiTypesPage } from './cmdb-types';
-import { CiRelationshipsPage } from './cmdb-relationships';
 import { CiDetail } from './cmdb-item-detail';
 import { ImpactAnalysisPage } from './cmdb-impact';
 

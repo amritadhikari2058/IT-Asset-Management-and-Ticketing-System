@@ -4,30 +4,15 @@ import {
   Badge, DataTable, Field, Modal, PageHeader, Pager,
 } from './components';
 
-const SCHEDULE_TONE = {
-  enabled: 'green', disabled: 'gray', paused: 'amber',
-};
-const JOB_STATUS = {
-  success: 'green', failed: 'red', running: 'blue', skipped: 'gray',
-};
-
-/** Phase 27 — backup & disaster recovery (Staff only).
- *
- * Hash-based sub-views:
- *   #/backup               backup overview + schedules
- *   #/backup/schedules     backup schedule management
- *   #/backup/history       backup job history
- *   #/backup/restore       restore points
- */
 export function Backup() {
   const { isStaff } = useAuth();
   if (!isStaff) {
     return (
       <div>
-        <div className="page-head"><h1>Backup &amp; DR</h1></div>
+        <div className="page-head"><h1>Backup & DR</h1></div>
         <div className="empty-state">
           <div className="empty-title">Access restricted</div>
-          <div className="small">Backup &amp; DR is IT staff only.</div>
+          <div className="small">Backup & DR is IT staff only.</div>
         </div>
       </div>
     );
@@ -49,30 +34,26 @@ function BackupOverview() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    setLoading(true); setError('');
-    const mock = {
-      schedules: [
-        { id: 1, name: 'Daily configuration backup', type: 'config', frequency: 'daily', time: '02:00', enabled: true, next_run: '2026-11-16 02:00', last_status: 'success' },
-        { id: 2, name: 'Weekly full database backup', type: 'database', frequency: 'weekly', time: '01:00', enabled: true, next_run: '2026-11-21 01:00', last_status: 'success' },
-        { id: 3, name: 'Daily file share backup', type: 'files', frequency: 'daily', time: '03:00', enabled: false, next_run: '—', last_status: 'paused' },
-      ],
-      jobs: [
-        { id: 101, schedule: 'Daily configuration backup', type: 'config', status: 'success', started: '2026-11-15 02:00', duration: '4m 12s', size: '12.4 MB', target: 'localhost' },
-        { id: 100, schedule: 'Weekly full database backup', type: 'database', status: 'success', started: '2026-11-14 01:00', duration: '18m 30s', size: '1.84 GB', target: 'db-primary' },
-        { id: 99, schedule: 'Daily file share backup', type: 'files', status: 'skipped', started: '2026-11-15 03:00', duration: '—', size: '—', target: 'fileserver-01' },
-      ],
-    };
-    setSchedules(mock.schedules);
-    setLastJobs(mock.jobs);
-    setLoading(false);
+    setLoading(true); setError(''); // eslint-disable-line react/set-state-in-effect
+    api.get('/api/backup/schedules/')
+      .then((r) => setSchedules(r.data))
+      .catch((_e) => setError('Could not load schedules.'))
+      .finally(() => {
+        api.get('/api/backup/jobs/', { params: { page_size: 30 } })
+          .then((r) => setLastJobs(r.data.results))
+          .catch((_e) => setError('Could not load jobs.'))
+          .finally(() => setLoading(false));
+      });
   }, []);
 
   const enabledCount = schedules.filter((s) => s.enabled).length;
-  const failedCount = lastJobs.filter((j) => j.status === 'failed').length;
+  const failedCount = lastJobs.filter(
+    (j) => j.status === 'failed' || j.status === 'backup_failed'
+  ).length;
 
   return (
     <div>
-      <PageHeader title="Backup &amp; DR" sub="Backup schedules, job history and restore points."
+      <PageHeader title="Backup & DR" sub="Backup schedules, job history and restore points."
         actions={(
           <div className="row-gap">
             <a href="#/backup/schedules" className="btn-ghost">Schedules &rarr;</a>
@@ -101,7 +82,7 @@ function BackupOverview() {
           { key: 'time', label: 'Time', render: (r) => r.time },
           { key: 'enabled', label: 'Enabled', render: (r) => <Badge kind={r.enabled ? 'status' : 'neutral'} value={r.enabled ? 'on' : 'off'} label={r.enabled ? 'Enabled' : 'Disabled'} /> },
           { key: 'next', label: 'Next run', render: (r) => <span className="cell-muted">{r.next_run}</span> },
-          { key: 'status', label: 'Last status', render: (r) => <Badge kind="status" value={r.last_status} label={r.last_status === 'paused' ? 'Paused' : r.last_status.charAt(0).toUpperCase() + r.last_status.slice(1)} /> },
+          { key: 'status', label: 'Last status', render: (r) => <Badge kind="status" value={r.last_status || 'available'} label={r.last_status === 'paused' ? 'Paused' : r.last_status.charAt(0).toUpperCase() + r.last_status.slice(1)} /> },
         ]} rows={schedules} keyOf={(r) => `schedule-${r.id}`}
           emptyTitle="No backup schedules." emptyHint="Create a schedule under Schedules." />
       </div>
@@ -121,19 +102,27 @@ function BackupOverview() {
   );
 }
 
-function failureSuffix(n) {
-  return n === 1 ? '' : 's';
-}
-
 /* ---------------- Schedules ---------------- */
 
 function BackupSchedules() {
-  const [items, setItems] = useState([
-    { id: 1, name: 'Daily configuration backup', type: 'config', frequency: 'daily', time: '02:00', enabled: true, retention: 30, targets: ['localhost'], last_run: '2026-11-15 02:00', last_status: 'success' },
-    { id: 2, name: 'Weekly full database backup', type: 'database', frequency: 'weekly', time: '01:00', enabled: true, retention: 90, targets: ['db-primary'], last_run: '2026-11-14 01:00', last_status: 'success' },
-    { id: 3, name: 'Daily file share backup', type: 'files', frequency: 'daily', time: '03:00', enabled: false, retention: 14, targets: ['fileserver-01'], last_run: '2026-11-14 03:00', last_status: 'paused' },
-  ]);
-  const [editing, setEditing] = useState(null);
+  const [items, setItems] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api.get('/api/backup/schedules/')
+      .then((r) => {
+        setItems(r.data);
+        setLoading(false);
+      })
+      .catch((_e) => {
+        setError('Could not load schedules.');
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) return <div className="panel-pad"><div className="muted">Loading schedules…</div></div>;
+  if (error) return <div className="field-error" role="alert">{error}</div>;
 
   return (
     <div>
@@ -148,7 +137,7 @@ function BackupSchedules() {
         { key: 'type', label: 'Type', render: (r) => r.type.charAt(0).toUpperCase() + r.type.slice(1) },
         { key: 'frequency', label: 'Frequency', render: (r) => r.frequency },
         { key: 'time', label: 'Time', render: (r) => r.time },
-        { key: 'retention', label: 'Retention (days)', render: (r) => r.retention },
+        { key: 'retention', label: 'Retention (days)', render: (r) => r.retention_days },
         { key: 'targets', label: 'Targets', render: (r) => r.targets.join(', ') },
         { key: 'enabled', label: 'Enabled', render: (r) => <Badge kind={r.enabled ? 'status' : 'neutral'} value={r.enabled ? 'on' : 'off'} label={r.enabled ? 'Enabled' : 'Disabled'} /> },
         { key: 'last', label: 'Last run', render: (r) => (
@@ -167,6 +156,7 @@ function BackupSchedules() {
                 <option value="config">Configuration</option>
                 <option value="database">Database</option>
                 <option value="files">File shares</option>
+                <option value="media">Media / attachments</option>
               </select>
             </Field>
             <Field label="Frequency">
@@ -180,7 +170,7 @@ function BackupSchedules() {
               <input type="time" defaultValue={items.find((i) => i.id === editing)?.time} />
             </Field>
             <Field label="Retention (days)">
-              <input type="number" defaultValue={items.find((i) => i.id === editing)?.retention} min="1" />
+              <input type="number" defaultValue={items.find((i) => i.id === editing)?.retention_days} min="1" />
             </Field>
             <Field label="Targets">
               <input defaultValue={items.find((i) => i.id === editing)?.targets.join(', ')} placeholder="comma-separated hosts" />
@@ -199,13 +189,29 @@ function BackupSchedules() {
 /* ---------------- History ---------------- */
 
 function BackupHistory() {
-  const [items, setItems] = useState([
-    { id: 101, schedule: 'Daily configuration backup', type: 'config', status: 'success', started: '2026-11-15 02:00', finished: '2026-11-15 02:04', duration: '4m 12s', size: '12.4 MB', target: 'localhost', error: '—' },
-    { id: 100, schedule: 'Weekly full database backup', type: 'database', status: 'success', started: '2026-11-14 01:00', finished: '2026-11-14 01:18', duration: '18m 30s', size: '1.84 GB', target: 'db-primary', error: '—' },
-    { id: 99, schedule: 'Daily file share backup', type: 'files', status: 'skipped', started: '2026-11-15 03:00', finished: '—', duration: '—', size: '—', target: 'fileserver-01', error: 'Schedule disabled' },
-    { id: 98, schedule: 'Weekly full database backup', type: 'database', status: 'failed', started: '2026-11-07 01:00', finished: '2026-11-07 01:05', duration: '5m 00s', size: '—', target: 'db-primary', error: 'Connection timeout' },
-  ]);
-  const [page, setPage] = useState(1);
+  const [items, setItems] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api.get('/api/backup/jobs/', { params: { page_size: 50 } })
+      .then((r) => {
+        setItems(r.data.results);
+        setLoading(false);
+      })
+      .catch((_e) => {
+        setError('Could not load job history.');
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) return <div className="panel-pad"><div className="muted">Loading job history…</div></div>;
+  if (error) return <div className="field-error" role="alert">{error}</div>;
+
+  const statusMap = {
+    success: 'backup_success', failed: 'backup_failed', running: 'backup_running', skipped: 'backup_skipped',
+    cancelled: 'backup_cancelled', restoring: 'backup_restoring', expired: 'backup_expired',
+  };
 
   return (
     <div>
@@ -218,15 +224,15 @@ function BackupHistory() {
       <DataTable columns={[
         { key: 'schedule', label: 'Schedule', render: (r) => <span className="row-title">{r.schedule}</span> },
         { key: 'type', label: 'Type', render: (r) => r.type },
-        { key: 'status', label: 'Status', render: (r) => <Badge kind="status" value={r.status} label={r.status.charAt(0).toUpperCase() + r.status.slice(1)} /> },
+        { key: 'status', label: 'Status', render: (r) => <Badge kind={statusMap[r.status] || 'status'} value={r.status} /> },
         { key: 'started', label: 'Started', render: (r) => r.started ? new Date(r.started).toLocaleString() : '—' },
         { key: 'duration', label: 'Duration', render: (r) => r.duration },
         { key: 'size', label: 'Size', render: (r) => r.size },
         { key: 'target', label: 'Target', render: (r) => <span className="cell-muted">{r.target}</span> },
-        { key: 'error', label: 'Error', render: (r) => <span className="cell-muted">{r.error}</span> },
+        { key: 'error', label: 'Error', render: (r) => <span className="cell-muted">{r.error || '—'}</span> },
       ]} rows={items} keyOf={(r) => `job-${r.id}`}
         emptyTitle="No backup job history." emptyHint="Run a scheduled backup to record its history here." />
-      <Pager count={items.length} onPrev={() => setPage((p) => p - 1)} onNext={() => setPage((p) => p + 1)}
+      <Pager count={items?.length ?? 0} onPrev={() => setPage((p) => p - 1)} onNext={() => setPage((p) => p + 1)}
              hasPrev={page > 1} hasNext={page < 1} pageLabel="History" />
     </div>
   );
@@ -235,14 +241,28 @@ function BackupHistory() {
 /* ---------------- Restore ---------------- */
 
 function BackupRestore() {
-  const [points, setPoints] = useState([
-    { id: 1, schedule: 'Weekly full database backup', type: 'database', created: '2026-11-14 01:18', size: '1.84 GB', target: 'db-primary', status: 'available' },
-    { id: 2, schedule: 'Daily configuration backup', type: 'config', created: '2026-11-15 02:04', size: '12.4 MB', target: 'localhost', status: 'available' },
-    { id: 3, schedule: 'Daily file share backup', type: 'files', created: '2026-11-14 03:00', size: '442 MB', target: 'fileserver-01', status: 'available' },
-  ]);
-  const [restoring, setRestoring] = useState(null);
+  const [points, setPoints] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const handleRestore = (id) => { setRestoring(id); setTimeout(() => setRestoring(null), 1200); };
+  useEffect(() => {
+    api.get('/api/backup/restore-points/')
+      .then((r) => {
+        setPoints(r.data);
+        setLoading(false);
+      })
+      .catch((_e) => {
+        setError('Could not load restore points.');
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) return <div className="panel-pad"><div className="muted">Loading restore points…</div></div>;
+  if (error) return <div className="field-error" role="alert">{error}</div>;
+
+  const statusMap = {
+    available: 'status', restoring: 'restoring', expired: 'expired', corrupt: 'corrupt',
+  };
 
   return (
     <div>
@@ -259,10 +279,10 @@ function BackupRestore() {
           { key: 'created', label: 'Created', render: (r) => r.created ? new Date(r.created).toLocaleString() : '—' },
           { key: 'size', label: 'Size', render: (r) => r.size },
           { key: 'target', label: 'Target', render: (r) => <span className="cell-muted">{r.target}</span> },
-          { key: 'status', label: 'Status', render: (r) => <Badge kind="status" value={r.status} label={r.status.charAt(0).toUpperCase() + r.status.slice(1)} /> },
+          { key: 'status', label: 'Status', render: (r) => <Badge kind={statusMap[r.status] || 'status'} value={r.status} /> },
           { key: 'action', label: 'Restore', render: (r) => (
-            <button type="button" className="btn-ghost" disabled={restoring === r.id} onClick={() => handleRestore(r.id)}>
-              {restoring === r.id ? 'Restoring...' : 'Restore'}
+            <button type="button" className="btn-ghost" disabled={false} onClick={() => alert(`Restore from point ${r.id} — connect real backend to perform restore.`)}>
+              {restoring !== r.id ? 'Restore' : 'Restoring...'}
             </button>
           )},
         ]}
@@ -271,15 +291,6 @@ function BackupRestore() {
         emptyTitle="No restore points."
         emptyHint="Run a backup to create a restore point."
       />
-      {restoring && (
-        <div className="panel" style={{ marginTop: 16 }}>
-          <div className="panel-head"><h3>Restore in progress</h3></div>
-          <div className="panel-pad">
-            <div className="field"><span className="form-label">Restoring backup point #{restoring}</span></div>
-            <div className="small">This is a placeholder. Connect a real backup backend to perform restores.</div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

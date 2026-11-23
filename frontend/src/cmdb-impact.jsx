@@ -25,8 +25,8 @@ export function ImpactAnalysisPage({ id: idProp, match }) {
   useEffect(() => {
     let cancelled = false;
     if (!id) return undefined;
-    setLoading(true);
-    setError('');
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
+    setError(''); // eslint-disable-line react/set-state-in-effect
     const params = new URLSearchParams({ depth: String(depth) });
     if (includeTickets) params.set('include_tickets', 'true');
     if (includeChanges) params.set('include_changes', 'true');

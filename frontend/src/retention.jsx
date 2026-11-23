@@ -81,7 +81,7 @@ function RetentionPolicies() {
       setError(parseApiError(e).global || 'Failed to load policies.');
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [page]);
+  useEffect(() => { load(); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const setField = (k) => (e) => {
     const v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
@@ -301,7 +301,7 @@ function RetentionExecutions() {
       setError(parseApiError(e).global || 'Failed to load execution history.');
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [page]);
+  useEffect(() => { load(); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   return (
     <div>

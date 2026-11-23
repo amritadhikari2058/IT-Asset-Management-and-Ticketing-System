@@ -17,8 +17,7 @@ import { AuthProvider, useAuth } from './auth';
 
 const capturedAuth = { current: null };
 function Probe() {
-  // eslint-disable-next-line react(immutability)
-  capturedAuth.current = useAuth();
+  capturedAuth.current = useAuth(); // eslint-disable-line immutability
   return null;
 }
 
@@ -242,7 +241,7 @@ describe('cross-tab session sync', () => {
     expect(localStorage.getItem('refresh')).toBe('ref');
   });
 
-  it('does not log out when storage event sets access rather than removing it', async () => {
+  it('invalidates the local session when another tab signs in as a different user', async () => {
     mount();
     await act(async () => {
       window.dispatchEvent(new StorageEvent('storage', {
@@ -251,7 +250,13 @@ describe('cross-tab session sync', () => {
         oldValue: 'acc',
       }));
     });
+    // No backend logout call (the other tab owns its own session).
     expect(mockPost).not.toHaveBeenCalled();
-    expect(localStorage.getItem('access')).toBe('acc');
+    // Local React state is invalidated so this tab does not show stale data.
+    expect(capturedAuth.current.access).toBeNull();
+    expect(capturedAuth.current.user).toBeNull();
+    expect(capturedAuth.current.profileLoading).toBe(false);
+    // The refresh token belonging to the old session is dropped.
+    expect(localStorage.getItem('refresh')).toBeNull();
   });
 });

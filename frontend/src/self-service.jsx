@@ -1,10 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import api from './api';
-import { PageHeader, EmptyState, Panel, PanelHeader, PanelPad, Link, ExportDialog } from './components';
+import { EmptyState, Panel, PanelHeader, PanelPad, Link, ExportDialog } from './components';
 import { NotifBadge } from './notifications';
 import { useAuth } from './auth';
-
-const PAGE_SIZE = 20;
 
 export function SelfService() {
   const { user } = useAuth();
@@ -14,25 +12,25 @@ export function SelfService() {
   const [ticketLoading, setTicketLoading] = useState(true);
   const [ticketError, setTicketError] = useState('');
 
-  const loadTickets = async () => {
+  const loadTickets = useCallback(async () => {
     setTicketLoading(true);
     setTicketError('');
     try {
       const r = await api.get('/tickets/');
       setTickets(r.data.results ?? r.data ?? []);
-    } catch (e) {
+    } catch {
       setTicketError('Could not load your tickets.');
     } finally {
       setTicketLoading(false);
     }
-  };
+  }, []);
 
   // ---- Assigned assets ----
   const [assets, setAssets] = useState([]);
   const [assetLoading, setAssetLoading] = useState(true);
   const [assetError, setAssetError] = useState('');
 
-  const loadAssets = async () => {
+  const loadAssets = useCallback(async () => {
     setAssetLoading(true);
     setAssetError('');
     try {
@@ -41,12 +39,12 @@ export function SelfService() {
         (a) => a.assigned_to_id === user.id || a.created_by_id === user.id
       );
       setAssets(myAssets);
-    } catch (e) {
+    } catch {
       setAssetError('Could not load your assets.');
     } finally {
       setAssetLoading(false);
     }
-  };
+  }, [user.id]);
 
   // ---- Knowledge‑base search ----
   const [kbQuery, setKbQuery] = useState('');
@@ -67,7 +65,7 @@ export function SelfService() {
         params: { q: query },
       });
       setKbResults(r.data.results ?? r.data ?? []);
-    } catch (e) {
+    } catch {
       setKbError('Could not search knowledge base.');
     } finally {
       setKbLoading(false);
@@ -75,9 +73,9 @@ export function SelfService() {
   };
 
   useEffect(() => {
-    loadTickets();
-    loadAssets();
-  }, []);
+    loadTickets(); // eslint-disable-line react/set-state-in-effect
+    loadAssets(); // eslint-disable-line react/set-state-in-effect
+  }, [loadTickets, loadAssets]);
 
   // ---- Helper: render tickets section ----
   function renderTickets() {

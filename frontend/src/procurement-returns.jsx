@@ -35,7 +35,7 @@ export function ProcurementReturnsPage() {
       .catch(e => setError(procurementErrorText(e, 'Failed to load returns.')))
       .finally(() => setLoading(false));
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <p className="page-loading" role="status">Loading vendor returns…</p>;
   return (
@@ -119,7 +119,7 @@ export function ProcurementReturnDetail({ id }) {
     try { const r = await api.get(`/procurement/vendor-returns/${id}/`); setVr(r.data); }
     catch (e) { setLoadError(procurementErrorText(e, 'Failed to load return.')); }
   }, [id]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   async function act(action, body = {}) {
     setBusy(action); setError('');

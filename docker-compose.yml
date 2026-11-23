@@ -92,6 +92,8 @@ services:
     depends_on:
       web:
         condition: service_healthy
+      frontend:
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/ready/"]
       interval: 30s
@@ -101,6 +103,17 @@ services:
     logging: *default-logging
     networks:
       - edge
+      - backend
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    networks:
       - backend
 
   worker:

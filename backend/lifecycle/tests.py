@@ -692,10 +692,29 @@ class AutomationTests(BaseLifecycle):
         self.assertEqual(t.automation_status, "failed")
         self.assertIn("System Admin", t.automation_error_summary or "")
 
+    def test_create_service_request_automation_creates_request(self):
+        from services.models import ServiceCatalogueItem, ServiceRequest
+        item = ServiceCatalogueItem.objects.create(
+            name="Email account", category="email", is_active=True,
+            creates_ticket=False)
+        c = lm.LifecycleCase.objects.create(
+            case_number="ONB-2026-00053", case_type="onboarding",
+            employee=self.emp, status="draft")
+        t = lm.LifecycleTask.objects.create(
+            case=c, sequence=1, title="Create SR",
+            automation_type="create_service_request",
+            automation_config={"catalogue_item_id": item.pk,
+                                "answers": {"x": 1}})
+        from lifecycle.services import _run_task_automation
+        _run_task_automation(t, self.itmgr)
+        t.refresh_from_db()
+        self.assertEqual(t.automation_status, "succeeded")
+        self.assertIsNotNone(t.related_service_request)
+        self.assertEqual(t.related_service_request.catalogue_item_id,
+                         item.pk)
+        self.assertEqual(t.related_service_request.requester_id,
+                         self.emp.pk)
 
-# ---------------------------------------------------------------------------
-# Attachments / evidence
-# ---------------------------------------------------------------------------
 
 class AttachmentTests(BaseLifecycle):
     def setUp(self):

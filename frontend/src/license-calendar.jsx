@@ -1,17 +1,13 @@
 import { useEffect, useState } from 'react';
-import { useAuth } from './auth';
-import { EmptyState, PageHeader } from './components';
+import { PageHeader } from './components';
 import api from './api';
-import { licensingCapabilities } from './licensing-utils';
 
 function LicenseCalendarPage() {
-  const auth = useAuth();
-  const caps = licensingCapabilities(auth);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   useEffect(() => {
-    setLoading(true);
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
     api.get('/licensing/renewal-calendar/').then((r) => setData(r.data)).catch((e) => setError(e.response?.data?.detail || 'Could not load calendar.')).finally(() => setLoading(false));
   }, []);
   if (loading) return <div className="panel-pad">Loading calendar…</div>;

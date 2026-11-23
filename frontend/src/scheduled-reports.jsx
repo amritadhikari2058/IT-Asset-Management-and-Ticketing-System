@@ -284,8 +284,8 @@ export function ScheduledReports() {
     );
   };
 
-  useEffect(() => { loadUrl('/common/scheduled-reports/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { loadSavedReports(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadUrl('/common/scheduled-reports/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
+  useEffect(() => { loadSavedReports(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const restrictedView = (
     <div>

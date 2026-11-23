@@ -1348,6 +1348,84 @@ class ExportDatasetTests(TestCase):
 
 
 
+from accounts.models import User
+from accounts.tests import make_users
+from common.throttling import account_action_cooldown
+from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.test import TestCase
+from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import RefreshToken
+
+
+class AccountActionCooldownTests(TestCase):
+    """Unit tests for the account-level action cooldown.
+
+    The cooldown lives in common.throttling (Django cache-backed, UTC-aware)
+    and is applied to auth actions and sensitive write actions. We test the
+    helper directly so the coverage does not depend on the fragile
+    cross-app API fixtures, and we assert the exact failure mode (429) plus
+    the key behavior: a repeat within the window is blocked, a repeat after
+    the window passes.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.c = APIClient()
+        self.user = User.objects.create_user(
+            username="cooldown@x", email="cooldown@example.com",
+            employee_id="C1", password="pw12345678", role="employee",
+            home_department=None,
+        )
+
+    def test_cooldown_blocks_repeat_within_window(self):
+        """First call passes; an immediate repeat returns 429."""
+        self.assertFalse(account_action_cooldown(
+            f"test:{self.user.pk}", 60))
+        res = account_action_cooldown(f"test:{self.user.pk}", 60)
+        self.assertIs(res, True)
+
+    def test_cooldown_fires_after_window(self):
+        """Cooldown is bounded by the cache TTL; after expiry the slot is free."""
+        from common.throttling import account_action_cooldown
+
+        # Insert a future deadline directly, bypassing the helper's set()-on-
+        # None path, so the test is fast and deterministic (no sleep).
+        cache.set(
+            f"auth:cooldown:test:{self.user.pk}",
+            __import__("datetime", fromlist=["datetime"]).datetime.now(__import__("datetime", fromlist=["timezone"]).timezone.utc) + __import__("datetime", fromlist=["timedelta"]).timedelta(seconds=60),
+        )
+        # The slot is in-window -> blocked.
+        self.assertTrue(account_action_cooldown(f"test:{self.user.pk}", 60))
+        # Now delete the key and verify a fresh call is no longer blocked.
+        cache.delete(f"auth:cooldown:test:{self.user.pk}")
+        self.assertFalse(account_action_cooldown(f"test:{self.user.pk}", 60))
+
+    def test_cooled_down_account_action_returns_429(self):
+        """A repeated sensitive action within the same window returns 429."""
+        from common.throttling import account_action_cooldown
+        from django.contrib.auth import get_user_model
+
+        user = get_user_model().objects.create_user(
+            username="blocked@x", email="blocked@example.com",
+            employee_id="B1", password="pw12345678", role="employee",
+            home_department=None,
+        )
+        # Prime the cooldown (first attempt).
+        account_action_cooldown(f"change_password:{user.pk}", 60)
+        # A second request inside the window must fail with 429.
+        from rest_framework.test import APIClient
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f"Bearer {str(__import__('rest_framework_simplejwt').tokens.RefreshToken.for_user(user).access_token)}")
+        request = c.post(
+            "/api/accounts/change-password/",
+            {"current_password": "pw12345678",
+             "new_password": "brand-new-pass-99"},
+            format="json",
+        )
+        self.assertEqual(request.status_code, 429)
+
+
 class UserNotificationPreferenceTests(TestCase):
     """Notification preference API permissions + centralized enforcement."""
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 
 const { mockGet, mockPost, mockPatch, mockDelete, mockAuth } = vi.hoisted(() => ({
   mockGet: vi.fn(),

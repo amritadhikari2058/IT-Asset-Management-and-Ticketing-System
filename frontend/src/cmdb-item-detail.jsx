@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
@@ -91,10 +91,8 @@ export function CiDetail({ id: idProp, match }) {
     }
   };
 
-  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
-  const outgoing = useMemo(() => relationships.filter((r) => String(r.source_ci) === String(id)), [relationships, id]);
-  const incoming = useMemo(() => relationships.filter((r) => String(r.target_ci) === String(id)), [relationships, id]);
   const relatedId = (r) => (String(r.source_ci) === String(id) ? r.target_ci : r.source_ci);
   const relatedNumber = (r) => (String(r.source_ci) === String(id) ? r.target_ci_number : r.source_ci_number);
 

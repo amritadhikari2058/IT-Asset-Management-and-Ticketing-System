@@ -24,7 +24,7 @@ export function ProcurementMatchingPage({ id }) {
       setInv(a.data); setHistory(safeResults(b.data)); setExceptions(safeResults(c.data));
     } catch (e) { setError(procurementErrorText(e, 'Failed to load match data.')); }
   }, [id]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   async function runMatch() {
     setBusy(true); setError('');

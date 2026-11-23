@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './auth';
-import { PageHeader, Field, AccessDenied, ConfirmDialog, Modal } from './components';
+import { PageHeader, Field, AccessDenied } from './components';
 import { parseApiError } from './api-utils';
 import api from './api';
 import { licensingCapabilities } from './licensing-utils';
@@ -21,7 +21,7 @@ function LicenseSecretsPage({ agreementId }) {
     try { const r = await api.get(`/licensing/secrets/?agreement=${agreementId}`); setItems(r.data.results || r.data || []); } catch (e) { setError(e.response?.data?.detail || 'Could not load secrets.'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { if (agreementId) load(); }, [agreementId]);
+  useEffect(() => { if (agreementId) load(); }, [agreementId]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
   if (!caps.canViewSecrets) return <AccessDenied />;
   const create = async (e) => {
     e.preventDefault(); setSaving(true); setError('');

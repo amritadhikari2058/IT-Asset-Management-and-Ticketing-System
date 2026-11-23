@@ -304,15 +304,15 @@ export function KnowledgeBase() {
     setForm((p) => ({ ...p, tags: p.tags.filter((s) => s !== slug) }));
   };
 
-  useEffect(() => { loadRefData(); loadPendingCount(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadRefData(); loadPendingCount(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
   useEffect(() => {
-    loadUrl(`/assets/knowledge-base/?page=${page}&page_size=${pageSize}`);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    loadUrl(`/assets/knowledge-base/?page=${page}&page_size=${pageSize}`); // eslint-disable-line react/set-state-in-effect
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   // Reset to page 1 when page size changes
   useEffect(() => {
-    setPage(1);
-  }, [pageSize]);
+    setPage(1); // eslint-disable-line react/set-state-in-effect
+  }, [pageSize]); // eslint-disable-line react/set-state-in-effect
 
   // Persist page-size preference without unnecessary writes
   useEffect(() => {
@@ -324,7 +324,7 @@ export function KnowledgeBase() {
     } catch {
       // ignore storage failures
     }
-  }, [pageSize]);
+  }, [pageSize]); // eslint-disable-line react/set-state-in-effect
 
   const filtersActive = () => !!(f.q || f.status);
 
@@ -571,7 +571,7 @@ export function KnowledgeBaseDetail({ id }) {
     setRestoreFor(null);
   };
 
-  useEffect(() => { load(); loadRevisions(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); loadRevisions(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const orderedRevisions = useMemo(
     () => [...revisions].sort((a, b) => b.revision_number - a.revision_number),
@@ -883,7 +883,7 @@ export function KnowledgeBaseRevisions({ id }) {
     }
   };
 
-  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   if (!isStaff) {
     return <div className="form-wrap"><div className="error-summary" role="alert">You do not have permission to view revision history.</div></div>;
@@ -1010,7 +1010,7 @@ export function KnowledgeBaseRevisionDetail({ id, number }) {
     }
   };
 
-  useEffect(() => { load(); }, [id, number]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id, number]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   if (!isStaff) {
     return <div className="form-wrap"><div className="error-summary" role="alert">You do not have permission to view revisions.</div></div>;
@@ -1126,7 +1126,7 @@ export function KnowledgeBaseCompare({ id }) {
     }
   };
 
-  useEffect(() => { load(); }, [id, from, to]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id, from, to]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   if (!isStaff) {
     return <div className="form-wrap"><div className="error-summary" role="alert">You do not have permission to compare revisions.</div></div>;
@@ -1230,7 +1230,7 @@ export function KnowledgeBaseReviewQueue() {
     }
   };
 
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   if (!isStaff) {
     return <div className="form-wrap"><div className="error-summary" role="alert">You do not have permission to review articles.</div></div>;

@@ -21,7 +21,7 @@ function LicenseDocumentsPage({ agreementId }) {
     try { const r = await api.get(`/licensing/documents/?agreement=${agreementId}`); setItems(r.data.results || r.data || []); } catch (e) { setError(e.response?.data?.detail || 'Could not load documents.'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { if (agreementId) load(); }, [agreementId]);
+  useEffect(() => { if (agreementId) load(); }, [agreementId]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
   if (!caps.canManageDocuments && !caps.canView) return <AccessDenied />;
   const upload = async (e) => {
     e.preventDefault(); setSaving(true); setError('');
@@ -39,7 +39,7 @@ function LicenseDocumentsPage({ agreementId }) {
       const r = await api.get(`/licensing/documents/${doc.id}/download/`, { responseType: 'blob' });
       const url = URL.createObjectURL(r.data);
       const a = document.createElement('a'); a.href = url; a.download = doc.original_filename || 'document'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } catch (e) { setError('Download failed.'); }
+    } catch { setError('Download failed.'); }
   };
   return (
     <div className="license-documents-page">

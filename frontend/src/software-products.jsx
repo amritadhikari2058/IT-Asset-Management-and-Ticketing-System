@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from './auth';
-import { useTableColumns, useSort } from './components';
-import { Badge, Field, ErrorSummary, LoadingRows, EmptyState, DataTable, Pager, PageHeader, ConfirmDialog, Modal, AccessDenied } from './components';
-import { parseApiError } from './api-utils';
+import { useSort } from './components';
+import { Badge, Field, DataTable, Pager, PageHeader, AccessDenied } from './components';
 import { fetchPage } from './api-utils';
-import api from './api';
 import { licensingCapabilities } from './licensing-utils';
-import { PRODUCT_APPROVAL_STATUS_LABELS, PLATFORM_LABELS, LICENSE_MODEL_LABELS, PRODUCT_CATEGORY_LABELS, RISK_LEVEL_LABELS, SUPPORT_STATUS_LABELS, productApprovalBadgeVariant, buildProductListUrl } from './licensing-utils';
+import { PRODUCT_APPROVAL_STATUS_LABELS, PLATFORM_LABELS, LICENSE_MODEL_LABELS, PRODUCT_CATEGORY_LABELS, RISK_LEVEL_LABELS, SUPPORT_STATUS_LABELS, buildProductListUrl } from './licensing-utils';
 
 function SoftwareProductsPage() {
   const auth = useAuth();
@@ -19,19 +17,17 @@ function SoftwareProductsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [f, setF] = useState({ search: '', category: '', platform: '', license_model: '', approved_status: '', risk_level: '', support_status: '', is_active: '' });
-  const [sort, changeSort, orderingParam] = useSort();
-  const [lastUrl, setLastUrl] = useState('/licensing/products/');
-
+  const [sort, , orderingParam] = useSort();
 
   const loadUrl = async (url) => {
     setLoading(true); setError('');
     try {
       const pg = await fetchPage(url);
-      setItems(pg.items); setCount(pg.count); setNext(pg.next); setPrevious(pg.previous); setLastUrl(url); setPage(1);
-    } catch (e) { setError('Could not load products.'); }
+      setItems(pg.items); setCount(pg.count); setNext(pg.next); setPrevious(pg.previous); setPage(1);
+    } catch { setError('Could not load products.'); }
     finally { setLoading(false); }
   };
-  const builtUrl = useMemo(() => buildProductListUrl(f, orderingParam(sort), page), [f, sort, page]);
+  const builtUrl = useMemo(() => buildProductListUrl(f, orderingParam(sort), page), [f, sort, page]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { const t = setTimeout(() => loadUrl(builtUrl), 250); return () => clearTimeout(t); }, [builtUrl]);
 
   const columns = [

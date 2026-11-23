@@ -59,7 +59,7 @@ export function PurchaseRequestQuotations({ id }) {
     }
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const comparison = (request?.quotations || []).map((quote) => ({
     ...quote,

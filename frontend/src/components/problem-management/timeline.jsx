@@ -38,7 +38,7 @@ export function Timeline({ problemId: problemIdProp }) {
     }
   }, [problemId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const submit = async (ev) => {
     ev.preventDefault();

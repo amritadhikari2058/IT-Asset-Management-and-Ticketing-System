@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Form, Input, Select } from './components';
+import { PageHeader, Row, Col } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError } from './changes-utils';
 
@@ -16,8 +16,8 @@ export function ChangeReviewMeetings() {
 
   useEffect(() => {
     if (!isStaff && role !== 'it_manager') {
-      setMeetings([]);
-      setLoading(false);
+      setMeetings([]); // eslint-disable-line react/set-state-in-effect
+      setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
     fetchPage(`/change-review-meetings/`)

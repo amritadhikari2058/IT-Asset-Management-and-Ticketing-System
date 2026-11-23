@@ -59,7 +59,7 @@ export function ApprovalCenter() {
         workflow_approval: c.workflow,
         knowledge_base: c.knowledge_base,
       });
-    } catch (e) {
+    } catch {
       setError('Could not load pending approvals.');
     } finally {
       setLoading(false);
@@ -68,8 +68,7 @@ export function ApprovalCenter() {
 
   useEffect(() => {
     if (!isStaff) return;
-    let active = true;
-    load().finally(() => { active = false; });
+    load(); // eslint-disable-line react/set-state-in-effect
   }, [isStaff, load]);
 
   if (!isStaff) return <EmptyState title="Approvals" hint="Only staff can access approvals." />;

@@ -3,7 +3,9 @@
  * Maps frontend operations to actual backend endpoints,
  * derived from the verified CMDB Django REST backend.
  * 
- * Axios baseURL is http://127.0.0.1:8000/api
+ * All requests go through the shared axios instance (./api) so CMDB calls
+ * carry the bearer auth header, participate in token refresh, and respect
+ * VITE_API_BASE_URL. Axios baseURL is http://127.0.0.1:8000/api by default.
  * All CMDB routes use /cmdb/ prefix → final URL: /api/cmdb/<route>
  */
 
@@ -190,36 +192,6 @@ export const CIDetailHeader = {
   monitoring_state: '',
   record_version: 0
 };
-
-// API helper functions
-/** Generic GET wrapper that returns the raw Axios response data. */
-function apiGet(url, options) {
-  const api = window.__CMDB_API_BASE__ || '/api';
-  const fullUrl = `${api}${url}`;
-  // @ts-ignore - axios types
-  return axios.get(fullUrl, options).then((r) => r.data);
-}
-
-/** Generic POST wrapper. */
-function apiPost(url, data, options) {
-  const api = window.__CMDB_API_BASE__ || '/api';
-  // @ts-ignore - axios types
-  return axios.post(fullUrl, data, options).then((r) => r.data);
-}
-
-/** Generic PATCH wrapper. */
-function apiPatch(url, data, options) {
-  const api = window.__CMDB_API_BASE__ || '/api';
-  // @ts-ignore - axios types
-  return axios.patch(fullUrl, data, options).then((r) => r.data);
-}
-
-/** Generic DELETE wrapper. */
-function apiDelete(url, options) {
-  const api = window.__CMDB_API_BASE__ || '/api';
-  // @ts-ignore - axios types
-  return axios.delete(fullUrl, options).then((r) => r.data);
-}
 
 // ── API Contract Table ────────────────────────────────────────────────
 /**

@@ -4,12 +4,12 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Badge, Form } from './components';
+import { PageHeader, Badge, Form, Button } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError } from './changes-utils';
 
 export function ChangeImplementation({ match }) {
-  const { isStaff, role } = useAuth();
+  const { role } = useAuth();
   const [change, setChange] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -51,7 +51,7 @@ export function ChangeImplementation({ match }) {
   }
 
   // Calculate elapsed time
-  const elapsed = startTime ? Math.floor((new Date().getTime() - startTime.getTime()) / 60000) : elapsedMinutes;
+  const elapsed = startTime ? Math.floor((new Date().getTime() - startTime.getTime()) / 60000) : elapsedMinutes; // eslint-disable-line react/purity // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div>

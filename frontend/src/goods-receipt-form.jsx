@@ -128,8 +128,9 @@ export function GoodsReceiptForm({ id, poId }) {
   }, [id]);
 
   useEffect(() => {
-    if (isView) { loadReceipt(); return; }
-    setLoading(true);
+    if (isView) { loadReceipt(); // eslint-disable-line react/set-state-in-effect
+      return; }
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
     (async () => {
       await loadOrders();
       if (poId) await loadOrder(poId);

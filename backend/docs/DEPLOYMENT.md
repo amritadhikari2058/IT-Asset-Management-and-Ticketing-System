@@ -411,7 +411,59 @@ mailbox-selection failures. Credentials are never printed.
   verified copy.
 - Do not log passwords, tokens, SMTP credentials, or sensitive user data.
 
-## 17. Backup / disaster recovery (`backup` app)
+## 17. Container orchestration (Docker Compose)
+
+A development/staging skeleton is provided in `backend/docker-compose.yml`.
+It builds the backend image from `backend/Dockerfile` and runs PostgreSQL,
+Redis, Gunicorn (backend), a Celery worker, and Celery beat. S3 and SMTP are
+external services configured via environment variables.
+
+Run it:
+
+```bash
+cd backend
+# Copy .env first (see section 2). Do not rely on the compose defaults for
+# SECRET_KEY / POSTGRES_PASSWORD in anything other than local dev.
+cp ../.env.example .env   # edit values, then:
+docker compose up --build
+```
+
+Defaults are deliberately local-dev-friendly: console email backend, SQLite-/
+PostgreSQL- switchable via `DATABASE__*` vars, and no S3. For a production run
+set `DEBUG=false`, a real `SECRET_KEY`, PostgreSQL, Redis, and (optionally)
+`STORAGE_BACKEND=s3`. The frontend is not served by compose in this skeleton;
+build it first (`cd frontend && npm run build`) and either mount
+`frontend/dist` into the backend container or serve it from the reverse proxy.
+
+## 18. Kubernetes (notes)
+
+No Kubernetes manifests, Helm charts, or operators are provided. The smallest
+production-ready target is a small set of Deployments + a StatefulSet/string
+of managed PostgreSQL/Redis + an Ingress. The intended mapping is:
+
+- **backend** (Deployment, Gunicorn) — 2+ replicas behind a readiness probe on
+  `GET /ready/` and a liveness probe on `GET /health/`. Shared nothing except
+  the database, Redis, and S3.
+- **worker** (Deployment, Celery worker) — 1+ replicas; scale with queue depth.
+- **beat** (Deployment, single replica, or use Celery beat with a shared lock
+  / a leader election sidecar). `backend/config/settings.py` already lists the
+  beat schedule.
+- **db** — managed PostgreSQL preferred; if self-hosting, use a StatefulSet with
+  persistent volume claims and automated backups at the infrastructure level.
+- **redis** — managed Redis preferred; if self-hosting, use a StatefulSet with
+  persistence. Multi-worker deployments require a shared cache (Redis), not the
+  default LocMem.
+- **frontend** — serve the Vite build from the Ingress or a separate static
+  service; proxy `/api/` to the backend Service.
+- **secrets** — `SECRET_KEY`, database password, SMTP credentials, S3 keys, and
+  `INBOUND_MAILBOX_PASSWORD` should come from a secrets manager or
+  Kubernetes Secrets, never from the image or the repo.
+
+The existing `backend/Dockerfile` is the image contract; compose is the local
+dev/shim path. If you add manifests, keep the same startup contract: migrate,
+collectstatic, then Gunicorn; and separate worker/beat from the web process.
+
+## 19. Backup / disaster recovery (`backup` app)
 
 The `backup` app (`/api/backup/`) automates database, media and full
 backups, verification, retention and controlled restore. It is wired into

@@ -7,6 +7,7 @@ from rest_framework_simplejwt.views import (
 from common import health
 from common.throttling import AuthRateThrottle
 from common.views import (
+    TokenRefreshViewWithOptionalRefreshCookie,
     recycle_bin_detail, recycle_bin_hard_delete, recycle_bin_list,
     recycle_bin_restore,
 )
@@ -23,11 +24,17 @@ class ThrottledTokenRefreshView(TokenRefreshView):
     throttle_classes = [AuthRateThrottle]
 
 
+class ThrottledTokenRefreshViewWithOptionalCookie(TokenRefreshViewWithOptionalRefreshCookie):
+    """Token refresh endpoint with auth-rate throttling and an optional
+    httpOnly refresh-token cookie path."""
+    throttle_classes = [AuthRateThrottle]
+
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/token/", ThrottledTokenObtainPairView.as_view(),
          name="token_obtain"),
-    path("api/token/refresh/", ThrottledTokenRefreshView.as_view(),
+    path("api/token/refresh/", ThrottledTokenRefreshViewWithOptionalCookie.as_view(),
          name="token_refresh"),
     path("api/accounts/", include("accounts.urls")),
     path("api/assets/", include("assets.urls")),

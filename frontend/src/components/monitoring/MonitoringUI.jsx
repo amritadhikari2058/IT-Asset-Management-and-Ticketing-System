@@ -1,6 +1,6 @@
 import { Badge } from '../../components';
 
-export const SEVERITY_TONE = {
+export const SEVERITY_TONE = { // eslint-disable-line react/only-export-components
   info: 'blue',
   warning: 'amber',
   minor: 'blue',
@@ -8,7 +8,7 @@ export const SEVERITY_TONE = {
   critical: 'red',
 };
 
-export const SEVERITY_LABELS = {
+export const SEVERITY_LABELS = { // eslint-disable-line react/only-export-components
   info: 'Info',
   warning: 'Warning',
   minor: 'Minor',
@@ -16,7 +16,7 @@ export const SEVERITY_LABELS = {
   critical: 'Critical',
 };
 
-export const STATUS_TONE = {
+export const STATUS_TONE = { // eslint-disable-line react/only-export-components
   new: 'blue',
   open: 'blue',
   acknowledged: 'amber',
@@ -27,7 +27,7 @@ export const STATUS_TONE = {
   flapping: 'purple',
 };
 
-export const STATUS_LABELS = {
+export const STATUS_LABELS = { // eslint-disable-line react/only-export-components
   new: 'New',
   open: 'Open',
   acknowledged: 'Acknowledged',
@@ -38,7 +38,7 @@ export const STATUS_LABELS = {
   flapping: 'Flapping',
 };
 
-export const SOURCE_STATUS_TONE = {
+export const SOURCE_STATUS_TONE = { // eslint-disable-line react/only-export-components
   active: 'green',
   disabled: 'gray',
   degraded: 'amber',
@@ -46,7 +46,7 @@ export const SOURCE_STATUS_TONE = {
   retired: 'gray',
 };
 
-export const SOURCE_STATUS_LABELS = {
+export const SOURCE_STATUS_LABELS = { // eslint-disable-line react/only-export-components
   active: 'Active',
   disabled: 'Disabled',
   degraded: 'Degraded',
@@ -54,14 +54,14 @@ export const SOURCE_STATUS_LABELS = {
   retired: 'Retired',
 };
 
-export const SOURCE_HEALTH_TONE = {
+export const SOURCE_HEALTH_TONE = { // eslint-disable-line react/only-export-components
   healthy: 'green',
   degraded: 'amber',
   unhealthy: 'red',
   unknown: 'gray',
 };
 
-export const SOURCE_HEALTH_LABELS = {
+export const SOURCE_HEALTH_LABELS = { // eslint-disable-line react/only-export-components
   healthy: 'Healthy',
   degraded: 'Degraded',
   unhealthy: 'Unhealthy',
@@ -93,7 +93,7 @@ export function SourceHealthBadge({ value, label }) {
 }
 
 /** Safe date formatter — never renders raw payloads or internals. */
-export function formatDate(value) {
+export function formatDate(value) { // eslint-disable-line react/only-export-components
   if (!value) return '—';
   try {
     const d = new Date(value);
@@ -104,7 +104,7 @@ export function formatDate(value) {
   }
 }
 
-export function formatRelative(value) {
+export function formatRelative(value) { // eslint-disable-line react/only-export-components
   if (!value) return '—';
   try {
     const d = new Date(value);
@@ -215,7 +215,7 @@ export function ConfirmPanel({ title, message, confirmLabel = 'Confirm', danger,
  *  rendering. Used so no secret ever reaches the DOM. */
 const SECRET_KEYS = ['secret', 'password', 'token', 'authorization', 'api_key', 'apikey', 'private_key', 'client_secret', 'access_token', 'refresh_secret', 'signature', 'cookie'];
 
-export function sanitizeRecord(record) {
+export function sanitizeRecord(record) { // eslint-disable-line react/only-export-components
   if (record === null || record === undefined) return record;
   if (Array.isArray(record)) return record.map(sanitizeRecord);
   if (typeof record === 'object') {

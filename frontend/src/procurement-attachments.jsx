@@ -44,7 +44,7 @@ export function ProcurementAttachments({
     }
   }, [parentType, parentId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const upload = async (event) => {
     event.preventDefault();

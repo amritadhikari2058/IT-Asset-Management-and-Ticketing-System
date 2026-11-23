@@ -9,4 +9,21 @@ export default defineConfig({
     include: ['src/**/*.test.{js,jsx}'],
     setupFiles: ['./vitest.setup.js'],
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: (id) => {
+          if (id.includes('node_modules')) {
+            if (id.includes('react') || id.includes('react-dom') || id.includes('react-router')) {
+              return 'vendor-react';
+            }
+            if (id.includes('axios')) {
+              return 'vendor-axios';
+            }
+            return 'vendor';
+          }
+        },
+      },
+    },
+  },
 })

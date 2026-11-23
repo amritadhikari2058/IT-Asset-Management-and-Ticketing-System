@@ -16,8 +16,31 @@ scope decisions that operators should be aware of before go-live.
 - **Role changes**: Only System Admin can change roles or
   `can_create_tickets`. IT Manager and IT Support cannot promote/demote
   users.
-- **No multi-factor authentication**: JWT access/refresh only. MFA is not
-  implemented.
+- **No multi-factor authentication (MFA)**: JWT access/refresh only. MFA is not
+  implemented. When enabled, the intended path is time-based one-time
+  passwords (TOTP) enrolled per user, with the login flow returning a
+  ``pending_mfa`` outcome and a follow-up challenge endpoint so existing
+  password-only clients are unaffected until MFA is opted in. A placeholder
+  ``MFA_ENABLED`` switch exists in ``backend/config/settings.py`` as the
+  intended contract, but no user MFA profile, enrollment, or challenge gate is
+  wired today. This is a planned workstream, not a committed setting.
+- **Refresh-token storage is localStorage by default, with an opt-in
+  httpOnly-cookie path**: by default the frontend stores the refresh token in
+  ``localStorage`` and sends it in the refresh request body, so a same-origin
+  XSS can read it. There is an opt-in backend path
+  (``JWT_REFRESH_COOKIE_ENABLED=true``) that returns the refresh token as an
+  httpOnly / secure / sameSite=Lax cookie and omits it from the JSON body, so
+  the frontend stops storing refresh in localStorage and refreshes via the
+  cookie (the browser sends it automatically). Enabling that path removes the
+  refresh token from script reach, but a few caveats remain: (1) the access
+  token is still kept in memory + localStorage for the page-reload boot and is
+  still script-readable; (2) in cookie mode the client cannot delete the
+  httpOnly refresh cookie itself, so logout relies on the backend clearing the
+  cookie (the backend logout endpoint already does this); (3) until MFA is
+  enabled, a stolen access token still grants a full short-lived session. The
+  recommended end state is httpOnly refresh cookie + short-lived in-memory
+  access token (no localStorage access either) + MFA; only the refresh-cookie
+  opt-in is wired today.
 
 ## Email
 
@@ -44,6 +67,30 @@ scope decisions that operators should be aware of before go-live.
 - **Task retries**: `check_sla_escalations` retries on exception with
   backoff. Other tasks may not have retry configured.
 
+## Notifications / outbox ledger
+
+- **Transactional notification outbox (Phase 66)** provides a durable,
+  database-backed email delivery queue with atomic enqueue, race-safe claiming,
+  bounded retry, lease recovery, deduplication, and a periodic scanner safety
+  net. The outbox is correct by construction, but two production-readiness
+  items remain:
+
+  - **Live delivery not validated end-to-end**: enqueue/claim/deliver/retry paths
+    are covered by automated tests, and the notification/outbox query profile
+    during bulk ticket confirmation is exercised by
+    ``backend/tickets/test_notification_profile.py`` (500 rows). Real SMTP
+    delivery through the outbox has not been validated against a live provider
+    in this repository; send a real transactional email end-to-end before
+    relying on outbox delivery in production.
+  - **Ledger growth**: every enqueued email becomes a row, and terminal rows
+    are retained for ``NOTIFICATION_OUTBOX_RETENTION_DAYS`` (default 30) before
+    the daily cleanup task removes them. Under sustained high mail volume the
+    ``NotificationOutboxEvent`` table can grow; monitor table size and the
+    cleanup task schedule, and tune ``NOTIFICATION_OUTBOX_BATCH_SIZE``,
+    ``NOTIFICATION_OUTBOX_RETENTION_DAYS``, and the cleanup cadence as needed.
+    The dashboard outbox stats (``get_outbox_stats``) expose pending/retry/
+    processing/delivered/failed/cancelled counts for this.
+
 ## Privacy / data lifecycle
 
 - **Not a compliance claim**: Privacy erasure and data retention are
@@ -59,8 +106,16 @@ scope decisions that operators should be aware of before go-live.
 - **Automated erasure scope**: Automated execution currently supports
   `accounts.User` only. Other entity types require manual review and are
   not executed by the automated flow.
-- **No tamper-evident audit log**: Audit log entries are append-only via the
-  API but the log itself is not signed/chained.
+- **Audit log tamper-evidence is opt-in and off by default**: AuditLog entries
+  are append-only via the API and never auto-deleted. There is an opt-in
+  ``AUDIT_INTEGRITY_HASH_ENABLED`` setting that writes a deterministic
+  SHA-256 chain hash on each new row (from the previous row's hash + this
+  row's stable fields) and a read-only management command
+  (``python manage.py audit_integrity_check``) that recomputes the chain and
+  reports mismatches/unsealed rows. It is off by default, existing rows are
+  unsealed, and there is no automated periodic integrity check or controlled
+  reseal procedure yet, so the log is not tamper-evident in the default
+  configuration.
 
 ## Monitoring and observability (Phase 26)
 

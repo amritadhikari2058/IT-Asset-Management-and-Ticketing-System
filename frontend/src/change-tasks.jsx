@@ -4,13 +4,13 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Badge, Form, Input, Select, Button, Row, Col } from './components';
+import { PageHeader, Select, Row, Col } from './components';
 import { useAuth } from './auth';
 import api from './api';
 import { fetchPage, parseApiError } from './changes-utils';
 
 export function ChangeTasks({ match }) {
-  const { isStaff, role } = useAuth();
+  useAuth();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

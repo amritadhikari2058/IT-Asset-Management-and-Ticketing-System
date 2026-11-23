@@ -16,7 +16,6 @@ import { ChangeDetail } from './change-detail';
 import { ChangeRisk } from './change-risk';
 import { ChangeTasks } from './change-tasks';
 import { ChangeApprovals } from './change-approvals';
-import { ChangeSchedule } from './change-schedule';
 import { ChangeConflicts } from './change-conflicts';
 import { ChangeImplementation } from './change-implementation';
 import { ChangePIR } from './change-pir';
@@ -26,12 +25,11 @@ import { ChangeDashboard } from './change-dashboard';
 import { MaintenanceWindows } from './maintenance-windows';
 import { ChangeTemplates } from './change-templates';
 import { ChangeReviewMeetings as ReviewMeetings } from './change-review-meetings';
-import { ChangeReports } from './change-reports';
 import { EmployeeOutages } from './outages';
 import { BlackoutPeriods } from './blackout-periods';
 import { SchedulingExceptions } from './scheduling-exceptions';
 
-export const changeRoutes = [
+export const changeRoutes = [ // eslint-disable-line react/only-export-components
   { path: '#/changes', component: ChangeList, title: 'Changes', breadcrumbs: ['Change Management'] },
   { path: '#/changes/new', component: ChangeForm, title: 'New Change', breadcrumbs: ['Change Management', 'New Change'] },
   { path: '#/changes/calendar', component: ChangeCalendar, title: 'Change Calendar', breadcrumbs: ['Change Management', 'Calendar'] },

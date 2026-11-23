@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
-import { Badge, EmptyState, ErrorSummary, Field, PageHeader } from './components';
-import { fieldMsg, parseApiError, fetchPage } from './api-utils';
+import { ErrorSummary, Field, PageHeader } from './components';
+import { parseApiError } from './api-utils';
 import {
-  CASE_TYPE_LABELS, formatDate, formatDateTime, formatPercent,
-  isTerminalCaseStatus,
+  CASE_TYPE_LABELS, formatDate, formatDateTime,
 } from './lifecycle-utils';
 
 const KPIS = [
@@ -62,7 +61,7 @@ export function LifecycleDashboard() {
     }
   };
 
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const canManage = isAdmin || isManagerOrAdmin || isStaff;
 

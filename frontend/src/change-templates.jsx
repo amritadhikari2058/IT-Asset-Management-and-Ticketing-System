@@ -4,20 +4,20 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Form, Input, Select } from './components';
+import { PageHeader, Row, Col } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError } from './changes-utils';
 
 export function ChangeTemplates() {
-  const { isStaff, role } = useAuth();
+  const { isStaff } = useAuth();
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!isStaff) {
-      setTemplates([]);
-      setLoading(false);
+      setTemplates([]); // eslint-disable-line react/set-state-in-effect
+      setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
     fetchPage(`/change-templates/`)

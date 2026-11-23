@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from './auth';
-import { Badge, Field, EmptyState, DataTable, Pager, PageHeader } from './components';
+import { DataTable, Pager, PageHeader } from './components';
 import { fetchPage } from './api-utils';
-import api from './api';
-import { licensingCapabilities } from './licensing-utils';
 import { INSTALLATION_STATUS_LABELS, COMPLIANCE_STATUS_LABELS } from './licensing-utils';
 
 function LicenseInstallationsPage() {
@@ -13,16 +11,14 @@ function LicenseInstallationsPage() {
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
   const [previous, setPrevious] = useState(null);
-  const [page, setPage] = useState(1);
+  const [page] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [f, setF] = useState({ search: '' });
   const loadUrl = async (url) => {
     setLoading(true); setError('');
     try { const pg = await fetchPage(url); setItems(pg.items); setCount(pg.count); setNext(pg.next); setPrevious(pg.previous); } catch { setError('Could not load installations.'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { loadUrl(`/licensing/installations/?page=${page}`); }, [page]);
+  useEffect(() => { loadUrl(`/licensing/installations/?page=${page}`); }, [page]); // eslint-disable-line react/set-state-in-effect
   const columns = [
     { key: 'product_name', label: 'Product' },
     { key: 'asset_tag', label: 'Asset' },

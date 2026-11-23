@@ -51,8 +51,8 @@ export function ProblemDetail({ problemId: problemIdProp }) {
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setError('');
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
+    setError(''); // eslint-disable-line react/set-state-in-effect
     problemDetail(problemId)
       .then((data) => { if (active) setProblem(data?.data ?? data); })
       .catch(() => { if (active) setError('Could not load problem detail.'); })
@@ -93,7 +93,7 @@ export function ProblemDetail({ problemId: problemIdProp }) {
 
   useEffect(() => {
     const rootCauseId = problem?.root_cause_analysis;
-    if (!rootCauseId) { setRca(null); return () => {}; }
+    if (!rootCauseId) { setRca(null); return () => {}; } // eslint-disable-line react/set-state-in-effect
     let active = true;
     getRCA(rootCauseId)
       .then((data) => { if (active) setRca(data?.data ?? data); })

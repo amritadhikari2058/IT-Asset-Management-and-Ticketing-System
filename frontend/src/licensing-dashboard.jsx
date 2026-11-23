@@ -36,7 +36,7 @@ export function LicensingDashboard() {
     } catch (e) { setError(e.response?.data?.detail || 'Could not load dashboard.'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [filters.status, filters.vendor, filters.license_type, filters.expiry]);
+  useEffect(() => { load(); }, [filters.status, filters.vendor, filters.license_type, filters.expiry]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const setFilter = (key, value) => setFilters((prev) => ({ ...prev, [key]: value }));
   const clearFilters = () => setFilters({ status: '', vendor: '', license_type: '', expiry: '' });

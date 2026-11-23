@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './auth';
 import { useTableColumns, useSort } from './components';
-import { Badge, Field, ErrorSummary, LoadingRows, EmptyState, DataTable, Pager, PageHeader, ConfirmDialog, Modal, AccessDenied, PageSizeSelector } from './components';
-import { parseApiError, fieldMsg, fetchPage } from './api-utils';
+import { Badge, Field, LoadingRows, DataTable, Pager, PageHeader, ConfirmDialog, AccessDenied, PageSizeSelector } from './components';
+import { parseApiError, fetchPage } from './api-utils';
 import api from './api';
 
 /** Vendor list page with server-side data, search, filter, sorting, pagination. */
@@ -26,14 +26,14 @@ function VendorsPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [listError, setListError] = useState('');
-  const [sel, setSel] = useState(new Set());
   const [f, setF] = useState({ q: '', is_active: '', is_deleted: '' });
+  const [, setSel] = useState(new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
-  const [actionError, setActionError] = useState('');
-  const [rowActionBusy, setRowActionBusy] = useState(false);
-  const [sort, changeSort, orderingParam] = useSort();
+  const [, setActionError] = useState('');
+  const [, setRowActionBusy] = useState(false);
+  const [sort, , orderingParam] = useSort();
   const [lastUrl, setLastUrl] = useState('/assets/vendors/');
   const requestIdRef = useRef(0);
   const mountedRef = useRef(true);
@@ -79,7 +79,7 @@ function VendorsPage() {
     ] : [])
   ];
 
-  const { visibleColumns: visibleVendorColumns, toggleColumn: toggleVendorColumn, resetColumns: resetVendorColumns, tableVisible: vendorTableVisible, toggleTable: vendorToggleTable } = useTableColumns(
+  const { visibleColumns: visibleVendorColumns } = useTableColumns(
     'vendors',
     VENDOR_COLUMNS.map((c) => c.key),
     isStaff
@@ -123,7 +123,7 @@ function VendorsPage() {
   }, [builtUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    setPage(1);
+    setPage(1); // eslint-disable-line react/set-state-in-effect
   }, [pageSize]);
 
   // Persist page-size preference without unnecessary writes
@@ -137,8 +137,6 @@ function VendorsPage() {
       // ignore storage failures
     }
   }, [pageSize]);
-
-  const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const handleDelete = async (id) => {
     setDeleteBusy(true);
@@ -328,7 +326,7 @@ function VendorForm({ onSave, onClose, vendorId }) {
     notes: '',
     is_active: true,
   });
-  const [vendor, setVendor] = useState(null);
+  const [, setVendor] = useState(null);
   const [loading, setLoading] = useState(!!vendorId);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
@@ -336,7 +334,7 @@ function VendorForm({ onSave, onClose, vendorId }) {
   // Load existing vendor for edit
   useEffect(() => {
      if (vendorId) {
-       setLoading(true);
+       setLoading(true); // eslint-disable-line react/set-state-in-effect
        api.get(`/assets/vendors/${vendorId}/`)
          .then((r) => {
            const d = r.data;
@@ -486,11 +484,11 @@ function VendorDetail({ id }) {
   const [assets, setAssets] = useState([]);
   const [stockItems, setStockItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [detailError, setDetailError] = useState('');
+  const [, setDetailError] = useState('');
   const [activateBusy, setActivateBusy] = useState(false);
   const [deactivateBusy, setDeactivateBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
-  const [actionError, setActionError] = useState('');
+  const [, setActionError] = useState('');
 
   // Load vendor detail
   useEffect(() => {

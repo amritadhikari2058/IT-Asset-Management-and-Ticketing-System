@@ -60,7 +60,7 @@ function BaselinesPageInner() {
     }
   };
 
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const selectedBaseline = useMemo(() => baselines.find((b) => Number(b.id) === Number(selectedId)) || null, [baselines, selectedId]);
   const ciById = useMemo(() => {

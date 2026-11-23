@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
-import { Badge, EmptyState, Field, PageHeader } from './components';
+import { PageHeader } from './components';
 import { parseApiError } from './api-utils';
 
 /** Fallback category list + opt-in defaults (backend source of truth). */
@@ -46,7 +46,7 @@ export function NotificationSettings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
-  const [hasRecord, setHasRecord] = useState(false);
+  const [, setHasRecord] = useState(false);
   const [recordId, setRecordId] = useState(null);
   const [emailEnabled, setEmailEnabled] = useState(true);
   const [categories, setCategories] = useState({ ...DEFAULT_ENABLED });
@@ -89,7 +89,7 @@ export function NotificationSettings() {
     }
   };
 
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const toggleCategory = (key, checked) => {
     setCategories((p) => ({ ...p, [key]: checked }));

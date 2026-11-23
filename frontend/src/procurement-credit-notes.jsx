@@ -35,7 +35,7 @@ export function ProcurementCreditNotesPage() {
       .catch(e => setError(procurementErrorText(e, 'Failed to load credit notes.')))
       .finally(() => setLoading(false));
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <p className="page-loading" role="status">Loading credit notes…</p>;
   return (
@@ -110,7 +110,7 @@ export function ProcurementCreditNoteDetail({ id }) {
     try { const r = await api.get(`/procurement/credit-notes/${id}/`); setCn(r.data); }
     catch (e) { setLoadError(procurementErrorText(e, 'Failed to load.')); }
   }, [id]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   async function act(action, body = {}) {
     setBusy(action); setError('');

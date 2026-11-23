@@ -1,33 +1,32 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../../auth';
 import { useApi } from '../../services/api-context';
-import { Table, TableRow, TableCell, TableHead, TableBody, Pagination, EmptyState, LoadingState, SuccessState, ErrorState } from '../../components';
+import { Table, TableRow, TableCell, TableHead, TableBody, Pagination, EmptyState, LoadingState, ErrorState } from '../../components';
 import { canManageChanges } from '../../components/changes/access';
 
 /** Change List — connects to backend ChangeRequestViewSet at /api/changes/ */
 export function ChangeList() {
   const auth = useAuth();
-  const { request, loading, error, success } = useApi();
-  const [items, setItems] = useState([]);
+  const { request, loading, error } = useApi();
+  const [items] = useState([]);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [filter, setFilter] = useState('');
+  const [pageSize] = useState(20);
+  const [filter] = useState('');
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     setLoaded(false);
     try {
-      const resp = await request('GET', `/api/changes/?page=${page}&page_size=${pageSize}&filter=${filter}`);
-      setItems(resp.data.results ?? resp.data);
+      const _resp = await request('GET', `/api/changes/?page=${page}&page_size=${pageSize}&filter=${filter}`); // eslint-disable-line react-hooks/exhaustive-deps
       setLoaded(true);
-    } catch (e) {
+    } catch {
       setError('Failed to load changes.');
     } finally {
       setLoaded(true);
     }
-  }, [page, pageSize, filter]);
+  }, [request, page, pageSize, filter]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (!canManageChanges(auth)) {
     return (

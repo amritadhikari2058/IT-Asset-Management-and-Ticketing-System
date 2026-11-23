@@ -55,10 +55,12 @@ _load_root_env()
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # Overridable via the SECRET_KEY environment variable (see .env.example).
-# The committed default is a local-development key only.
+# No committed default: development falls back to a per-process random key,
+# production requires the SECRET_KEY environment variable (see guard below).
+from django.core.management.utils import get_random_secret_key
+
 _SECRET_KEY_FROM_ENV = os.environ.get('SECRET_KEY', '')
-SECRET_KEY = (_SECRET_KEY_FROM_ENV
-              or 'django-insecure-h4d8ta4a*&1il3pivw9lx$9yslbnx2e$gm4bfsn607awll&p-*')
+SECRET_KEY = (_SECRET_KEY_FROM_ENV or get_random_secret_key())
 
 # SECURITY WARNING: don't run with debug turned on in production!
 # Local dev default stays True; production sets DEBUG=false.
@@ -90,6 +92,20 @@ CSRF_COOKIE_SECURE = (
                    'false' if DEBUG else 'true').lower() == 'true')
 SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'false').lower() == 'true'
 SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', '0') or 0)
+# HSTS includes subdomains by default when HSTS is configured; operators can
+# disable it explicitly if a subdomain must remain HTTP.
+SECURE_HSTS_INCLUDE_SUBDOMAINS = (
+    os.environ.get('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'true').lower() == 'true'
+    if SECURE_HSTS_SECONDS
+    else False)
+# Clickjacking protection: deny framing by default (overridable per env for
+# narrow legitimate embedding scenarios).
+X_FRAME_OPTIONS = os.environ.get('X_FRAME_OPTIONS', 'DENY').upper()
+# MIME-type sniffing: nosniff is the safe default and is also applied per-
+# response on file downloads. Keep the global default on for production.
+SECURE_CONTENT_TYPE_NOSNIFF = os.environ.get(
+    'SECURE_CONTENT_TYPE_NOSNIFF', 'true' if not DEBUG else 'false'
+).lower() == 'true'
 
 
 # Application definition
@@ -514,6 +530,86 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'BLACKLIST_ENABLED': True,
 }
+
+# ---------- Multi-factor authentication (future work, not wired today) ----------
+# MFA is not implemented. If enabled, the intended path is per-user time-based
+# one-time passwords (TOTP) with a login flow that can return a
+# ``pending_mfa`` outcome and a follow-up challenge endpoint, so existing
+# password-only clients are unaffected until MFA is opted in for a user.
+# The real implementation would add a user MFA profile model, TOTP enrollment/
+# verification, and a challenge gate on token issuance; nothing in this file
+# is wired to MFA today and the login flow is unchanged.
+#
+# Placeholder switch (ignored by current code; exists so operators can see the
+# intended contract). When set to ``true``, login would be expected to require
+# a second factor for enrolled users.
+MFA_ENABLED = os.environ.get('MFA_ENABLED', 'false').lower() == 'true'
+
+# ---------- Audit log integrity (future work, opt-in) ----------
+# AuditLog is append-only via the API and is never auto-deleted, but the log
+# itself is not currently tamper-evident (no signed/chained entries). When
+# ``AUDIT_INTEGRITY_HASH_ENABLED`` is True, each new AuditLog row stores a
+# deterministic SHA-256 ``integrity_hash`` computed from the previous row's
+# hash + this row's stable fields, so a later integrity check can detect
+# out-of-band edits. Existing writes are unchanged when the setting is False.
+AUDIT_INTEGRITY_HASH_ENABLED = (
+    os.environ.get('AUDIT_INTEGRITY_HASH_ENABLED', 'false').lower() == 'true')
+
+# ---------- HTTP security headers (Phase 8) ----------
+# A strict Content Security Policy substantially reduces the blast radius of
+# any same-origin XSS, which is the primary remaining risk of storing auth
+# tokens in localStorage. The production policy is strict (no unsafe-inline,
+# no plugins); local Vite dev is allowed to keep the injected script/style
+# allowances because the dev server and HMR runtime are not the production
+# build. Tighten further for production (pin third-party origins) once the
+# app's non-self script/style origins are stable.
+#
+# Optional violation reporting: set CSP_REPORT_URI to a URI and the app will
+# emit violated-directive reports to it as POSTs (best-effort). Reports never
+# contain user secrets; they carry the violated directive and the document
+# origin only. Leave unset to disable reporting.
+CSP_REPORT_URI = os.environ.get('CSP_REPORT_URI', '').strip() or None
+
+# Base policy (production): self only, no plugins.
+_CSP_DEFAULT = ("'self'",)
+_CSP_SCRIPT = ("'self'",)
+_CSP_STYLE = ("'self'",)
+_CSP_IMG = ("'self'", "data:",)
+_CSP_CONNECT = ("'self'",)
+_CSP_FONT = ("'self'",)
+_CSP_FORM_ACTION = ("'self'",)
+_CSP_BASE_URI = ("'self'",)
+_CSP_OBJECT_SRC = ("'none'",)
+
+if DEBUG:
+    # Local Vite/HMR/dev tooling can inject inline scripts and styles.
+    _CSP_SCRIPT = (*_CSP_SCRIPT, "'unsafe-inline'")
+    _CSP_STYLE = (*_CSP_STYLE, "'unsafe-inline'")
+
+CSP_DEFAULT_SRC = _CSP_DEFAULT
+CSP_SCRIPT_SRC = _CSP_SCRIPT
+CSP_STYLE_SRC = _CSP_STYLE
+CSP_IMG_SRC = _CSP_IMG
+CSP_CONNECT_SRC = _CSP_CONNECT
+CSP_FONT_SRC = _CSP_FONT
+CSP_FORM_ACTION = _CSP_FORM_ACTION
+CSP_BASE_URI = _CSP_BASE_URI
+CSP_OBJECT_SRC = _CSP_OBJECT_SRC
+CSP_REPORT_URI = CSP_REPORT_URI
+
+# ---------- Refresh-token cookie (future work, opt-in) ----------
+# When ``JWT_REFRESH_COOKIE_ENABLED`` is True, the token refresh endpoint
+# returns the new refresh token as an httpOnly, secure, sameSite=Lax cookie
+# instead of in the JSON body (the access token remains short-lived and is
+# kept in memory on the frontend). This removes the refresh token from
+# script reach at the cost of a small cookie path to wire up.
+# The login endpoint still returns both tokens in JSON for this session; the
+# cookie path is currently applied to refresh only. Set the cookie name via
+# the env var so operators can choose a non-guessable name.
+JWT_REFRESH_COOKIE_ENABLED = (
+    os.environ.get('JWT_REFRESH_COOKIE_ENABLED', 'false').lower() == 'true')
+JWT_REFRESH_COOKIE_NAME = os.environ.get('JWT_REFRESH_COOKIE_NAME',
+                                         'it-service-desk-refresh')
 
 CORS_ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get(

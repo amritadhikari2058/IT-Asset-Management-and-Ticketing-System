@@ -4,7 +4,7 @@ import { PageHeader, Field, AccessDenied } from './components';
 import { parseApiError } from './api-utils';
 import api from './api';
 import { licensingCapabilities } from './licensing-utils';
-import { AGREEMENT_TYPE_LABELS, AGREEMENT_STATUS_LABELS, LICENSE_MODEL_LABELS, BILLING_FREQUENCY_LABELS } from './licensing-utils';
+import { AGREEMENT_TYPE_LABELS, LICENSE_MODEL_LABELS, BILLING_FREQUENCY_LABELS } from './licensing-utils';
 
 function LicenseAgreementForm({ id, agreementId, onSave, onClose }) {
   const auth = useAuth();
@@ -23,7 +23,7 @@ function LicenseAgreementForm({ id, agreementId, onSave, onClose }) {
         setForm({ ...form, ...d, software_product: d.software_product || '', vendor: d.vendor || '', department: d.department || '', owner: d.owner || '', contract_manager: d.contract_manager || '' });
       }).catch((e) => setError(parseApiError(e).global || 'Could not load agreement.'));
     }
-  }, [aid]);
+  }, [aid]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!caps.canManageAgreements) return <AccessDenied reason="manager" />;
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
   const submit = async (e) => {

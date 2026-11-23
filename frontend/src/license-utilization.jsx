@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useAuth } from './auth';
 import { EmptyState, PageHeader, DataTable, Field } from './components';
 import api from './api';
 import {
-  licensingCapabilities,
   formatQuantity,
   formatPercent,
   formatUtilization,
@@ -21,8 +19,6 @@ const EXPIRY_OPTIONS = [
 ];
 
 function LicenseUtilizationPage() {
-  const auth = useAuth();
-  const caps = licensingCapabilities(auth);
   const [items, setItems] = useState([]);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -36,7 +32,7 @@ function LicenseUtilizationPage() {
   }, [filters]);
 
   useEffect(() => {
-    setLoading(true); setError('');
+    setLoading(true); setError(''); // eslint-disable-line react/set-state-in-effect
     api.get('/licensing/utilization-report/', { params })
       .then((r) => {
         setItems(Array.isArray(r.data) ? r.data : (r.data.results || []));

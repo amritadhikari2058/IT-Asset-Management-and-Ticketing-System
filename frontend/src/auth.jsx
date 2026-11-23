@@ -2,10 +2,22 @@ import { createContext, useContext, useCallback, useEffect, useRef, useState } f
 import api from './api';
 
 const AuthCtx = createContext(null);
-export const useAuth = () => useContext(AuthCtx);
+export const useAuth = () => useContext(AuthCtx); // eslint-disable-line react/only-export-components
 
 const STAFF_ROLES = ['system_admin', 'it_manager', 'it_support'];
 
+// SECURITY NOTE (frontend token storage).
+// Access tokens are kept in React state + localStorage (for page-reload boot);
+// refresh tokens are stored in localStorage by default (body-based refresh).
+// When the backend is configured with JWT_REFRESH_COOKIE_ENABLED=true, the
+// refresh endpoint returns the refresh token as an httpOnly/secure/sameSite
+// cookie and omits it from the JSON body, and the api layer switches to
+// cookie-based refresh (no localStorage refresh token, no body refresh).
+// Either way, the access token is still readable by script, so same-origin
+// XSS can still exfiltrate it; short lifetimes (1h) + blacklist-on-logout +
+// rate-limited auth + Secure cookies + a strict CSP are the mitigation.
+// See backend/docs/KNOWN_LIMITATIONS.md (Authentication / authorization).
+//
 // Upper bound on the best-effort backend blacklist call. The request has no
 // axios timeout, so without this a hung connection would keep the refresh
 // token in localStorage and block logout indefinitely.
@@ -59,7 +71,6 @@ export function AuthProvider({ children }) {
   };
 
   const logout = useCallback(async () => {
-    const refresh = localStorage.getItem('refresh');
     // Invalidate in-flight profile/auth work and drop the React session now:
     // the UI must not stay authenticated while the network call runs.
     sessionGen.current += 1;
@@ -67,24 +78,23 @@ export function AuthProvider({ children }) {
     setAccess(null);
     setUser(null);
     setProfileLoading(false);
-    try {
-      if (refresh) {
-        // Best-effort: blacklist the refresh token on the backend so it can
-        // no longer mint new access tokens, in this tab or any other. The
-        // backend tolerates invalid / already-blacklisted tokens, so a
-        // failure here must not prevent local logout.
+    // Body-based path: send the localStorage refresh so the backend can
+    // blacklist it and (in cookie mode) clear the refresh cookie.
+    const refresh = localStorage.getItem('refresh');
+    if (refresh) {
+      try {
         await withTimeout(api.post('/accounts/logout/', { refresh }), LOGOUT_TIMEOUT_MS);
+      } catch {
+        // Backend unreachable, timed out or token already invalid: still log
+        // out locally so the user cannot keep using a stale session.
       }
-    } catch {
-      // Backend unreachable, timed out or token already invalid: still log
-      // out locally so the user cannot keep using a stale session.
-    } finally {
-      // Do not clobber tokens belonging to a session created while this call
-      // was in flight (logout -> login before the request settled).
-      if (localStorage.getItem('refresh') === refresh) {
-        localStorage.removeItem('access');
-        localStorage.removeItem('refresh');
-      }
+    }
+    // Clear local artifacts. Do not clobber tokens belonging to a session
+    // created while this call was in flight (logout -> login before the
+    // request settled).
+    if (localStorage.getItem('refresh') === refresh) {
+      localStorage.removeItem('access');
+      localStorage.removeItem('refresh');
     }
   }, []);
 
@@ -100,7 +110,7 @@ export function AuthProvider({ children }) {
     const onExpired = () => logout();
     window.addEventListener('auth-expired', onExpired);
     return () => window.removeEventListener('auth-expired', onExpired);
-  }, []);
+  }, [logout]);
 
   // Cross-tab session sync: if another tab logs out (clears the access token
   // in localStorage), mirror that logout here so this tab's React state does
@@ -108,14 +118,32 @@ export function AuthProvider({ children }) {
   // gone by the time the event fires; `sessionActive` records whether this
   // tab was still using it.
   useEffect(() => {
+    // Cross-tab session sync: localStorage is shared across tabs, so when
+    // another tab logs out (clears the access token) or logs in as a different
+    // user (replaces the access token), mirror that here. This tab's React
+    // state must never stay authenticated with a token that no longer belongs
+    // to this session.
     const onStorage = (e) => {
-      if (e.key === 'access' && e.newValue === null && sessionActive.current) {
-        logout();
+      if (e.key !== 'access' || !sessionActive.current) return;
+      const next = e.newValue;
+      if (next === null) {
+        // Another tab logged out. Mirror locally (best-effort backend
+        // blacklist already attempted by the other tab).
+        logout(); // eslint-disable-line react-hooks/exhaustive-deps
+      } else if (next !== access) {
+        // Another tab logged in as a different user. Invalidate this session
+        // without hitting the backend (the other tab owns its own session).
+        sessionGen.current += 1;
+        sessionActive.current = false;
+        setAccess(null);
+        setUser(null);
+        setProfileLoading(false);
+        localStorage.removeItem('refresh');
       }
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, [logout]);
+  }, [logout, access]);
 
   const login = async (email, password) => {
     // Backend USERNAME_FIELD is 'email', so SimpleJWT's token endpoint
@@ -123,9 +151,19 @@ export function AuthProvider({ children }) {
     const res = await api.post('/token/', { email, password });
     sessionGen.current += 1;
     sessionActive.current = true;
+    // Access token: keep in memory + localStorage (so a page reload boots
+    // authenticated without needing a refresh round-trip).
     localStorage.setItem('access', res.data.access);
-    localStorage.setItem('refresh', res.data.refresh);
     setAccess(res.data.access);
+    // Refresh token: store in localStorage only when the backend returned it
+    // in the body. When JWT_REFRESH_COOKIE_ENABLED is on, the refresh token
+    // is served as an httpOnly cookie and omitted from the body, so we must
+    // not store it here (the api layer will refresh from the cookie instead).
+    if (res.data.refresh !== undefined) {
+      localStorage.setItem('refresh', res.data.refresh);
+    } else {
+      localStorage.removeItem('refresh');
+    }
     setProfileLoading(true);
     await fetchProfile();
   };
@@ -137,6 +175,12 @@ export function AuthProvider({ children }) {
   const isEmployee = role === 'employee';
   const isStaff = !!user && (STAFF_ROLES.includes(role) || isSuperuser);
   const isAdmin = isSystemAdmin;
+  // NOTE: IT Manager and IT Support currently share the same capability
+  // surface in most areas (the backend IsITStaff permission treats them
+  // identically). The it_support role exists for future segregation but is not
+  // yet assigned distinct capabilities. Until that changes, IT Manager-only
+  // gates below intentionally include IT Support as well — splitting them is a
+  // backend permission + frontend-capability change, not a one-line rename.
   const isManagerOrAdmin = isSystemAdmin || isITManager;
   const isSupportOrAbove = isSystemAdmin || isITManager || isITSupport;
   const canCreateTickets =

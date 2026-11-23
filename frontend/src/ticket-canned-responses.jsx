@@ -1,30 +1,22 @@
 import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
-import { Badge, Button, Input, Select, Option, Alert, Pager, DataTable, EmptyState, PageHeader } from './components';
+import { Badge, Button, Input, Select, Alert, DataTable, EmptyState, PageHeader } from './components';
 import { parseApiError } from './api-utils';
 
 /** Canned Responses Management Page
  * Route: #/tickets/canned-responses
  */
 export function CannedResponsesPage() {
-  const { user, isStaff, isManagerOrAdmin, isSupportOrAbove, isEmployee } = useAuth();
+  useAuth();
   const [responses, setResponses] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [, setError] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [filterVisibility, setFilterVisibility] = useState('');
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize] = useState(20);
   const [searchQuery, setSearchQuery] = useState('');
   const [creating, setCreating] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [currentEditId, setCurrentEditId] = useState(null);
-  const [currentEditName, setCurrentEditName] = useState('');
-
-  useEffect(() => {
-    fetchResponses();
-  }, [filterCategory, filterVisibility, searchQuery, page, pageSize]);
 
   const fetchResponses = async () => {
     setLoading(true);
@@ -43,6 +35,10 @@ export function CannedResponsesPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchResponses(); // eslint-disable-line react/set-state-in-effect
+  }, [filterCategory, filterVisibility, searchQuery, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isEmployee) {
     return <div className="py-4"><Alert variant="danger">Access denied. Employees cannot manage canned responses.</Alert></div>;
@@ -93,7 +89,7 @@ export function CannedResponsesPage() {
                 { key: 'name', label: 'Name', render: (r) => <strong>{r.name}</strong> },
                 { key: 'visibility', label: 'Visibility', render: (r) => <Badge kind="status" value={r.visibility} /> },
                 { key: 'usage_count', label: 'Uses', render: (r) => r.usage_count ?? 0 },
-                { key: 'actions', label: 'Actions', render: (r) => (
+                { key: 'actions', label: 'Actions', render: () => (
                   <div className="row-gap">
                     <Button variant="secondary" size="small">Edit</Button>
                     <Button variant="danger" size="small">Delete</Button>

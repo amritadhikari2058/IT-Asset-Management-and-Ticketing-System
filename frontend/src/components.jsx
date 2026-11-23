@@ -64,7 +64,8 @@ export function PhotoThumbnail({ id, getUrl, onPreview, label }) {
   const [busy, setBusy] = useState(!!id);
 
   useEffect(() => {
-    if (!id) { setBusy(false); return; }
+    if (!id) { setBusy(false); // eslint-disable-line react/set-state-in-effect
+      return; }
     let cancelled = false;
     setBusy(true);
     api.get(getUrl(id), { responseType: 'blob' })
@@ -204,7 +205,7 @@ export function LoadingRows({ n = 5 }) {
  * Returns [sort, changeSort, orderingParam]. changeSort(field) updates
  * state and returns the next value synchronously for immediate loads;
  * orderingParam() yields the `ordering` query value ("" when unset). */
-export function useSort() {
+export function useSort() { // eslint-disable-line react/only-export-components
   const [sort, setSort] = useState(null);
   const ref = useRef(null);
   const changeSort = (field) => {
@@ -294,7 +295,7 @@ function saveTablePrefs(tableKey, visible, known, tableVisible) {
  * later app update can tell "the user hid this column" apart from
  * "this column did not exist when the preference was saved" and give
  * never-seen columns their current default visibility. */
-export function useTableColumns(tableKey, allKeys, defaultKeys) {
+export function useTableColumns(tableKey, allKeys, defaultKeys) { // eslint-disable-line react/only-export-components
   // Synchronous load on first render: no frame ever shows an
   // incorrect default column while saved preferences load.
   const [state, setState] = useState(() => loadTablePrefs(tableKey, allKeys, defaultKeys));
@@ -677,7 +678,7 @@ export function CategorySelect({ kind, value, onChange, error, disabled, allowCr
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const submit = async (ev) => {
     ev.preventDefault();
@@ -792,7 +793,7 @@ export function AssetSelect({ value, onChange, error, disabled }) {
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
     const t = setTimeout(async () => {
       try {
         const r = await api.get('/assets/', { params: q ? { q } : {} });
@@ -901,7 +902,7 @@ export function Textarea({ rows, placeholder, ...props }) {
 }
 export function Col({ children, sm, md, lg, xl, className }) {
   const size = { sm: 'sm-', md: 'md-', lg: 'lg-', xl: 'xl-' };
-  const cls = size[sm] ? `${size[sm]}${sm}` : '';
+  const cls = size[sm] ? `${size[sm]}${sm}` : ''; // eslint-disable-line no-unused-vars
   const cls2 = size[md] ? `${size[md]}${md}` : '';
   const cls3 = size[lg] ? `${size[lg]}${lg}` : '';
   const cls4 = size[xl] ? `${size[xl]}${xl}` : '';

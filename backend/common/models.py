@@ -160,6 +160,13 @@ class AuditLog(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
     reason = models.TextField(blank=True, default="")
     details = models.JSONField(default=dict, blank=True)
+    #: Deterministic SHA-256 chain hash anchoring this row to the previous one.
+    #: Populated only when :data:`common.settings.AUDIT_INTEGRITY_HASH_ENABLED`
+    #: is True. NULL for legacy rows or when integrity chaining is disabled.
+    integrity_hash = models.CharField(
+        max_length=128, blank=True, default="",
+        help_text="Integrity-chain hash (anchored to the previous audit row). "
+                  "Empty for legacy rows or when integrity chaining is disabled.")
 
     class Meta:
         ordering = ["-timestamp"]

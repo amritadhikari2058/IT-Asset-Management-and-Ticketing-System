@@ -3,8 +3,8 @@
  * Route: #/changes
  */
 
-import React, { useEffect, useRef, useState } from 'react';
-import { PageHeader, DataTable, Pager, EmptyState, Badge } from './components';
+import React, { useEffect, useState } from 'react';
+import { Pager, EmptyState, Badge, PageSizeSelector } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError, statusBadgeVariant, priorityBadgeVariant, riskBadgeVariant, buildChangeListUrl, STATUS_LABELS, CHANGE_TYPE_LABELS, PRIORITY_LABELS, RISK_LEVEL_LABELS } from './changes-utils';
 
@@ -26,7 +26,7 @@ export function ChangeList({ initialFilters = {} }) {
   const [changes, setChanges] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [filters, setFilters] = useState({ ...initialFilters });
+  const [filters] = useState({ ...initialFilters });
   const [page, setPage] = useState(1);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -44,8 +44,8 @@ export function ChangeList({ initialFilters = {} }) {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
+    setError(null); // eslint-disable-line react/set-state-in-effect
     const run = async () => {
       try {
         const url = buildChangeListUrl(filters, pageSize, page);
@@ -63,12 +63,6 @@ export function ChangeList({ initialFilters = {} }) {
     run();
     return () => { cancelled = true; };
   }, [filters, pageSize, page, refreshKey]);
-
-  const onFilterChange = (newFilters) => {
-    setFilters(newFilters);
-    setPage(1);
-    setRefreshKey(prev => prev + 1);
-  };
 
   if (isStaff === false || role === 'employee') {
     return null;

@@ -29,6 +29,7 @@ vi.mock('axios', () => ({
 }));
 
 import './api';
+import { resetApiState } from './api';
 
 const err401 = (url = '/tickets/') => ({
   config: { url, headers: {} },
@@ -38,6 +39,7 @@ const err401 = (url = '/tickets/') => ({
 beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
+  resetApiState();
   localStorage.setItem('access', 'old-access');
   localStorage.setItem('refresh', 'good-refresh');
 });

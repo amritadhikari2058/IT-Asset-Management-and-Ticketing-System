@@ -7,7 +7,7 @@ import {
 } from './components';
 import { fetchPage, parseApiError } from './api-utils';
 
-export const MAINTENANCE_TYPES = [
+export const MAINTENANCE_TYPES = [ // eslint-disable-line react/only-export-components
   ['preventive', 'Preventive'],
   ['corrective', 'Corrective'],
   ['inspection', 'Inspection'],
@@ -16,7 +16,7 @@ export const MAINTENANCE_TYPES = [
   ['other', 'Other'],
 ];
 
-export const MAINTENANCE_STATUSES = [
+export const MAINTENANCE_STATUSES = [ // eslint-disable-line react/only-export-components
   ['scheduled', 'Scheduled'],
   ['in_progress', 'In progress'],
   ['completed', 'Completed'],
@@ -24,7 +24,7 @@ export const MAINTENANCE_STATUSES = [
   ['overdue', 'Overdue'],
 ];
 
-export const OPEN_MAINTENANCE_STATUSES = ['scheduled', 'in_progress', 'overdue'];
+export const OPEN_MAINTENANCE_STATUSES = ['scheduled', 'in_progress', 'overdue']; // eslint-disable-line react/only-export-components
 
 function toLocalInput(iso) {
   if (!iso) return '';
@@ -248,7 +248,7 @@ export function Maintenance() {
     }
   };
 
-  useEffect(() => { load(url); }, [url]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(url); }, [url]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const start = async (m) => {
     setBusyRow(m.id);

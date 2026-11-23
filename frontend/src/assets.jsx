@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';import { Badge, CategorySelect, ConfirmDialog, DepartmentSelect, ErrorSummary, Field,
-  Link, LoadingRows, Modal, PageHeader, UserSelect,
+  LoadingRows, Modal, PageHeader, UserSelect,
 } from './components';
 import { fieldMsg, parseApiError } from './api-utils';
 import { MaintenanceFormModal } from './maintenance';
@@ -475,8 +475,8 @@ export function AssetDetail({ id }) {
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [disposalOpen, setDisposalOpen] = useState(false);
   const [maintCostSummary, setMaintCostSummary] = useState(null);
-  const [maintCostLoading, setMaintCostLoading] = useState(false);
-  const [maintCostError, setMaintCostError] = useState('');
+  const [maintCostLoading] = useState(false);
+  const [maintCostError] = useState('');
 
   const load = async () => {
     const requestId = ++requestIdRef.current;
@@ -523,7 +523,7 @@ export function AssetDetail({ id }) {
       if (requestId === requestIdRef.current) setLoading(false);
     }
   };
-  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const runAction = async (path, okMsg) => {
     setBusy(true);

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './auth';
-import { PageHeader, Badge, AccessDenied } from './components';
+import { PageHeader } from './components';
 import api from './api';
 import { HistoryList } from './license-history';
 import {
@@ -34,11 +34,12 @@ function LicenseAgreementDetail({ id, agreementId }) {
     } catch (e) { setError(e.response?.data?.detail || 'Could not load agreement.'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { if (aid) load(); }, [aid]);
+  useEffect(() => { if (aid) load(); }, [aid]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
   useEffect(() => {
     let cancelled = false;
     if (!aid) return undefined;
-    setHistoryLoading(true); setHistoryError('');
+    setHistoryLoading(true); // eslint-disable-line react/set-state-in-effect
+    setHistoryError(''); // eslint-disable-line react/set-state-in-effect
     api.get(`/licensing/agreements/${aid}/history/`)
       .then((r) => {
         if (cancelled) return;

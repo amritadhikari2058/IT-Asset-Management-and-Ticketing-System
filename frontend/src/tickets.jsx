@@ -49,7 +49,7 @@ export function TicketForm({ id }) {
 
   useEffect(() => {
     if (!isEdit) {
-      if (user?.home_department) setForm((f) => ({ ...f, department: user.home_department }));
+      if (user?.home_department) setForm((f) => ({ ...f, department: user.home_department })); // eslint-disable-line react/set-state-in-effect
       return;
     }
     let active = true;
@@ -315,15 +315,20 @@ export function TicketForm({ id }) {
 
 /** Keep only this ticket's attachment rows. The list endpoint can return
  * rows for every ticket when the `ticket` filter is not honored server-side;
- * a detail page must never list (or offer to download) another ticket's file. */
+ * a detail page must never list (or offer to download) another ticket's file.
+ * Explicit ticket ownership is enforced when present; orphaned rows
+ * (`ticket: null`) are never shown. */
 function onlyTicketAttachments(rows, ticketId) {
   const list = Array.isArray(rows) ? rows : [];
   const want = Number(ticketId);
-  return list.filter((a) => a?.ticket == null || Number(a.ticket) === want);
+  return list.filter((a) => {
+    if (a?.ticket == null) return typeof a?.ticket === 'undefined';
+    return Number(a.ticket) === want;
+  });
 }
 
 export function TicketDetail({ id }) {
-  const { isStaff, user, isManagerOrAdmin, isSupportOrAbove, isEmployee } = useAuth();
+  const { isStaff, user } = useAuth();
   const [ticket, setTicket] = useState(null);
   const [notes, setNotes] = useState([]);
   const [history, setHistory] = useState(null);
@@ -348,10 +353,8 @@ export function TicketDetail({ id }) {
   const [attToDelete, setAttToDelete] = useState(null);
   const [attBusy, setAttBusy] = useState(false);
   const [newKbSlug, setNewKbSlug] = useState('');
-  const [kbLinkBusy, setKbLinkBusy] = useState(false);
-  const [watching, setWatching] = useState(false);
-  const [watchers, setWatchers] = useState([]);
-  const [filter, setFilter] = useState('');
+  const [kbLinkBusy] = useState(false);
+  const [, setWatchers] = useState([]);
 
   const load = async () => {
     setLoading(true);
@@ -399,7 +402,7 @@ export function TicketDetail({ id }) {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const addNote = async (ev) => {
     ev.preventDefault();

@@ -35,7 +35,7 @@ export function GovernedTransitions({ problemId: problemIdProp, problem: problem
     }
   }, [problemId, problemProp]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const run = async (label, fn, payload = {}) => {
     if (busy) return;

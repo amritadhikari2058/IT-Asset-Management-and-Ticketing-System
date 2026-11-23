@@ -555,6 +555,8 @@ class ChangePasswordTests(TestCase):
         self.assertTrue(self.emp.check_password("brand-new-pass-99"))
         self.assertFalse(self.emp.check_password("pw12345678"))
 
+
+
     def test_wrong_current_password_rejected(self):
         auth(self.c, self.emp)
         res = self.c.post("/api/accounts/change-password/",

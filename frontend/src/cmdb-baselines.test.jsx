@@ -31,12 +31,8 @@ const BASELINE = {
   created_by: 1, approved_by: null, checksum: null,
 };
 
-const EMPTY_BASELINE = {
-  id: 2, code: 'B-2026-002', name: 'Test Baseline',
-  scope: 'production', status: 'approved', baseline_date: '2026-01-15',
-  effective_from: '2026-01-15', effective_to: '2027-01-15', version: 2,
-  created_by: 1, approved_by: 1, checksum: 'a1b2c3d4',
-};
+
+
 
 function makeAdminAuth() {
   mockAuth.mockReturnValue({

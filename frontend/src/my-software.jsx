@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './auth';
-import { PageHeader, EmptyState, DataTable, AccessDenied } from './components';
-import { fetchPage } from './api-utils';
+import { PageHeader, DataTable, AccessDenied } from './components';
 import api from './api';
 import { licensingCapabilities } from './licensing-utils';
 
@@ -12,7 +11,7 @@ function MySoftwarePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   useEffect(() => {
-    setLoading(true);
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
     api.get('/licensing/allocations/my-software/').then((r) => setItems(r.data.results || r.data || [])).catch((e) => setError(e.response?.data?.detail || 'Could not load.')).finally(() => setLoading(false));
   }, []);
   if (!caps.canViewMySoftware) return <AccessDenied />;

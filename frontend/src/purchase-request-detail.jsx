@@ -77,8 +77,8 @@ export function PurchaseRequestDetail({ id }) {
     }
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => { loadSecondary(); }, [loadSecondary]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
+  useEffect(() => { loadSecondary(); }, [loadSecondary]); // eslint-disable-line react/set-state-in-effect
 
   const runAction = async (action) => {
     setBusy(true);

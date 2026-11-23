@@ -10,7 +10,7 @@ const { mockGet, mockPatch, mockAuth } = vi.hoisted(() => ({
 vi.mock('./api', () => ({
   default: {
     get: (...args) => mockGet(...args),
-    post: (...args) => {},
+    post: () => {},
     patch: (...args) => mockPatch(...args),
     delete: vi.fn(),
   },

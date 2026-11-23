@@ -52,7 +52,7 @@ export function ProcurementRouter({ route: routeProp }) {
     if (routeProp) {
       const clean = String(routeProp).replace(/^#/, '');
       const [route, query = ''] = clean.split('?');
-      setLocation({ route: route || '/procurement', query });
+      setLocation({ route: route || '/procurement', query }); // eslint-disable-line react/set-state-in-effect
       return undefined;
     }
     const onChange = () => setLocation(readHash());

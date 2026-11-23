@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
@@ -11,11 +11,6 @@ const STATUS_ORDER = [
   'execution_pending', 'executing', 'completed', 'failed', 'cancelled',
 ];
 
-const STATUS_TONE = {
-  pending_review: 'amber', approved: 'green', rejected: 'red',
-  execution_pending: 'blue', executing: 'blue', completed: 'green',
-  failed: 'red', cancelled: 'gray',
-};
 const STATUS_LABEL = {
   pending_review: 'Pending review', approved: 'Approved', rejected: 'Rejected',
   execution_pending: 'Execution pending', executing: 'Executing',
@@ -72,7 +67,6 @@ export function Privacy() {
 
 function PrivacyDashboard() {
   const [items, setItems] = useState([]);
-  const [count, setCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -150,7 +144,6 @@ function PrivacyList() {
   const [items, setItems] = useState([]);
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
-  const [previous, setPrevious] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [f, setF] = useState({ q: '', status: '', entity_type: '', requested_by: '', date_from: '', date_to: '' });
@@ -175,7 +168,7 @@ function PrivacyList() {
       setError(parseApiError(e).global || 'Failed to load requests.');
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [page, f.q, f.status, f.entity_type, f.requested_by, f.date_from, f.date_to]);
+  useEffect(() => { load(); }, [page, f.q, f.status, f.entity_type, f.requested_by, f.date_from, f.date_to]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const setField = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
 
@@ -259,6 +252,7 @@ function PrivacyCreate() {
     <div>
       <PageHeader title="Create erasure request" sub="Request privacy erasure for a record. An independent System Admin must approve before execution." />
       {error ? <div className="field-error" role="alert">{error}</div> : null}
+      {msg ? <div className="success-summary" role="status">{msg}</div> : null}
       <form onSubmit={submit} noValidate>
         <Field label="Entity type" required>
           <input className="input input-auto" value={form.entity_type} onChange={setField('entity_type')} placeholder="accounts.User" />

@@ -43,7 +43,7 @@ function usePagedLoader(base) {
       setLoading(false);
     }
   }, []);
-  useEffect(() => { loadUrl(base); }, [base, loadUrl]);
+  useEffect(() => { loadUrl(base); }, [base, loadUrl]); // eslint-disable-line react/set-state-in-effect
   return { items, setItems, count, next, previous, loading, error, loadUrl };
 }
 
@@ -115,7 +115,7 @@ export function ServicesCatalogue() {
       setLoading(false);
     }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const visible = isStaff ? items : items.filter((i) => i.is_active);
 
@@ -424,7 +424,7 @@ export function ServiceRequestDetail({ id }) {
       setLoading(false);
     }
   }, [id]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const act = async (url, payload, done) => {
     setBusy(url);
@@ -624,7 +624,7 @@ export function ServiceRequestDetail({ id }) {
       {decisionOpen && (
         <Modal title={`${decisionOpen === 'approve' ? 'Approve' : 'Reject'} ${req.request_number}`}
           onClose={() => setDecisionOpen(null)}>
-          <form onSubmit={(ev) => { ev.preventDefault(); decisionOpen === 'approve' ? doApprove() : doReject(); setDecisionOpen(null); }} noValidate>
+          <form onSubmit={(ev) => { ev.preventDefault(); if (decisionOpen === 'approve') doApprove(); else doReject(); setDecisionOpen(null); }} noValidate>
             <div className="panel-pad">
               <Field label="Reason (optional)">
                 <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />

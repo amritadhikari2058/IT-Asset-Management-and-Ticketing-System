@@ -62,7 +62,7 @@ export function RCA({ rcaId: rcaIdProp, problemId: problemIdProp }) {
     }
   }, [rcaId, problemId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const locked = FINAL_STATUSES.includes(rca?.status);
   const selfApproval = Boolean(

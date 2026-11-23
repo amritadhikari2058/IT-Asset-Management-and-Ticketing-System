@@ -2,17 +2,12 @@ import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
-  Badge, DataTable, EmptyState, PageHeader, LoadingRows,
+  PageHeader, LoadingRows,
 } from './components';
 import {
-  formatDate, formatDateTime, formatPercent, ciStatusBadgeVariant,
-  criticalityBadgeVariant, driftStatusBadgeVariant, baselineStatusBadgeVariant,
-  safeResults, formatVerificationAge,
+  formatDateTime, ciStatusBadgeVariant, criticalityBadgeVariant, driftStatusBadgeVariant,
+  formatVerificationAge,
 } from './cmdb-utils';
-
-const ASSET_STATUS_ORDER = ['available', 'assigned', 'in_repair', 'retired', 'lost', 'disposed'];
-const TICKET_STATUS_ORDER = ['open', 'in_progress', 'reopened', 'resolved', 'closed', 'archived'];
-const TICKET_PRIORITY_ORDER = ['low', 'medium', 'high', 'critical'];
 
 // ── KPI card components ──────────────────────────────────────────────
 
@@ -29,45 +24,6 @@ function Kpi({ label, value, sub, href }) {
     : <div className="kpi">{body}</div>;
 }
 
-// ── Distribution bar component ─────────────────────────────────────────
-function Distribution({ title, data, order, href }) {
-  const entries = order.filter((k) => k in (data || {}));
-  const max = Math.max(1, ...entries.map((k) => data[k] || 0));
-  const total = entries.reduce((sum, k) => sum + (data[k] || 0), 0);
-  return (
-    <div className="panel panel-pad">
-      <div className="panel-head">
-        <h2>{title}</h2>
-        {href ? <a className="link-small" href={href}>View all</a> : null}
-      </div>
-      {!total ? <p className="muted">No data yet.</p> : entries.map((k) => (
-        <div className="dist-row" key={k}>
-          <span className="dist-label">{prettyLabel(k)}</span>
-          <span className="dist-bar" aria-hidden="true">
-            <span className="dist-fill"
-              style={{ width: `${Math.round(((data[k] || 0) / max) * 100)}%` }} />
-          </span>
-          <span className="dist-value">{data[k] || 0}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function prettyLabel(value) {
-  // Use actual label maps for known values; fall back to human-readable
-  if (value === 'active' || value === 'planned' || value === 'inactive'
-    || value === 'maintenance' || value === 'degraded' || value === 'failed'
-    || value === 'retired' || value === 'disposed') return ciStatusBadgeVariant(value)?.toString() ?? String(value).replace(/_/g, ' ');
-  if (value === 'critical' || value === 'high' || value === 'medium' || value === 'low')
-    return criticalityBadgeVariant(value)?.toString() ?? String(value).replace(/_/g, ' ');
-  if (value === 'open' || value === 'acknowledged' || value === 'resolved'
-    || value === 'accepted' || value === 'false_positive') return driftStatusBadgeVariant(value)?.toString() ?? String(value).replace(/_/g, ' ');
-  if (value === 'approved' || value === 'pending_approval' || value === 'draft'
-    || value === 'superseded' || value === 'retired') return baselineStatusBadgeVariant(value)?.toString() ?? String(value).replace(/_/g, ' ');
-  return String(value).replace(/_/g, ' ');
-}
-
 // ── Main Dashboard component ───────────────────────────────────────────
 
 export default function Dashboard() {
@@ -82,15 +38,15 @@ export default function Dashboard() {
 
     // Employees are denied CMDB dashboard access
     if (role === 'employee') {
-      setLoading(false);
+      setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
 
-    setLoading(true);
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
     setError('');
     api.get('/cmdb/dashboard')
       .then((r) => { if (!cancelled) setData(r.data); })
-      .catch((e) => { if (!cancelled) setError('Could not load dashboard metrics.'); })
+      .catch(() => { if (!cancelled) setError('Could not load dashboard metrics.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
 
     return () => { cancelled = true; };

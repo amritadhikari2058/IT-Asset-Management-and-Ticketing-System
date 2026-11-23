@@ -23,7 +23,7 @@ export function ProcurementFinancialDashboard() {
       .catch(e => setError(procurementErrorText(e, 'Failed to load financial dashboard.')))
       .finally(() => setLoading(false));
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <p className="page-loading" role="status">Loading financial dashboard…</p>;
   if (error) return <div role="alert" className="error">{error} <button className="btn" onClick={load}>Retry</button></div>;

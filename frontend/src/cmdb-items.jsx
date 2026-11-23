@@ -10,7 +10,6 @@ import {
   CI_STATUS_LABELS,
   CRITICALITY_LABELS,
   ENVIRONMENT_LABELS,
-  MONITORING_STATE_LABELS,
   SOURCE_LABELS,
   buildCIListUrl,
   formatDateTime,
@@ -54,7 +53,7 @@ function CmdbItemsListInner() {
   }, []);
 
   useEffect(() => {
-    setDraft({
+    setDraft({ // eslint-disable-line react/set-state-in-effect
       search: params.search || '',
       status: params.status || '',
       criticality: params.criticality || '',
@@ -75,8 +74,8 @@ function CmdbItemsListInner() {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError('');
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
+    setError(''); // eslint-disable-line react/set-state-in-effect
     const q = { ...params, page: params.page || '1' };
     api.get(`${CMDB_API_CONTRACT.ciList.endpoint}${buildCIListUrl(q)}`)
       .then((r) => {
@@ -106,7 +105,6 @@ function CmdbItemsListInner() {
   const canView = CMDB_PERMISSIONS.canViewCIList(role);
 
   const page = Math.max(1, parseInt(params.page || '1', 10) || 1);
-  const pageSize = Array.isArray(items) && !readHashParams().page && count === items.length ? items.length || 1 : 50;
   const totalPages = Math.max(1, Math.ceil((count || 0) / 50));
 
   const applyFilters = (e) => {

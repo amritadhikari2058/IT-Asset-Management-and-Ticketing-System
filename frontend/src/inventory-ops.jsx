@@ -251,10 +251,10 @@ export function Reservations() {
       setListError('Could not load reservations.');
     } finally { setLoading(false); }
   }, [statusFilter]);
-  useEffect(() => { loadUrl('/inventory/reservations/'); }, [loadUrl]);
+  useEffect(() => { loadUrl('/inventory/reservations/'); }, [loadUrl]); // eslint-disable-line react/set-state-in-effect
 
   useEffect(() => {
-    setRefsLoading(true);
+    setRefsLoading(true); // eslint-disable-line react/set-state-in-effect
     Promise.all([
       api.get('/inventory/stock-items/?page_size=100').then((r) => setStockItems(r.data.results ?? r.data ?? [])).catch(() => setStockItems([])),
       api.get('/services/requests/?page_size=100').then((r) => setServiceRequests(r.data.results ?? r.data ?? [])).catch(() => setServiceRequests([])),
@@ -431,7 +431,7 @@ export function TransactionHistory() {
       setListError('Could not load stock movements.');
     } finally { setLoading(false); }
   }, [f.stock_item]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   useEffect(() => {
     api.get('/inventory/stock-items/?page_size=100').then((r) => setStockItems(r.data.results ?? r.data ?? [])).catch(() => setStockItems([]));
@@ -546,10 +546,10 @@ export function FulfilServiceRequest() {
       setListError('Could not load service requests.');
     } finally { setLoading(false); }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   useEffect(() => {
-    setRefsLoading(true);
+    setRefsLoading(true); // eslint-disable-line react/set-state-in-effect
     api.get('/inventory/stock-items/?page_size=100').then((r) => setStockItems((r.data.results ?? r.data ?? []).filter((i) => i.is_active !== false && !i.is_deleted))).catch(() => setStockItems([]));
   }, []);
 

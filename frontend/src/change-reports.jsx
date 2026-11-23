@@ -26,7 +26,7 @@ export function ChangeReports() {
 
   useEffect(() => {
     if (!isStaff && role !== 'it_manager') {
-      setReports({
+      setReports({ // eslint-disable-line react/set-state-in-effect
         success_rate: 0, emergency_rate: 0, failures: 0, downtime: 0,
         risk: 0, conflicts: 0, pir: 0, by_service: [], by_asset: [],
       });

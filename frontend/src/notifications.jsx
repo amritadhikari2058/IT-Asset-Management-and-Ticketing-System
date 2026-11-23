@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react';
 import api from './api';
 import { ConfirmDialog, EmptyState, PageHeader } from './components';
-import { Pager } from './components';
 
 export function Notifications() {
   const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busyAll, setBusyAll] = useState(false);
   const [allMsg, setAllMsg] = useState('');
@@ -32,7 +30,7 @@ export function Notifications() {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, [filter, entity]);
+  useEffect(() => { load(); }, [filter, entity]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const unread = items.filter((n) => !n.is_read).length;
 

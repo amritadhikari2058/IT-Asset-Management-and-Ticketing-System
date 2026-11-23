@@ -2,20 +2,10 @@ import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
-  Badge, DataTable, EmptyState, PageHeader, LoadingRows,
-  Field, Select, Input, ConfirmDialog, Modal,
+  DataTable, PageHeader, LoadingRows, Field, Select, Input,
 } from './components';
 import {
-  formatDate, formatPercent, ciStatusBadgeVariant,
-  criticalityBadgeVariant, safeResults, formatVerificationAge,
-  CMDB_API_CONTRACT, CMDB_ROLES, CMDB_PERMISSIONS,
-  CI_TYPE_CATEGORY_LABELS, CI_STATUS_LABELS, CI_LIFECYCLE_LABELS,
-  CRITICALITY_LABELS, ENVIRONMENT_LABELS, SOURCE_LABELS,
-  MONITORING_STATE_LABELS, DATA_CLASSIFICATION_LABELS,
-  VALIDATED_SYSTEM_IMPACT_LABELS, RELATIONSHIP_TYPE_LABELS,
-  RELATIONSHIP_STATUS_LABELS, RELATIONSHIP_CONFIDENCE_LABELS,
-  BASELINE_SCOPE_LABELS, BASELINE_STATUS_LABELS,
-  DRIFT_TYPE_LABELS, DRIFT_SEVERITY_LABELS, DRIFT_STATUS_LABELS,
+  safeResults, CI_TYPE_CATEGORY_LABELS, CMDB_API_CONTRACT,
 } from './cmdb-utils';
 import { parseApiError } from './api-utils';
 
@@ -30,17 +20,15 @@ export function CiTypesPage() {
     icon: '', color: '', is_active: true, schema: [],
     required_attributes: [],
   });
-  const [deleteModal, setDeleteModal] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [warnUsed, setWarnUsed] = useState(false);
+  const [warnUsed] = useState(false);
 
   // Load CI types
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
     api.get(CMDB_API_CONTRACT.typesList.endpoint)
       .then((r) => { if (!cancelled) setTypes(r.data); })
-      .catch((e) => { setError('Could not load CI types.'); })
+      .catch((_e) => { setError('Could not load CI types.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
@@ -70,29 +58,6 @@ export function CiTypesPage() {
     } catch (e) {
       const parsed = parseApiError(e);
       setError(parsed.global || 'Could not save CI type.');
-    }
-  };
-
-  // Delete CI type
-  const handleDelete = async (typeId) => {
-    setDeleting(true);
-    setWarnUsed(false);
-    try {
-      // Check if type is used by existing CIs
-      const typeUsed = types.some((t) => t.id === typeId && t.ci_count > 0);
-      if (typeUsed) {
-        setWarnUsed(true);
-        setDeleting(false);
-        return;
-      }
-      await api.delete(`/cmdb/types/${typeId}`);
-      setTypes(prev => prev.filter((t) => t.id !== typeId));
-    } catch (e) {
-      const parsed = parseApiError(e);
-      setError(parsed.global || 'Could not delete CI type.');
-    } finally {
-      setDeleting(false);
-      setDeleteModal(false);
     }
   };
 

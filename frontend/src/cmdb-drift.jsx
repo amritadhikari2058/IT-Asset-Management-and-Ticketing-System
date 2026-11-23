@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import { DataTable, EmptyState, Field, Input, LoadingRows, PageHeader, Pager, Select } from './components';
@@ -69,9 +69,9 @@ export function DriftFindingsPage() {
     }
   };
 
-  useEffect(() => { load(); }, [applied, page]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [applied, page]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
-  useEffect(() => { setPage(1); }, [applied]);
+  useEffect(() => { setPage(1); }, [applied]); // eslint-disable-line react/set-state-in-effect
 
   const runAction = async (row, action) => {
     const needsNote = ['resolve', 'accept', 'false-positive'].includes(action);

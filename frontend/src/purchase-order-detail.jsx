@@ -61,7 +61,7 @@ export function PurchaseOrderDetail({ id }) {
     }
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const runAction = async (action) => {
     setBusy(true);

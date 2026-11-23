@@ -1,9 +1,14 @@
-"""URL configuration for the Backup & DR app.
+"""URL configuration for the Backup & DR app."""
+from django.urls import include, path
+from rest_framework import routers
 
-Reserved for future backup API endpoints. The frontend Backup page is
-currently self-contained (mock/local data), so no API views are wired yet.
-"""
+from . import views
 
-from django.urls import path
+router = routers.DefaultRouter()
+router.register("schedules", views.BackupScheduleViewSet, basename="backupschedule")
+router.register("jobs", views.BackupJobViewSet, basename="backupjob")
+router.register("restore-points", views.RestorePointViewSet, basename="restorepoint")
 
-urlpatterns = []
+urlpatterns = [
+    path("", include(router.urls)),
+]

@@ -27,8 +27,8 @@ export function SchedulingExceptions() {
 
   useEffect(() => {
     if (!isManagerOrAdmin && role !== 'employee') {
-      setExceptions([]);
-      setLoading(false);
+      setExceptions([]); // eslint-disable-line react/set-state-in-effect
+      setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
     fetchPage(`/changes/scheduling-exceptions/`)

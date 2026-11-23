@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from './auth';
-import { Badge, Field, EmptyState, DataTable, Pager, PageHeader } from './components';
+import { Badge, Field, DataTable, Pager, PageHeader } from './components';
 import { fetchPage } from './api-utils';
-import api from './api';
 import { licensingCapabilities, buildAgreementListUrl } from './licensing-utils';
 import { AGREEMENT_TYPE_LABELS, AGREEMENT_STATUS_LABELS } from './licensing-utils';
 
@@ -13,11 +12,10 @@ function LicenseAgreementsPage() {
   const [count, setCount] = useState(null);
   const [next, setNext] = useState(null);
   const [previous, setPrevious] = useState(null);
-  const [page, setPage] = useState(1);
+  const [page] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [f, setF] = useState({ search: '', status: '', agreement_type: '', license_model: '' });
-  const [lastUrl, setLastUrl] = useState('/licensing/agreements/');
   const loadUrl = async (url) => {
     setLoading(true); setError('');
     try { const pg = await fetchPage(url); setItems(pg.items); setCount(pg.count); setNext(pg.next); setPrevious(pg.previous); setLastUrl(url); } catch { setError('Could not load agreements.'); }

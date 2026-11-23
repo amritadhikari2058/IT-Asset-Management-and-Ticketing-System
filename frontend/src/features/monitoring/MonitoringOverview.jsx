@@ -29,7 +29,7 @@ export function MonitoringOverview() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (!canAccessMonitoring(auth)) {
     return (

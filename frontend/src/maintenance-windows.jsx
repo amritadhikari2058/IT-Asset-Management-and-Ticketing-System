@@ -25,8 +25,8 @@ export function MaintenanceWindows() {
 
   useEffect(() => {
     if (!isManagerOrAdmin) {
-      setWindows([]);
-      setLoading(false);
+      setWindows([]); // eslint-disable-line react/set-state-in-effect
+      setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
     fetchPage(`/changes/maintenance-windows/`)

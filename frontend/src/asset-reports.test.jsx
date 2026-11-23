@@ -27,9 +27,6 @@ import { AssetReportsPage } from './asset-reports';
 const staff = () => {
   mockAuth.mockReturnValue({ isStaff: true, isAdmin: true, user: { id: 1, employee_id: 'E1', role: 'it_manager', email: 'admin@x' } });
 };
-const employee = () => {
-  mockAuth.mockReturnValue({ isStaff: false, isAdmin: false, user: { id: 3, employee_id: 'E3', role: 'employee', email: 'emp@x' } });
-};
 
 const financialData = {
   total_assets: 120,
@@ -40,20 +37,6 @@ const financialData = {
   by_category: [{ category: 'Laptop', asset_count: 45, purchase_cost: 180000 }],
   by_vendor: [{ vendor: 'Dell', asset_count: 30, purchase_cost: 120000 }],
 };
-const maintenanceData = {
-  total_records: 40,
-  total_cost: 18000,
-  completed_cost: 15000,
-  pending_count: 5,
-  overdue_count: 2,
-  by_status: { completed: 30, pending: 5, overdue: 2, cancelled: 3 },
-  by_type: { preventive: 15, reactive: 20 },
-  by_category: [],
-  by_vendor: [],
-  top_assets: [],
-  most_recent_maintenance: null,
-};
-
 const warrantyData = {
   expired_count: 10,
   expiring_soon: 5,

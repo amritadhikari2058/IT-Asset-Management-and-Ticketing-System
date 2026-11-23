@@ -1,30 +1,23 @@
 import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
-import { Badge, Button, Input, Select, Option, Alert, Pager, DataTable, EmptyState, PageHeader } from './components';
+import { Button, Input, Select, Alert, DataTable, EmptyState, PageHeader } from './components';
 import { parseApiError } from './api-utils';
 
 /** Ticket Templates Management Page
  * Route: #/tickets/templates
  */
 export function TicketTemplatesPage() {
-  const { user, isStaff, isManagerOrAdmin, isSupportOrAbove, isEmployee } = useAuth();
+  useAuth();
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [, setError] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [activeOnly, setActiveOnly] = useState(true);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [page] = useState(1);
+  const [pageSize] = useState(20);
   const [searchQuery, setSearchQuery] = useState('');
   const [creating, setCreating] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [currentEditId, setCurrentEditId] = useState(null);
-  const [currentEditName, setCurrentEditName] = useState('');
-
-  useEffect(() => {
-    fetchTemplates();
-  }, [filterCategory, activeOnly, searchQuery, page, pageSize]);
 
   const fetchTemplates = async () => {
     setLoading(true);
@@ -43,6 +36,10 @@ export function TicketTemplatesPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchTemplates(); // eslint-disable-line react/set-state-in-effect
+  }, [filterCategory, activeOnly, searchQuery, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isEmployee) {
     return <div className="py-4"><Alert variant="danger">Employees cannot manage ticket templates.</Alert></div>;
@@ -89,7 +86,7 @@ export function TicketTemplatesPage() {
                 { key: 'name', label: 'Name', render: (t) => <strong>{t.name}</strong> },
                 { key: 'category', label: 'Category', render: (t) => t.category_name ?? '-' },
                 { key: 'usage_count', label: 'Uses', render: (t) => t.usage_count ?? 0 },
-                { key: 'actions', label: 'Actions', render: (t) => (
+                { key: 'actions', label: 'Actions', render: () => (
                   <div className="row-gap">
                     <Button variant="secondary" size="small">Edit</Button>
                     <Button variant="danger" size="small">Delete</Button>

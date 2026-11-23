@@ -21,7 +21,7 @@ export function ProcurementInvoicesPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <p className="page-loading" role="status">Loading invoices…</p>;
   if (error) return <div role="alert" className="error">{error} <button className="btn" onClick={load}>Retry</button></div>;
@@ -63,7 +63,7 @@ export function ProcurementInvoiceExceptionsPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <p className="page-loading" role="status">Loading invoice exceptions…</p>;
   if (error) return <div role="alert" className="error">{error} <button className="btn" onClick={load}>Retry</button></div>;

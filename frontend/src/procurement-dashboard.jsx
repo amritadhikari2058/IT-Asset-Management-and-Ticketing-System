@@ -138,7 +138,7 @@ function useDashboard(filters, enabled) {
   }, [filters]);
 
   useEffect(() => {
-    if (enabled) load();
+    if (enabled) load(); // eslint-disable-line react/set-state-in-effect
   }, [enabled, load]);
 
   return { data, loading, error, refreshedAt, legacy, load };
@@ -449,7 +449,7 @@ function useProcurementData(enabled) {
   }, []);
 
   useEffect(() => {
-    if (enabled) load();
+    if (enabled) load(); // eslint-disable-line react/set-state-in-effect
   }, [enabled, load]);
 
   return {

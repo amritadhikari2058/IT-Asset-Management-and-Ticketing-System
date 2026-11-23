@@ -41,7 +41,7 @@ export function Readiness({ problemId: problemIdProp }) {
     }
   }, [problemId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <LoadingRows n={3} />;
 

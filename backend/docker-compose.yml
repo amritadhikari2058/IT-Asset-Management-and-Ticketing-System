@@ -1,0 +1,159 @@
+version: "3.9"
+
+# Development / staging skeleton for the IT Service Desk stack.
+#
+# Production shape (from backend/docs/DEPLOYMENT.md):
+#   [Internet] -> [Nginx/Caddy: TLS] -> [Gunicorn: Django API + React static files]
+#   [Gunicorn] <-> [PostgreSQL]
+#   [Celery worker] <-> [Redis] <-> [Celery beat]
+#   [Nginx] <-> [S3-compatible object storage (private)]
+#   [Gunicorn] -> [SMTP provider]
+#
+# This compose file models the Gunicorn + Celery + PostgreSQL + Redis slice only.
+# S3 and SMTP are configured via environment variables pointing at external
+# services; the DB and broker are the only stateful containers here.
+#
+# Frontend: in production the Vite build (frontend/dist) is served by the
+# reverse proxy / Gunicorn static files. For local Docker development you can
+# either build frontend/dist first (`cd frontend && npm run build`) and mount
+# it into the backend container, or run the Vite dev server separately against
+# the backend API.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tickets
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+      POSTGRES_DB: tickets
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tickets -d tickets"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    environment:
+      DEBUG: "false"
+      SECRET_KEY: "${SECRET_KEY:-change-me-in-production}"
+      ALLOWED_HOSTS: "localhost,127.0.0.1,backend"
+      CORS_ALLOWED_ORIGINS: "http://localhost:5173"
+      CSRF_TRUSTED_ORIGINS: "http://localhost:5173"
+      DATABASE__ENGINE: "django.db.backends.postgresql"
+      DATABASE__NAME: "tickets"
+      DATABASE__USER: "tickets"
+      DATABASE__PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+      DATABASE__HOST: "db"
+      DATABASE__PORT: "5432"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+      CACHE_LOCATION: "redis://redis:6379/1"
+      EMAIL_BACKEND: "django.core.mail.backends.console.EmailBackend"
+      FRONTEND_URL: "http://localhost:5173"
+      BACKEND_URL: "http://127.0.0.1:8000"
+      # S3 / SMTP: set these for a real production deploy.
+      # STORAGE_BACKEND: "s3"
+      # AWS_STORAGE_BUCKET_NAME:
+      # AWS_S3_REGION_NAME:
+      # EMAIL_HOST:
+      # EMAIL_HOST_USER:
+      # EMAIL_HOST_PASSWORD:
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             gunicorn config.wsgi:application
+               --bind 0.0.0.0:8000
+               --workers 2
+               --timeout 60
+               --access-logfile -
+               --error-logfile -"
+    volumes:
+      # Share the frontend build into the backend container so Gunicorn can
+      # serve it as static files (see DEPLOYMENT.md section 7). Leave commented
+      # until frontend/dist exists; in production this is usually baked into the
+      # image or served by the reverse proxy instead.
+      # - ../frontend/dist:/app/frontend/dist:ro
+      - staticfiles:/app/staticfiles
+      - media:/app/media
+
+  worker:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    environment:
+      DEBUG: "false"
+      SECRET_KEY: "${SECRET_KEY:-change-me-in-production}"
+      DATABASE__ENGINE: "django.db.backends.postgresql"
+      DATABASE__NAME: "tickets"
+      DATABASE__USER: "tickets"
+      DATABASE__PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+      DATABASE__HOST: "db"
+      DATABASE__PORT: "5432"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+      CACHE_LOCATION: "redis://redis:6379/1"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Same working dir as the backend image. Do not auto-run migrations here:
+    # migrations run on the backend service at startup.
+    command: >
+      celery -A config.celery worker
+        --loglevel=info
+        --concurrency=2
+
+  beat:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    environment:
+      DEBUG: "false"
+      SECRET_KEY: "${SECRET_KEY:-change-me-in-production}"
+      DATABASE__ENGINE: "django.db.backends.postgresql"
+      DATABASE__NAME: "tickets"
+      DATABASE__USER: "tickets"
+      DATABASE__PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+      DATABASE__HOST: "db"
+      DATABASE__PORT: "5432"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+      CACHE_LOCATION: "redis://redis:6379/1"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A config.celery beat
+        --loglevel=info
+
+volumes:
+  pgdata:
+  staticfiles:
+  media:

@@ -4,12 +4,12 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Badge, Form } from './components';
+import { PageHeader, Row, Col } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError } from './changes-utils';
 
 export function ChangeAttachments({ match }) {
-  const { isStaff, role } = useAuth();
+  useAuth();
   const [attachments, setAttachments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

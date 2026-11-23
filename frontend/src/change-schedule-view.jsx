@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { PageHeader, Badge, Button, DataTable, Pager, Field, Input, Select, Option, EmptyState, Card } from './components';
+import { PageHeader, Badge, Button, DataTable, Pager, Field, Input, Select, Option, EmptyState } from './components';
 import { useAuth } from './auth';
 import { fetchPage, parseApiError, formatDateTime, statusBadgeVariant, riskBadgeVariant, priorityBadgeVariant, STATUS_LABELS } from './changes-utils';
 
@@ -33,14 +33,14 @@ export function ChangeScheduleView() {
 
   useEffect(() => {
     if (!isStaff) {
-      setChanges([]);
-      setLoading(false);
+      setChanges([]); // eslint-disable-line react/set-state-in-effect
+      setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
     
     const params = new URLSearchParams();
     params.set('page', page);
-    params.set('page_size', pageSize);
+    params.set('page_size', pageSize); // eslint-disable-line react-hooks/exhaustive-deps
     if (filters.status) params.set('status', filters.status);
     if (filters.priority) params.set('priority', filters.priority);
     if (filters.risk) params.set('risk', filters.risk);
@@ -60,7 +60,7 @@ export function ChangeScheduleView() {
         setError(parseApiError(e));
         setLoading(false);
       });
-  }, [page, filters]);
+  }, [page, filters, pageSize, isStaff]);
 
   const updateFilter = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }));

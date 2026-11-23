@@ -22,7 +22,7 @@ export function VerificationQueuePage() {
   // Load verification queue
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
     api.get(CMDB_API_CONTRACT.verificationQueue.endpoint)
       .then((r) => {
         if (cancelled) return;

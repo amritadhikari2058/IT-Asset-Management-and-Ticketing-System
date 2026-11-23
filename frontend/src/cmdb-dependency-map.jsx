@@ -1,15 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
-import { Badge, DataTable, EmptyState, Field, LoadingRows, PageHeader, Select } from './components';
+import { DataTable, EmptyState, Field, LoadingRows, PageHeader, Select } from './components';
 import {
   CI_STATUS_LABELS,
   CRITICALITY_LABELS,
   RELATIONSHIP_TYPE_LABELS,
-  formatDateTime,
   safeResults,
 } from './cmdb-utils';
-import { CMDB_API_CONTRACT, CMDB_PERMISSIONS } from './cmdb';
 
 function nodeIdOf(node) { return Number(node?.id ?? node?.ci_id ?? node); }
 
@@ -27,8 +25,8 @@ export function DependencyMap({ id: idProp, match }) {
   useEffect(() => {
     let cancelled = false;
     if (!id) return undefined;
-    setLoading(true);
-    setError('');
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
+    setError(''); // eslint-disable-line react/set-state-in-effect
     api.get(`/cmdb/items/${id}/dependencies/?depth=${depth}`)
       .then((r) => {
         if (cancelled) return;

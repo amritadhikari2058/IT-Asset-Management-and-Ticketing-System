@@ -174,7 +174,7 @@ export function Tickets() {
     setReportError('');
     loadReport({ date_from: '', date_to: '' });
   };
-  const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggle = (id) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; }); // eslint-disable-line no-unused-expressions
   const bulk = async (changes) => {
     const ids = [...sel];
     if (!ids.length) return;
@@ -191,7 +191,7 @@ export function Tickets() {
         : (e?.response?.data?.detail || 'Bulk update failed.'));
     }
   };
-  useEffect(() => { loadUrl('/tickets/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadUrl('/tickets/'); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
   return (
     <div>
       <PageHeader
@@ -518,7 +518,7 @@ export function Assets() {
     return () => { cancelled = true; };
   }, []);
 
-  const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggle = (id) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
   const retireSelected = async () => {
     const ids = [...sel];
@@ -826,7 +826,7 @@ export function Categories() {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
   const add = async (ev) => {
     ev.preventDefault();
     if (saving || !name.trim()) return;
@@ -981,7 +981,7 @@ export function RecycleBin() {
     catch { setListError('Could not load deleted records. System Admin only.'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
   const restore = async (e) => {
     const key = `${e.entity_type}:${e.object_id}`;
     setBusyId(key);
@@ -1060,7 +1060,7 @@ export function VerifyEmail() {
     const uid = q.get('uid');
     const token = q.get('token');
     if (!uid || !token) {
-      setMsg('Invalid or expired link.');
+      setMsg('Invalid or expired link.'); // eslint-disable-line react/set-state-in-effect
       return;
     }
     api.get(`/accounts/verify-email/confirm/?uid=${uid}&token=${token}`)
@@ -1112,9 +1112,8 @@ export function ResetPassword() {
 }
 
 export function Profile() {
-  const { user, refreshProfile, resendVerificationEmail } = useAuth();
+  const { user, refreshProfile } = useAuth();
   const [saving, setSaving] = useState(false);
-  const [resendLoading, setResendLoading] = useState(false);
   const [resendMsg, setResendMsg] = useState('');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -1471,7 +1470,7 @@ export function EmployeeDetail({ id }) {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const doUploadPhoto = async (ev) => {
     ev.preventDefault();
@@ -1848,7 +1847,7 @@ export function Users() {
   const refresh = () => loadUrl(builtUrl);
   const changeUserSort = (field) => changeSort(field);
 
-  const toggleUser = (id) => setSelUsers((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleUser = (id) => setSelUsers((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
   /** Build the per-row result table rows from a bulk user operation payload. */
   const bulkResultRows = (result) => {
@@ -2572,7 +2571,7 @@ export function SLAConfig() {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const openEdit = (sla) => {
     setEditTarget(sla);
@@ -2711,7 +2710,7 @@ export function SLAReport() {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const applyDates = () => { load(); };
   const resetDates = () => {

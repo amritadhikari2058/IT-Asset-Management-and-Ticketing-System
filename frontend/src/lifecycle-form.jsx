@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
@@ -6,11 +6,10 @@ import {
 } from './components';
 import { fieldMsg, parseApiError } from './api-utils';
 import {
-  CASE_TYPE_LABELS, CASE_STATUS_LABELS, PRIORITY_LABELS,
+  CASE_TYPE_LABELS, PRIORITY_LABELS,
   RESPONSIBILITY_LABELS, CATEGORY_LABELS, DEFAULT_ASSIGNEE_ROLE_LABELS,
-  formatDate, formatDateTime,
+  formatDate,
 } from './lifecycle-utils';
-
 // Re-exported label maps used by the wizard steps.
 export {
   CASE_TYPE_LABELS, PRIORITY_LABELS, RESPONSIBILITY_LABELS,
@@ -39,7 +38,7 @@ const DEFAULT_FORM = {
 };
 
 export function LifecycleForm() {
-  const { user, isStaff, isManagerOrAdmin, isEmployee, role } = useAuth();
+  const { isEmployee } = useAuth();
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({ ...DEFAULT_FORM });
   const [templates, setTemplates] = useState([]);
@@ -57,7 +56,7 @@ export function LifecycleForm() {
   // Parse ?edit=<id> from hash for draft editing.
   useEffect(() => {
     const m = location.hash.match(/[?&]edit=(\d+)/);
-    if (m && !editCaseId) setEditCaseId(m[1]);
+    if (m && !editCaseId) setEditCaseId(m[1]); // eslint-disable-line react/set-state-in-effect
   }, [editCaseId]);
 
   const loadLookup = async () => {
@@ -83,8 +82,8 @@ export function LifecycleForm() {
 
   useEffect(() => {
     if (isEmployee) {
-      setLoadError('Employees cannot create lifecycle cases.');
-      setLoading(false);
+      setLoadError('Employees cannot create lifecycle cases.'); // eslint-disable-line react/set-state-in-effect
+      setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
     loadLookup();
@@ -103,8 +102,6 @@ export function LifecycleForm() {
   };
 
   const isTransfer = form.case_type === 'transfer';
-  const isOffboarding = form.case_type === 'offboarding';
-  const isOnboarding = form.case_type === 'onboarding';
 
   const selectedTemplate = templates.find((t) => String(t.id) === String(form.template_id));
   const selectedEmployee = employees.find((e) => String(e.id) === String(form.employee));

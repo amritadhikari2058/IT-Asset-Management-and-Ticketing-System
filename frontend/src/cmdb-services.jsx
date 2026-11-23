@@ -29,9 +29,10 @@ export function ServiceMappingPage() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!canView) { setLoading(false); return undefined; }
-    setLoading(true);
-    setError('');
+    if (!canView) { setLoading(false); // eslint-disable-line react/set-state-in-effect
+      return undefined; }
+    setLoading(true); // eslint-disable-line react/set-state-in-effect
+    setError(''); // eslint-disable-line react/set-state-in-effect
     Promise.all([
       api.get(CMDB_API_CONTRACT.serviceMapping.endpoint),
       api.get('/cmdb/service-links/'),
@@ -51,9 +52,12 @@ export function ServiceMappingPage() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!selectedServiceId) { setGraph(null); setImpact(null); setSpof(null); return undefined; }
-    setDetailLoading(true);
-    setDetailError('');
+    if (!selectedServiceId) { setGraph(null); // eslint-disable-line react/set-state-in-effect
+      setImpact(null); // eslint-disable-line react/set-state-in-effect
+      setSpof(null); // eslint-disable-line react/set-state-in-effect
+      return undefined; }
+    setDetailLoading(true); // eslint-disable-line react/set-state-in-effect
+    setDetailError(''); // eslint-disable-line react/set-state-in-effect
     Promise.allSettled([
       api.get(`/cmdb/services/${selectedServiceId}/graph/`),
       api.get(`/cmdb/services/${selectedServiceId}/impact/`),

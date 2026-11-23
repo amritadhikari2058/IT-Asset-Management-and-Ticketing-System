@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './auth';
-import { AccessDenied, EmptyState } from './components';
+import { AccessDenied } from './components';
 import { licensingCapabilities } from './licensing-utils';
 import { LicensingDashboard } from './licensing-dashboard';
 import { SoftwareProductsPage } from './software-products';
@@ -35,7 +35,7 @@ export function LicensingRouter({ route: routeProp }) {
   const caps = licensingCapabilities(auth);
   const [location, setLocation] = useState(() => routeProp ? (() => { const [r, q = ''] = String(routeProp).split('?'); return { route: r || '/software', query: q }; })() : readHash());
   useEffect(() => {
-    if (routeProp) { const [r, q = ''] = String(routeProp).split('?'); setLocation({ route: r || '/software', query: q }); return; }
+    if (routeProp) { const [r, q = ''] = String(routeProp).split('?'); setLocation({ route: r || '/software', query: q }); return; } // eslint-disable-line react/set-state-in-effect
     const onChange = () => setLocation(readHash());
     window.addEventListener('hashchange', onChange);
     return () => window.removeEventListener('hashchange', onChange);

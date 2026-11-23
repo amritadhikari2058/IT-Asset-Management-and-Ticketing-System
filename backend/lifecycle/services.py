@@ -706,25 +706,104 @@ def _automation_handler(automation_type):
 
 
 def _automation_create_service_request(task, actor):
-    task.automation_status = "manual_review"
-    task.automation_error_summary = (
-        "Service Request automation is not implemented; manual review required.")
-    task.save(update_fields=["automation_status", "automation_error_summary",
-                             "updated_at"])
-    _history(task.case, task, actor, "automation_failed",
-             new_status="manual_review",
-             detail="Service Request automation is not implemented.")
+    """Auto-create a ServiceRequest from the task's automation configuration.
+
+    The task's ``automation_config`` supplies the catalogue item
+    (``catalogue_item_id``) and optional request attributes (``employee_id``,
+    ``answers``, ``description``, ``priority``). The employee defaults to the
+    lifecycle case's employee. When the catalogue item is missing or the
+    referenced employee/catalogue item is not usable, the task stays in
+    ``manual_review`` for human handling.
+    """
+    config = task.automation_config or {}
+    catalogue_item_id = config.get("catalogue_item_id")
+    employee_id = config.get("employee_id") or task.case.employee_id
+    if not catalogue_item_id:
+        task.automation_status = "manual_review"
+        task.automation_error_summary = (
+            "Service Request automation requires catalogue_item_id in "
+            "automation_config; manual review required.")
+        task.save(update_fields=["automation_status", "automation_error_summary",
+                                 "updated_at"])
+        _history(task.case, task, actor, "automation_failed",
+                 new_status="manual_review",
+                 detail="Service Request automation pending catalogue item.")
+        return
+
+    from services.models import ServiceCatalogueItem, ServiceRequest
+
+    catalogue_item = (ServiceCatalogueItem.objects
+                      .filter(pk=catalogue_item_id, is_deleted=False)
+                      .first())
+    employee = (User.objects.filter(pk=employee_id, is_deleted=False,
+                                    is_active=True).first())
+    if not catalogue_item or not employee:
+        task.automation_status = "manual_review"
+        task.automation_error_summary = (
+            "Service Request automation references unknown catalogue item "
+            "or employee; manual review required.")
+        task.save(update_fields=["automation_status", "automation_error_summary",
+                                 "updated_at"])
+        _history(task.case, task, actor, "automation_failed",
+                 new_status="manual_review",
+                 detail="Service Request automation pending valid references.")
+        return
+
+    today = timezone.now().strftime("%Y%m%d")
+    seq = ServiceRequest.objects.filter(
+        request_number__startswith=f"SR-{today}-").count() + 1
+
+    service_request = ServiceRequest.objects.create(
+        request_number=f"SR-{today}-{seq:04d}",
+        requester=employee,
+        department=employee.home_department,
+        catalogue_item=catalogue_item,
+        answers=config.get("answers") or {},
+        description=(config.get("description") or "").strip(),
+        priority=config.get("priority") or "medium",
+        status="submitted",
+    )
+    task.related_service_request = service_request
+    task.save(update_fields=[
+        "related_service_request", "automation_status",
+        "automation_error_summary", "updated_at"])
 
 
 def _automation_create_ticket(task, actor):
-    task.automation_status = "manual_review"
-    task.automation_error_summary = (
-        "Ticket automation is not implemented; manual review required.")
-    task.save(update_fields=["automation_status", "automation_error_summary",
-                             "updated_at"])
-    _history(task.case, task, actor, "automation_failed",
-             new_status="manual_review",
-             detail="Ticket automation is not implemented.")
+    """Auto-create a Ticket from a Service Request via the task link.
+
+    The task may reference the Service Request it should fulfil either through
+    the task's own ``related_service_request`` FK or through
+    ``automation_config["service_request_id"]``. When a live, non-deleted
+    request is resolved, the ticket is created through the existing transactional
+    service (``services.service_ticketing.ensure_ticket_for_service_request``)
+    and linked back via ``task.related_ticket``. The dispatcher marks the task
+    ``succeeded`` on a clean return; unresolvable configurations stay in
+    ``manual_review`` for human handling.
+    """
+    from services.service_ticketing import ensure_ticket_for_service_request
+
+    from services.models import ServiceRequest as _ServiceRequest
+    sr = task.related_service_request
+    if sr is None:
+        sr_id = (task.automation_config or {}).get("service_request_id")
+        sr = _ServiceRequest.objects.filter(pk=sr_id).first() if sr_id else None
+    if sr is None or sr.is_deleted:
+        task.automation_status = "manual_review"
+        task.automation_error_summary = (
+            "Ticket automation is not implemented; manual review required.")
+        task.save(update_fields=["automation_status", "automation_error_summary",
+                                 "updated_at"])
+        _history(task.case, task, actor, "automation_failed",
+                 new_status="manual_review",
+                 detail="Ticket automation is not implemented.")
+        return
+
+    ticket, created = ensure_ticket_for_service_request(sr, actor)
+    task.related_ticket = ticket
+    task.save(update_fields=[
+        "related_ticket", "automation_status", "automation_error_summary",
+        "updated_at"])
 
 
 def _automation_assign_asset(task, actor):

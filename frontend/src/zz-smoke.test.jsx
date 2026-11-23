@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, waitFor } from '@testing-library/react';
+import { render, cleanup, waitFor } from '@testing-library/react';
 
 const { mockGet, mockPost, mockPatch, mockDelete, mockAuth } = vi.hoisted(() => ({
   mockGet: vi.fn(),
@@ -24,10 +24,6 @@ vi.mock('./auth', () => ({
 }));
 
 import App from './App';
-import { LifecycleDashboard } from './lifecycle-dashboard';
-import { LifecycleCases } from './lifecycle-cases';
-import { LifecycleForm } from './lifecycle-form';
-import { LifecycleDetail } from './lifecycle-detail';
 
 const TICKET = {
   id: 12, title: 'Laptop will not boot', description: 'Black screen on power-on',

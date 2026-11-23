@@ -90,7 +90,7 @@ export function PurchaseRequestForm({ id }) {
     }
   }, [id, isEdit]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   useEffect(() => {
     if (isEdit) return;

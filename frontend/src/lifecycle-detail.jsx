@@ -2,12 +2,11 @@ import { useEffect, useState } from 'react';
 import api from './api';
 import { useAuth } from './auth';
 import {
-  Badge, Button, ConfirmDialog, ErrorSummary, Field, PageHeader, UserSelect,
+  Badge, ErrorSummary, Field, PageHeader,
 } from './components';
-import { fieldMsg, parseApiError } from './api-utils';
+import { parseApiError } from './api-utils';
 import {
-  CASE_TYPE_LABELS, CASE_STATUS_LABELS, PRIORITY_LABELS,
-  formatDate, formatDateTime, isTerminalCaseStatus,
+  CASE_TYPE_LABELS, formatDate, formatDateTime, isTerminalCaseStatus,
   actionAvailability, getActionLabel, isActionReasonRequired,
 } from './lifecycle-utils';
 
@@ -23,7 +22,7 @@ const ACTION_SUFFIX = {
 };
 
 export function LifecycleDetail({ id }) {
-  const { user, isStaff, isAdmin, isManagerOrAdmin, isEmployee, role } = useAuth();
+  const { user, isStaff, isAdmin, isManagerOrAdmin, role } = useAuth();
   const [caseData, setCaseData] = useState(null);
   const [summary, setSummary] = useState(null);
   const [history, setHistory] = useState([]);
@@ -33,12 +32,16 @@ export function LifecycleDetail({ id }) {
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState({});
   const [transitionErr, setTransitionErr] = useState('');
-  const [fieldErrors, setFieldErrors] = useState({});
   const [blockReason, setBlockReason] = useState('');
   const [cancelReason, setCancelReason] = useState('');
   const [confirming, setConfirming] = useState(null);
   const [staleMsg, setStaleMsg] = useState(null);
-  const [version, setVersion] = useState(null);
+
+  const safeResults = (data) => {
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    return Array.isArray(data.results) ? data.results : [];
+  };
 
   const load = async () => {
     setLoading(true);
@@ -63,7 +66,7 @@ export function LifecycleDetail({ id }) {
     }
   };
 
-  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const doRefresh = async () => {
     setRefreshBusy(true);
@@ -75,13 +78,6 @@ export function LifecycleDetail({ id }) {
     }
   };
 
-  const safeResults = (data) => {
-    if (!data) return [];
-    if (Array.isArray(data)) return data;
-    return Array.isArray(data.results) ? data.results : [];
-  };
-
-  const isEmpView = isEmployee && !isStaff;
   const c = caseData;
   const canSee = c ? (
     isAdmin || isManagerOrAdmin || isStaff || c.employee === (user?.id || user?.employee_id)
