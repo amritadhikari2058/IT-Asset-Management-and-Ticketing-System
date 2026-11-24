@@ -65,17 +65,28 @@ class Command(BaseCommand):
             ("EMP001", "employee@local", "employee", "employee12345"),
         ]
         for eid, email, role, pwd in demos:
-            user, created = User.objects.with_deleted().get_or_create(
-                employee_id=eid,
-                defaults={"username": email, "email": email, "role": role,
-                          "home_department": eng})
-            user.email = email
+            # Resolve an existing row by employee_id, username, or email so
+            # re-seeding repairs drifted/legacy rows instead of crashing on
+            # the unique username/email constraints.
+            user = (User.all_objects.filter(employee_id=eid).first()
+                    or User.all_objects.filter(username=email).first()
+                    or User.all_objects.filter(email=email).first())
+            created = user is None
+            if created:
+                user = User(employee_id=eid, username=email, email=email,
+                            role=role, home_department=eng)
+            user.employee_id = eid
             user.username = email
+            user.email = email
             user.role = role
             user.home_department = eng
             user.is_active = True
-            if created or not user.has_usable_password():
-                user.set_password(pwd)
+            user.is_deleted = False
+            user.deleted_at = None
+            user.deleted_by = None
+            # Always (re)apply the documented demo password so seeded
+            # credentials match README/e2e expectations after drift.
+            user.set_password(pwd)
             user.save()
         self.stdout.write(self.style.SUCCESS(
             "Seeded ticket(7)/asset(6) categories, 3 departments, 4 demo users."))

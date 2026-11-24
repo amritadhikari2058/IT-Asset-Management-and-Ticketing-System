@@ -960,7 +960,7 @@ def _deliver_scheduled_report(sr):
     try:
         from tickets.views import category_report, sla_report
         from rest_framework.test import APIRequestFactory
-        from accounts import email_utils as _email_utils
+        from common.email import send_scheduled_report_email
 
         factory = APIRequestFactory()
         req = factory.get("/api/tickets/reports/by-category/",
@@ -1008,7 +1008,7 @@ def _deliver_scheduled_report(sr):
             if delivery.status == "failed" and delivery.attempts >= SCHEDULED_REPORT_MAX_DELIVERY_ATTEMPTS:
                 delivery_failures += 1
                 continue
-            if _email_utils.send_scheduled_report_email(
+            if send_scheduled_report_email(
                     to_email, subject, body, filename, content, content_type):
                 ScheduledReportDelivery.objects.filter(
                     pk=delivery.pk).update(status="sent", sent_at=timezone.now())

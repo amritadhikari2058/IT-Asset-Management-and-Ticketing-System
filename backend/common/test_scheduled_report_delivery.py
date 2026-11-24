@@ -334,7 +334,7 @@ class ScheduledReportCrashWindowTests(TransactionTestCase):
     # ------------------------------------------------------------------
     # Scenario A — Crash before SMTP invocation (pending row)
     # ------------------------------------------------------------------
-    @patch("accounts.email_utils.send_scheduled_report_email")
+    @patch("common.email.send_scheduled_report_email")
     def test_pending_before_smtp_is_retried_on_recovery(
             self, mock_send):
         """A pending delivery (crash before SMTP) is retried on run recovery."""
@@ -399,7 +399,7 @@ class ScheduledReportCrashWindowTests(TransactionTestCase):
     # ------------------------------------------------------------------
     # Scenario B — SMTP rejects the email
     # ------------------------------------------------------------------
-    @patch("accounts.email_utils.send_scheduled_report_email")
+    @patch("common.email.send_scheduled_report_email")
     def test_smtp_rejection_persists_failed_state(self, mock_send):
         """SMTP rejection persists ``failed`` status and allows bounded retry."""
         mock_send.return_value = False
@@ -440,7 +440,7 @@ class ScheduledReportCrashWindowTests(TransactionTestCase):
     # ------------------------------------------------------------------
     # Scenario C — SMTP accepts, then crash before recording ``sent``
     # ------------------------------------------------------------------
-    @patch("accounts.email_utils.send_scheduled_report_email")
+    @patch("common.email.send_scheduled_report_email")
     def test_smtp_accept_then_crash_before_sent(self, mock_send):
         """SMTP accepts but worker crashes before DB records ``sent``.
 
@@ -493,7 +493,7 @@ class ScheduledReportCrashWindowTests(TransactionTestCase):
     # ------------------------------------------------------------------
     # Scenario D — ``sent`` before run finalization suppresses re-send
     # ------------------------------------------------------------------
-    @patch("accounts.email_utils.send_scheduled_report_email")
+    @patch("common.email.send_scheduled_report_email")
     def test_sent_suppresses_resend_within_same_run(self, mock_send):
         """A ``sent`` delivery within the same run is not re-sent."""
         mock_send.return_value = True
@@ -522,7 +522,7 @@ class ScheduledReportCrashWindowTests(TransactionTestCase):
     # ------------------------------------------------------------------
     # Scenario E — Multiple recipients with mixed outcomes
     # ------------------------------------------------------------------
-    @patch("accounts.email_utils.send_scheduled_report_email")
+    @patch("common.email.send_scheduled_report_email")
     def test_mixed_outcomes_independent_per_recipient(
             self, mock_send):
         """Three recipients: one sent, one failed, one pending."""

@@ -411,35 +411,19 @@ class UserViewSet(viewsets.ModelViewSet):
         return UserSerializer
 
     def get_permissions(self):
-        # NOTE: hard_delete + change_role carry their own
-        # IsSystemAdmin action-level guard; never include them here.
-        # Per-row edits (update/partial_update) are IT-staff-only too:
-        # the UI hides the Edit action, and the backend must also reject
-        # direct API calls (employees get 403; self-service stays on
-        # /api/accounts/me/).
-        # Employees may only list their own department's users via query param,
-        # and may only see their own record at /api/accounts/me/.
-        if self.action in ("create", "update", "partial_update", "destroy",
-                           "bulk_import", "bulk_update", "bulk_activate",
-                           "bulk_delete"):
+        # hard_delete/change_role define their own IsSystemAdmin guard.
+        # Mutating/bulk actions are IT-staff-only; self-service profile edits
+        # go through /api/accounts/me/.
+        staff_actions = {
+            "create", "update", "partial_update", "destroy",
+            "bulk_import", "bulk_update", "bulk_activate", "bulk_delete",
+        }
+        if self.action in staff_actions:
             return [IsITStaff()]
-        # List action: non-admin users only see non-deleted users in their
-        # home department (defense-in-depth; per-object permissions enforce
-        # tighter scoping in the API). Admin sees all.
-        if self.action == "list":
-            if is_system_admin(self.request.user):
-                return [IsActiveAuthenticated()]
+        if self.action in ("list", "retrieve"):
+            # Authenticated users can reach these endpoints; queryset/object
+            # scoping and any object-level checks limit what they can see.
             return [IsActiveAuthenticated()]
-        # Retrieve, partial_update, update on a specific user: employee may
-        # only access their own record; IT staff may access any record.
-        if self.action in ("retrieve", "partial_update", "update"):
-            user = self.request.user
-            # Employees can only retrieve/update their own profile
-            if not is_system_admin(user) and not getattr(user, "role", "") in ("it_manager", "it_support"):
-                # Allow self-access only (matches /api/accounts/me/ pattern)
-                return [IsActiveAuthenticated()]
-            # IT staff can access any user record
-            return [IsITStaff()]
         return super().get_permissions()
 
     def get_queryset(self):
@@ -714,7 +698,9 @@ class UserViewSet(viewsets.ModelViewSet):
         obj.save(update_fields=["photo"])
         log_action(actor=request.user, action="update", instance=obj,
                    details={"photo": True})
-        return Response(UserSerializer(obj).data)@action(detail=True, methods=["post"], permission_classes=[IsSystemAdmin])
+        return Response(UserSerializer(obj).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsSystemAdmin])
     def hard_delete(self, request, pk=None):
         from common.throttling import account_action_cooldown
         if account_action_cooldown(

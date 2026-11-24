@@ -6,7 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import { Pager, EmptyState, Badge, PageSizeSelector } from './components';
 import { useAuth } from './auth';
-import { fetchPage, parseApiError, statusBadgeVariant, priorityBadgeVariant, riskBadgeVariant, buildChangeListUrl, STATUS_LABELS, CHANGE_TYPE_LABELS, PRIORITY_LABELS, RISK_LEVEL_LABELS } from './changes-utils';
+import { fetchPage, parseApiError, statusBadgeVariant, priorityBadgeVariant, riskBadgeVariant, buildChangeListUrl, formatDate, STATUS_LABELS, CHANGE_TYPE_LABELS, CATEGORY_LABELS, PRIORITY_LABELS, RISK_LEVEL_LABELS } from './changes-utils';
 
 const CHANGE_LIST_API = '/changes/';
 
@@ -120,17 +120,13 @@ export function ChangeList({ initialFilters = {} }) {
                   </Badge>
                 </td>
                 <td>
-                  {change.change_owner ? (
-                    <span>{change.change_owner.employee_id} — {change.change_owner.email}</span>
-                  ) : (
-                    <span>Unassigned</span>
+                  {change.change_owner_email || change.change_owner?.email || change.change_owner?.employee_id || (
+                    change.change_owner ? <span>{change.change_owner}</span> : <span>Unassigned</span>
                   )}
                 </td>
                 <td>
-                  {change.implementation_lead ? (
-                    <span>{change.implementation_lead.employee_id} — {change.implementation_lead.email}</span>
-                  ) : (
-                    <span>Unassigned</span>
+                  {change.implementation_lead_email || change.implementation_lead?.email || change.implementation_lead?.employee_id || (
+                    change.implementation_lead ? <span>{change.implementation_lead}</span> : <span>Unassigned</span>
                   )}
                 </td>
                 <td>{formatDate(change.planned_start)}</td>

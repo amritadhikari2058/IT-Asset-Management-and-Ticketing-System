@@ -331,8 +331,8 @@ def _deliver_email(event):
     subject = payload.get("subject") or event.event_type
     body = payload.get("body", "")
 
-    from accounts.email_utils import _send
-    ok = _send(subject, body, to_email)
+    from common.email import send_email
+    ok = send_email(subject, body, to_email)
     if ok:
         return "delivered", ""
     # SMTP failures are usually transient (connection / timeout): retry with

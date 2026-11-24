@@ -5,7 +5,7 @@ from rest_framework.test import APIClient
 
 from accounts.tests import auth, make_users
 from assets.models import (
-    Asset, AssetAssignment, AssetCategory, Assignment, Disposal, Maintenance,
+    Asset, AssetCategory, Assignment, Disposal, Maintenance,
 )
 from common.models import AuditLog
 
@@ -73,18 +73,6 @@ class AssetHardDeleteIntegrityTests(TestCase):
         res = self.c.post(f"/api/assets/{asset.pk}/hard_delete/", {"confirm": str(asset.pk)}, format="json")
         self.assertEqual(res.status_code, 409, res.data)
         self.assertGreater(res.data["references"].get("disposals", 0), 0)
-        self.assertTrue(Asset.all_objects.filter(pk=asset.pk).exists())
-
-    def test_hard_delete_blocked_by_asset_assignment_protect(self):
-        """AssetAssignment.asset is PROTECT; hard delete must return 409, not 500."""
-        auth(self.c, self.admin)
-        asset = self._make_asset("DEL-AA")
-        AssetAssignment.objects.create(
-            asset=asset, employee=self.emp, assigned_by=self.admin,
-        )
-        res = self.c.post(f"/api/assets/{asset.pk}/hard_delete/", {"confirm": str(asset.pk)}, format="json")
-        self.assertEqual(res.status_code, 409, res.data)
-        self.assertGreater(res.data["references"].get("asset_assignments", 0), 0)
         self.assertTrue(Asset.all_objects.filter(pk=asset.pk).exists())
 
     def test_hard_delete_blocked_by_assignment_history(self):

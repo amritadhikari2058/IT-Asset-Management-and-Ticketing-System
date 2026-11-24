@@ -21,6 +21,9 @@ class BackupScheduleSerializer(serializers.ModelSerializer):
         ]
 
     def get_job_count(self, obj):
+        annotated = getattr(obj, "job_count_annotated", None)
+        if annotated is not None:
+            return annotated
         return obj.jobs.count()
 
     def get_last_job_status(self, obj):
@@ -42,12 +45,12 @@ class BackupJobSerializer(serializers.ModelSerializer):
         fields = [
             "id", "schedule", "schedule_name", "job_type", "status",
             "started", "finished", "duration", "duration_seconds", "size",
-            "target", "error", "created_by", "created_by_email",
+            "target", "artifact_path", "error", "created_by", "created_by_email",
             "created_at", "updated_at", "is_deleted",
         ]
         read_only_fields = [
             "id", "schedule_name", "created_by_email", "duration_seconds",
-            "created_at", "updated_at",
+            "artifact_path", "created_at", "updated_at",
         ]
 
     def get_duration_seconds(self, obj):

@@ -106,11 +106,11 @@ class NotificationOutboxConcurrencyExtraPostgresTests(TransactionTestCase):
     def test_retry_exhaustion_becomes_terminal(self):
         ev = self._enqueue(max_attempts=2)
         # First attempt fails -> retry
-        with mock.patch("accounts.email_utils.send_mail", side_effect=RuntimeError("down")):
+        with mock.patch("common.email.send_mail", side_effect=RuntimeError("down")):
             r1 = deliver_event_core(ev.id)
         self.assertEqual(r1, "retry")
         NotificationOutboxEvent.objects.filter(pk=ev.pk).update(next_attempt_at=timezone.now())
-        with mock.patch("accounts.email_utils.send_mail", side_effect=RuntimeError("down")):
+        with mock.patch("common.email.send_mail", side_effect=RuntimeError("down")):
             r2 = deliver_event_core(ev.id)
         self.assertEqual(r2, "failed")
         ev.refresh_from_db()

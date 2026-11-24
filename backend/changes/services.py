@@ -122,8 +122,12 @@ def _check_scheduling_policy(change, allow_exception=True):
         scope_match = True
         if bp.scope_department and change.department_id != bp.scope_department_id:
             scope_match = False
-        if bp.scope_service and change.service_id != bp.scope_service_id:
-            scope_match = False
+        if bp.scope_service_id:
+            impacted_service_ids = set(
+                change.service_impacts.values_list("service_catalogue_item_id", flat=True)
+            )
+            if bp.scope_service_id not in impacted_service_ids:
+                scope_match = False
         if not scope_match:
             continue
 

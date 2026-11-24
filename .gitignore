@@ -41,3 +41,6 @@ backend/backups/
 
 .crush.json
 crush.json
+# Backup artifacts
+backup_artifacts/
+backend/backup_artifacts/

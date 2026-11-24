@@ -661,7 +661,7 @@ class ChangeSchedulingExceptionSerializer(serializers.ModelSerializer):
             "decided_by", "decided_by_email", "decision_timestamp",
             "status", "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "created_by", "created_at", "updated_at", "requesting_user", "decided_by", "decision_timestamp"]
+        read_only_fields = ["id", "created_at", "updated_at", "requesting_user", "decided_by", "decision_timestamp"]
 
     def validate(self, data):
         """Validate exception constraints."""

@@ -1,7 +1,7 @@
 """Shared pytest fixtures.
 
 The project uses Django's cache for outbound email deduplication
-(``accounts.email_utils.send_ticket_notification`` keys on
+(``common.notification_delivery.send_ticket_notification`` keys on
 ``(ticket_id, subject, recipient)``). The cache is process-global and is
 *not* rolled back with the database transaction that Django's
 ``TestCase`` uses, so a value written by one test can leak into the next

@@ -147,7 +147,7 @@ class OutboxWorkerTests(TestCase):
     @override_settings(**LOCMEM)
     def test_temporary_failure_schedules_retry(self):
         ev = _enqueue(self.emp)
-        with mock.patch("accounts.email_utils.send_mail",
+        with mock.patch("common.email.send_mail",
                         side_effect=RuntimeError("smtp down")):
             outcome = deliver_event_core(ev.id)
         self.assertEqual(outcome, "retry")
@@ -162,7 +162,7 @@ class OutboxWorkerTests(TestCase):
     @override_settings(**LOCMEM, NOTIFICATION_OUTBOX_MAX_ATTEMPTS=2)
     def test_permanent_failure_after_max_attempts(self):
         ev = _enqueue(self.emp, max_attempts=2)
-        with mock.patch("accounts.email_utils.send_mail",
+        with mock.patch("common.email.send_mail",
                         side_effect=RuntimeError("smtp down")):
             deliver_event_core(ev.id)  # attempt 1 -> retry
             ev.refresh_from_db()
@@ -178,7 +178,7 @@ class OutboxWorkerTests(TestCase):
     @override_settings(**LOCMEM)
     def test_max_attempts_one_fails_immediately(self):
         ev = _enqueue(self.emp, max_attempts=1)
-        with mock.patch("accounts.email_utils.send_mail",
+        with mock.patch("common.email.send_mail",
                         side_effect=RuntimeError("down")):
             outcome = deliver_event_core(ev.id)
         self.assertEqual(outcome, "failed")
@@ -293,7 +293,7 @@ class OutboxWorkerTests(TestCase):
     @override_settings(**LOCMEM)
     def test_manual_retry_of_failed_event(self):
         ev = _enqueue(self.emp, max_attempts=1)
-        with mock.patch("accounts.email_utils.send_mail",
+        with mock.patch("common.email.send_mail",
                         side_effect=RuntimeError("down")):
             deliver_event_core(ev.id)
         ev.refresh_from_db()

@@ -4,7 +4,6 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from accounts import email_utils as _email_utils
 from common.models import BackgroundTaskRun
 from common.notifications import SLA_CATEGORY, email_enabled_for, notify_user
 from common.outbox import enqueue_email

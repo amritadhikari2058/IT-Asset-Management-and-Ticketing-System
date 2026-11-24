@@ -199,9 +199,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'common.monitoring_tasks.detect_missed_scheduled_tasks',
         'schedule': 900.0,  # every 15 minutes
     },
-    # ``backup.tasks.sync_beat_schedules`` is a planned placeholder (no backup
-    # models exist yet), so it is intentionally NOT scheduled: a periodic
-    # no-op that records a success would make operational health misleading.
+    'cleanup-backup-artifacts': {
+        'task': 'backup.tasks.cleanup_backup_artifacts',
+        'schedule': crontab(hour=3, minute=30),  # daily at 03:30
+    },
     'cmdb-evaluate-configuration-drift': {
         'task': 'cmdb.tasks.evaluate_configuration_drift_task',
         'schedule': crontab(hour=2, minute=15),
@@ -618,10 +619,12 @@ CORS_ALLOWED_ORIGINS = [
     if o.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
-# Needed only if session auth is used cross-origin in production;
-# empty preserves current behavior. No wildcards accepted here on purpose.
+# Needed for browser POSTs to Django views (e.g. /admin/) when the frontend
+# dev server proxies to the backend on a different origin. No wildcards.
 CSRF_TRUSTED_ORIGINS = [
-    o.strip() for o in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
+    o.strip() for o in os.environ.get(
+        'CSRF_TRUSTED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173').split(',')
     if o.strip()
 ]
 

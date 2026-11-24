@@ -393,9 +393,9 @@ class TicketBulkImportScalabilityTests(TestCase):
 
             with patch.object(ticket_views.transaction, "on_commit",
                               side_effect=collect_on_commit), \
-                    patch("accounts.email_utils._notify_sla_approaching") \
+                    patch("common.notification_delivery._notify_sla_approaching") \
                     as approaching, \
-                    patch("accounts.email_utils._notify_sla_breached") \
+                    patch("common.notification_delivery._notify_sla_breached") \
                     as breached:
                 response = self.client.post(
                     "/api/tickets/bulk_create/",

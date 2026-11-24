@@ -487,7 +487,7 @@ def run_scheduled_reports(self):
         try:
             from tickets.views import category_report, sla_report
             from rest_framework.test import APIRequestFactory
-            from accounts import email_utils as _email_utils
+            from common.email import send_scheduled_report_email
 
             with _ScheduledReportLeaseKeeper(run.pk, token) as keeper:
                 factory = APIRequestFactory()
@@ -606,7 +606,7 @@ def run_scheduled_reports(self):
                     if keeper.lost:
                         raise _ScheduledReportOwnershipLost()
 
-                    if _email_utils.send_scheduled_report_email(
+                    if send_scheduled_report_email(
                             to_email, subject, body, filename, content,
                             content_type):
                         updated = ScheduledReportDelivery.objects.filter(

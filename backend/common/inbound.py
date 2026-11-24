@@ -574,12 +574,12 @@ def _process_message(msg_dict, mailbox):
     if created and new_ticket_user is not None:
         user = new_ticket_user
         if user.email and _wants_ticket_email(user):
-            from accounts import email_utils as _eu
-            _eu.send_ticket_notification(
+            from common.notification_delivery import send_ticket_notification, ticket_links
+            send_ticket_notification(
                 user.email,
                 f"Ticket #{ticket.pk} created: {ticket.title}",
                 f"Your ticket was created.\nStatus: {ticket.status}\n"
-                f"View: {_eu.ticket_links(ticket.pk)[1]}",
+                f"View: {ticket_links(ticket.pk)[1]}",
                 ticket_id=ticket.pk)
 
     # --- reply note handling (idempotent per inbound message) ---
@@ -644,8 +644,8 @@ def _process_message(msg_dict, mailbox):
 
     if ticket is not None and not created and not save_attachments and not is_internal:
         # Requester-visible reply: notify them (deduped outbound send).
-        from accounts import email_utils as _eu
-        _eu.send_ticket_notification(
+        from common.notification_delivery import send_ticket_notification
+        send_ticket_notification(
             ticket.requester.email if ticket.requester else None,
             f"Re: {(subject or '')[:80]}",
             f"Reply received on ticket #{ticket.pk}: {(body or '')[:500]}",

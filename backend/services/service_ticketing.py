@@ -143,7 +143,7 @@ def _notify_requester(actor, service_request, ticket):
     )
     _create_notification(actor, requester, title, body, ticket)
     if email_enabled_for(requester, category=None):
-        from accounts.email_utils import send_ticket_notification
+        from common.notification_delivery import send_ticket_notification
         send_ticket_notification(
             requester.email, title, body, ticket_id=ticket.pk,
             user=requester, category=None)
@@ -160,7 +160,7 @@ def _notify_assignee(actor, service_request, ticket, assignee):
     )
     _create_notification(actor, assignee, title, body, ticket)
     if email_enabled_for(assignee, category="ticket_assignment"):
-        from accounts.email_utils import send_ticket_notification
+        from common.notification_delivery import send_ticket_notification
         send_ticket_notification(
             assignee.email, title, body, ticket_id=ticket.pk,
             user=assignee, category="ticket_assignment")

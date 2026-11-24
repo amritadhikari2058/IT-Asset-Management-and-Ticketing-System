@@ -84,7 +84,9 @@ class ApprovalProvider:
         raise NotImplementedError
 
     def get_summary(self, user):
-        return {"count": self.get_queryset(user).count()}
+        qs = self.get_queryset(user)
+        count = qs.count() if hasattr(qs, "count") else len(qs)
+        return {"count": count}
 
     # ---- action paths (read-only descriptors; decisions stay in domain) ----
 
@@ -350,7 +352,7 @@ class PurchaseRequestApprovalProvider(ApprovalProvider):
 
     def get_queryset(self, user):
         if not HAS_PROCUREMENT:
-            return PurchaseRequest.objects.none()  # type: ignore[name-defined]
+            return []
         return (PurchaseRequest.objects
                 .filter(status="pending_approval", approver__isnull=True)
                 .select_related("requester", "department")
@@ -415,7 +417,7 @@ class PurchaseOrderApprovalProvider(ApprovalProvider):
 
     def get_queryset(self, user):
         if not HAS_PROCUREMENT:
-            return PurchaseOrder.objects.none()  # type: ignore[name-defined]
+            return []
         return (PurchaseOrder.objects
                 .filter(status="pending_approval", approver__isnull=True)
                 .select_related("vendor", "created_by")
@@ -506,18 +508,19 @@ def _collect(user, limit_per_provider):
     return items
 
 
-def get_pending_approvals(user, limit=100):
+def get_pending_approvals(user, limit=None):
     """
     Returns a unified list of approval items awaiting action, normalized
-    across providers. Sorted oldest-first (by submitted_at). Bounded.
+    across providers. Sorted oldest-first (by submitted_at). Bounded per
+    provider by PER_PROVIDER_LIMIT.
     """
     if user is None or not getattr(user, "pk", None) or not user.is_authenticated:
         return []
-    # Fetch enough from each provider to fill a page after filtering/sorting.
-    fetch = max(limit, 25) * len(REGISTRY) + PER_PROVIDER_LIMIT
-    items = _collect(user, fetch)
+    items = _collect(user, PER_PROVIDER_LIMIT)
     items.sort(key=lambda it: it.get("submitted_at") or "")
-    return items[:limit]
+    if limit is not None:
+        return items[:limit]
+    return items
 
 
 def get_approval_counts(user):

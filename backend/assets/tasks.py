@@ -4,7 +4,6 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from accounts import email_utils as _email_utils
 from assets.models import Maintenance, MaintenanceReminder
 from common.models import BackgroundTaskRun
 from common.notifications import MAINTENANCE_CATEGORY, email_enabled_for, notify_user

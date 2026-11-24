@@ -8,7 +8,6 @@ from tickets.serializers import validate_attachment_file
 
 from assets.models import (
     Asset,
-    AssetAssignment,
     AssetAttachment,
     AssetCategory,
     AssetHistory,

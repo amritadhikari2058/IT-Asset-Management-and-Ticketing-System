@@ -127,14 +127,9 @@ from changes.services import (
 )
 from changes.permissions import (
     IsChangeStaff,
-    IsChangeManager,
     IsChangeManagerOrAdmin,
     IsChangeApprover,
-    IsChangeScheduling,
-    IsChangeImplementer,
     IsChangeCloser,
-    IsChangePIRWaiver,
-    IsChangeConflictOverride,
     _is_staff,
     _can_manage,
     _can_approve,
@@ -1049,9 +1044,9 @@ class ChangeConflictViewSet(viewsets.ModelViewSet):
         return _scope_queryset(self.request.user, qs)
 
     def get_permissions(self):
-        if self.action in ("list", "retrieve"):
+        if self.action in ("list", "retrieve", "acknowledge", "accept"):
             return [permissions.IsAuthenticated()]
-        return [permissions.IsAuthenticated()]
+        return [IsChangeManagerOrAdmin()]
 
     @action(detail=True, methods=["post"])
     def acknowledge(self, request, pk=None):

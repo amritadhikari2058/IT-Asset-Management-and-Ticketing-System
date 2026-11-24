@@ -781,26 +781,6 @@ class Assignment(models.Model):
         return f"{self.asset_id} -> {who} @ {self.assigned_at:%Y-%m-%d}"
 
 
-class AssetAssignment(models.Model):
-    """Asset assignment change record."""
-
-    asset = models.ForeignKey(
-        Asset, on_delete=models.PROTECT, related_name="asset_assignments")
-    employee = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="asset_assignments_employee")
-    assigned_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="asset_assignments_given")
-    note = models.TextField(blank=True, default="")
-    effective_from = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-effective_from"]
-
-    def __str__(self):
-        return f"{self.asset.asset_tag} assigned to {self.employee_id}"
-
-
 class AssetHistory(models.Model):
     """Append-only asset change log. Not editable/deletable via API."""
 

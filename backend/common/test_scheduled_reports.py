@@ -334,7 +334,7 @@ class ScheduledReportTests(TestCase):
     def test_all_delivery_failures_mark_run_failed(self):
         sr = self._due_schedule()
         from unittest.mock import patch
-        with patch("accounts.email_utils.send_scheduled_report_email",
+        with patch("common.email.send_scheduled_report_email",
                    return_value=False):
             results = run_scheduled_reports()
         self.assertEqual(results["sent"], 0)

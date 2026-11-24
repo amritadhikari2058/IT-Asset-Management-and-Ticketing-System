@@ -115,6 +115,10 @@ class BackupJob(SoftDeleteModel):
     duration = models.CharField(max_length=40, blank=True, default="")
     size = models.CharField(max_length=40, blank=True, default="")
     target = models.CharField(max_length=255, blank=True, default="")
+    artifact_path = models.CharField(
+        max_length=500, blank=True, default="",
+        help_text="Local path to the backup artifact (managed by backup tasks).",
+    )
     error = models.TextField(blank=True, default="")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

@@ -38,7 +38,7 @@ test('logout clears session', async ({ page }) => {
   await page.fill('#login-password', 'admin12345');
   await page.click('button[type="submit"]');
   await page.waitForFunction(() => location.hash.includes('tickets'));
-  await page.click('text=Logout');
+  await page.click('text=Log out');
   await page.waitForFunction(() => !location.hash.includes('tickets'));
   await expect(page.locator('#login-email')).toBeVisible();
 });

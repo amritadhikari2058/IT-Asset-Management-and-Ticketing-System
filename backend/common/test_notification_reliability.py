@@ -26,14 +26,14 @@ class EmailSendBehaviorTests(TestCase):
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     def test_send_ticket_notification_returns_false_on_send_failure(self):
         from accounts.email_utils import send_ticket_notification
-        with mock.patch("accounts.email_utils.send_mail", side_effect=RuntimeError("smtp down")):
+        with mock.patch("common.email.send_mail", side_effect=RuntimeError("smtp down")):
             ok = send_ticket_notification(self.emp.email, "Subj2", "Body", ticket_id=2, user=self.emp)
         self.assertFalse(ok)
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     def test_failed_send_does_not_set_dedup_cache(self):
         from accounts.email_utils import send_ticket_notification
-        with mock.patch("accounts.email_utils.send_mail", side_effect=RuntimeError("smtp down")):
+        with mock.patch("common.email.send_mail", side_effect=RuntimeError("smtp down")):
             ok1 = send_ticket_notification(self.emp.email, "Subj3", "Body", ticket_id=3, user=self.emp)
         self.assertFalse(ok1)
         ok2 = send_ticket_notification(self.emp.email, "Subj3", "Body", ticket_id=3, user=self.emp)
@@ -335,7 +335,7 @@ class BulkImportEmailTransactionBoundaryTests(TransactionTestCase):
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     def test_bulk_import_callback_failure_does_not_corrupt_committed_data(self):
         from tickets.models import Ticket
-        with mock.patch("accounts.email_utils.send_ticket_notification", side_effect=RuntimeError("smtp down")):
+        with mock.patch("common.notification_delivery.send_ticket_notification", side_effect=RuntimeError("smtp down")):
             with transaction.atomic():
                 res = self._bulk_confirm([self._row(title="B3", assignee=self.admin.pk)])
                 self.assertEqual(res.status_code, 200)

@@ -15,7 +15,6 @@ import re
 from django.db import models
 from django.db.models import Max
 
-from accounts import email_utils
 from assets.models import KnowledgeBaseArticle, KnowledgeBaseArticleRevision
 from common.audit import log_action
 from common.models import Notification
@@ -270,7 +269,7 @@ def revision_changes(old_rev, new_rev):
 # In-app Notification rows are always delivered (project policy: in-app
 # notifications are independent of email preferences). Email is best-effort
 # and gated by the ``kb_review`` category preference via
-# ``accounts.email_utils.send_kb_notification``. All helpers are designed to
+# ``common.notification_delivery.send_kb_notification``. All helpers are designed to
 # be called from ``transaction.on_commit()`` so a rolled-back transaction
 # never produces a notification.
 # ---------------------------------------------------------------------------

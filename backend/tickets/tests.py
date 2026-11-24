@@ -869,7 +869,7 @@ class TicketUpdateAtomicityTests(TestCase):
         self.assertEqual(state["mails"], 0)
 
     def test_email_failure_does_not_roll_back(self):
-        with patch("accounts.email_utils.send_ticket_notification",
+        with patch("common.notification_delivery.send_ticket_notification",
                    side_effect=RuntimeError("smtp down")):
             res = self._patch({"title": "t2", "status": "in_progress"})
         self.assertEqual(res.status_code, 200)
@@ -942,7 +942,7 @@ class TicketCreateAtomicityTests(TestCase):
         # and is delivered by the worker via accounts.email_utils._send. A
         # transport failure must be isolated to the outbox row (retried later)
         # and never roll back the committed ticket.
-        with patch("accounts.email_utils.send_mail",
+        with patch("common.email.send_mail",
                    side_effect=RuntimeError("smtp down")):
             with self.captureOnCommitCallbacks(execute=True):
                 res = self._create(assignee=self.emp.pk)

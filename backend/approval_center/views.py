@@ -10,16 +10,18 @@ Endpoints:
 - GET /api/approvals/summary/   -> role-scoped pending-approval counts
 - GET /api/approvals/<type>/<id>/ -> normalized detail for one item
 """
-from datetime import timedelta
-
-from django.utils import timezone
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, NotFound
 
 from .services import (
-    get_pending_approvals, get_approval_counts, filter_and_sort, REGISTRY,
+    REGISTRY,
+    filter_and_sort,
+    get_approval_counts,
+    get_pending_approvals,
+    _is_due_soon,
+    _is_overdue,
 )
 
 
@@ -128,23 +130,3 @@ class ApprovalCenterViewSet(viewsets.ViewSet):
                 return provider
         return None
 
-
-def _is_overdue(item):
-    due = item.get("due_at")
-    if not due:
-        return False
-    try:
-        return due < timezone.now().isoformat()
-    except Exception:
-        return False
-
-
-def _is_due_soon(item):
-    due = item.get("due_at")
-    if not due:
-        return False
-    try:
-        soon = timezone.now() + timedelta(days=3)
-        return timezone.now().isoformat() <= due <= soon.isoformat()
-    except Exception:
-        return False

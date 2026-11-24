@@ -22,7 +22,7 @@ from .models import BackupJob, BackupSchedule, RestorePoint
 logger = logging.getLogger(__name__)
 
 
-def _mark_job(job, status, error="", size="", duration=""):
+def _mark_job(job, status, error="", size="", duration="", artifact_path=""):
     """Atomically update a BackupJob's terminal fields."""
     now = timezone.now()
     update_fields = ["status", "finished", "updated_at"]
@@ -37,6 +37,9 @@ def _mark_job(job, status, error="", size="", duration=""):
     if duration:
         job.duration = duration
         update_fields.append("duration")
+    if artifact_path:
+        job.artifact_path = artifact_path
+        update_fields.append("artifact_path")
     job.save(update_fields=update_fields)
     # Update the schedule's last_run / last_status.
     if job.schedule_id:
@@ -101,7 +104,8 @@ def run_backup_job(self, job_pk):
 
         if result.get("status") == "success":
             _mark_job(job, "success", size=result.get("size", ""),
-                      duration=result.get("duration", ""))
+                      duration=result.get("duration", ""),
+                      artifact_path=result.get("artifact_path", ""))
             _create_restore_point(job)
             logger.info("Backup job %s succeeded: %s", job_pk, result)
             return {"status": "success", "job": job_pk, **result}
@@ -131,10 +135,11 @@ def _backup_database(job):
             src = db_name
             if not src or not os.path.exists(src):
                 return {"status": "failed", "error": f"SQLite DB file not found: {src}"}
-            dst = _write_tarball(src, "database")
+            dst = _write_tarball([src], "database")
             size = os.path.getsize(dst)
             return {"status": "success", "size": _human_size(size),
-                    "duration": _duration_str(started), "target": target}
+                    "duration": _duration_str(started), "target": target,
+                    "artifact_path": dst}
         elif vendor == "postgresql":
             # Use pg_dump if available.
             dump_cmd = [
@@ -157,7 +162,8 @@ def _backup_database(job):
             dst = _write_bytes(result.stdout, "database")
             size = len(result.stdout)
             return {"status": "success", "size": _human_size(size),
-                    "duration": _duration_str(started), "target": target}
+                    "duration": _duration_str(started), "target": target,
+                    "artifact_path": dst}
         else:
             return {"status": "failed", "error": f"Unsupported DB vendor: {vendor}"}
     except subprocess.TimeoutExpired:
@@ -171,16 +177,20 @@ def _backup_config(job):
     started = timezone.now()
     files_to_backup = []
     base = settings.BASE_DIR
-    for candidate in [
-        base / ".env",
-        base / ".env.example",
+    project_root = base.parent
+    include_env = getattr(settings, "BACKUP_INCLUDE_ENV_FILE", False)
+    candidates = [
+        project_root / ".env.example",
+        project_root / "docker-compose.yml",
         base / "manage.py",
         base / "requirements.txt",
-        base / "backend" / "config" / "settings.py",
-        base / "backend" / "config" / "urls.py",
-        base / "docker-compose.yml",
-        base / "backend" / "Dockerfile",
-    ]:
+        base / "Dockerfile",
+        base / "config" / "settings.py",
+        base / "config" / "urls.py",
+    ]
+    if include_env:
+        candidates.insert(0, project_root / ".env")
+    for candidate in candidates:
         if candidate.exists():
             files_to_backup.append(str(candidate))
 
@@ -190,7 +200,8 @@ def _backup_config(job):
     dst = _write_tarball(files_to_backup, "config")
     size = os.path.getsize(dst)
     return {"status": "success", "size": _human_size(size),
-            "duration": _duration_str(started), "target": ", ".join(files_to_backup)[:100]}
+            "duration": _duration_str(started), "target": ", ".join(files_to_backup)[:100],
+            "artifact_path": dst}
 
 
 def _backup_files(job):
@@ -210,7 +221,8 @@ def _backup_files(job):
     dst = _write_tarball(roots, "files")
     size = os.path.getsize(dst)
     return {"status": "success", "size": _human_size(size),
-            "duration": _duration_str(started), "target": ", ".join(roots)[:100]}
+            "duration": _duration_str(started), "target": ", ".join(roots)[:100],
+            "artifact_path": dst}
 
 
 def _backup_media(job):
@@ -220,34 +232,43 @@ def _backup_media(job):
     if not media_root or not os.path.exists(media_root):
         return {"status": "failed", "error": "MEDIA_ROOT not found."}
 
-    dst = _write_tarball(media_root, "media")
+    dst = _write_tarball([str(media_root)], "media")
     size = os.path.getsize(dst)
     return {"status": "success", "size": _human_size(size),
-            "duration": _duration_str(started), "target": str(media_root)[:100]}
+            "duration": _duration_str(started), "target": str(media_root)[:100],
+            "artifact_path": dst}
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _backup_artifact_dir():
+    base = getattr(settings, "BACKUP_ARTIFACT_DIR", None) or (
+        settings.BASE_DIR / "backup_artifacts")
+    os.makedirs(base, exist_ok=True)
+    return str(base)
+
+
 def _write_bytes(data, label):
-    """Write bytes to a temp file and return the path."""
-    fd, path = tempfile.mkstemp(prefix=f"backup_{label}_", suffix=".dat")
-    with os.fdopen(fd, "wb") as f:
+    """Write bytes to a managed backup artifact file and return the path."""
+    ts = timezone.now().strftime("%Y%m%d%H%M%S")
+    path = os.path.join(_backup_artifact_dir(), f"backup_{label}_{ts}.dat")
+    with open(path, "wb") as f:
         f.write(data)
     return path
 
 
 def _write_tarball(sources, label):
-    """Create a gzipped tarball from a list of files/dirs. Returns the tar path."""
-    fd, path = tempfile.mkstemp(prefix=f"backup_{label}_", suffix=".tar.gz")
-    os.close(fd)
+    """Create a gzipped tarball from files/dirs. Returns the tar path."""
+    ts = timezone.now().strftime("%Y%m%d%H%M%S")
+    path = os.path.join(_backup_artifact_dir(), f"backup_{label}_{ts}.tar.gz")
     with tarfile.open(path, "w:gz") as tar:
         for src in sources:
             if os.path.isdir(src):
-                tar.add(src, arcname=os.path.basename(src.rstrip("/")))
+                tar.add(src, arcname=os.path.basename(str(src).rstrip("/\\")))
             elif os.path.isfile(src):
-                tar.add(src, arcname=os.path.basename(src))
+                tar.add(src, arcname=os.path.basename(str(src)))
     return path
 
 
@@ -273,3 +294,52 @@ def _duration_str(started):
     if m:
         return f"{m}m {s}s"
     return f"{s}s"
+
+
+@shared_task(bind=True)
+def cleanup_backup_artifacts(self):
+    """Expire old restore points and delete orphaned/expired backup artifacts."""
+    now = timezone.now()
+    expired = RestorePoint.objects.filter(
+        is_deleted=False,
+        expires_at__isnull=False,
+        expires_at__lt=now,
+        status="available",
+    ).update(status="expired", updated_at=now)
+
+    base = _backup_artifact_dir()
+    base_real = os.path.realpath(base)
+    referenced = set()
+    for path in BackupJob.objects.exclude(artifact_path="").values_list("artifact_path", flat=True):
+        try:
+            rp = os.path.realpath(path)
+            if os.path.commonpath([base_real, rp]) == base_real:
+                referenced.add(rp)
+        except Exception:
+            continue
+
+    deleted_files = 0
+    for entry in os.scandir(base_real):
+        if not entry.is_file():
+            continue
+        rp = os.path.realpath(entry.path)
+        if rp in referenced:
+            continue
+        # Only remove files older than the max retention window among schedules, fallback 30 days.
+        max_retention = 30
+        try:
+            from django.db.models import Max
+            agg = BackupSchedule.objects.filter(is_deleted=False).aggregate(m=Max("retention_days"))
+            if agg.get("m"):
+                max_retention = max(max_retention, int(agg["m"]))
+        except Exception:
+            pass
+        age_days = (now.timestamp() - entry.stat().st_mtime) / 86400
+        if age_days >= max_retention:
+            try:
+                os.remove(rp)
+                deleted_files += 1
+            except OSError:
+                logger.warning("Failed to remove backup artifact: %s", rp)
+
+    return {"expired_restore_points": expired, "deleted_files": deleted_files}

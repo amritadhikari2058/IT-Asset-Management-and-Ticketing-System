@@ -818,7 +818,8 @@ class ChangeConflict(models.Model):
         ChangeRequest, on_delete=models.CASCADE, related_name="conflicts_as_primary"
     )
     conflicting_change = models.ForeignKey(
-        ChangeRequest, on_delete=models.CASCADE, related_name="conflicts_as_conflicting"
+        ChangeRequest, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="conflicts_as_conflicting"
     )
     conflict_type = models.CharField(max_length=20, choices=CONFLICT_TYPE_CHOICES)
     severity = models.CharField(max_length=20, choices=SEVERITY_CHOICES)
@@ -853,7 +854,8 @@ class ChangeConflict(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.change.change_number} conflicts {self.conflicting_change.change_number} ({self.conflict_type})"
+        other = self.conflicting_change.change_number if self.conflicting_change_id else "policy/window"
+        return f"{self.change.change_number} conflicts {other} ({self.conflict_type})"
 
 
 class ChangeAttachment(models.Model):

@@ -572,7 +572,7 @@ class TicketViewSet(viewsets.ModelViewSet):
             # never lose the queued email; a rollback removes them). Each
             # enqueue registers a best-effort on_commit wake-up.
             from common.outbox import enqueue_email
-            from accounts.email_utils import ticket_links as _ticket_links
+            from common.notification_delivery import ticket_links as _ticket_links
             ticket_pk = obj.pk
             ticket_title = obj.title
             ticket_status = obj.status
@@ -608,7 +608,7 @@ class TicketViewSet(viewsets.ModelViewSet):
         # SLA / maintenance side-effects still run AFTER the outer commit via
         # on_commit (unchanged behaviour): they are secondary notifications,
         # best-effort, and never affect the committed ticket.
-        from accounts.email_utils import (
+        from common.notification_delivery import (
             _notify_sla_approaching, _notify_sla_breached,
             _notify_maintenance_reminder
         )
@@ -734,7 +734,7 @@ class TicketViewSet(viewsets.ModelViewSet):
                 # Phase 66: enqueue the durable status-change email in THIS
                 # transaction so it commits atomically with the status change.
                 from common.outbox import enqueue_email
-                from accounts.email_utils import ticket_links as _ticket_links
+                from common.notification_delivery import ticket_links as _ticket_links
                 ticket_pk = updated.pk
                 old_status = old["status"]
                 ticket_title = updated.title
@@ -773,7 +773,7 @@ class TicketViewSet(viewsets.ModelViewSet):
         # on_commit (unchanged behaviour). The primary status-change email was
         # already enqueued durably inside the transaction above.
         if new_status and new_status != old["status"]:
-            from accounts.email_utils import (
+            from common.notification_delivery import (
                 _notify_sla_approaching, _notify_sla_breached,
                 _notify_maintenance_reminder
             )
@@ -1474,7 +1474,7 @@ class TicketViewSet(viewsets.ModelViewSet):
                     "updated_at"])
                 operation = locked
 
-        from accounts.email_utils import (
+        from common.notification_delivery import (
             send_ticket_notification, ticket_links,
             _notify_sla_approaching, _notify_sla_breached,
             _notify_maintenance_reminder,
@@ -1563,7 +1563,7 @@ class TicketViewSet(viewsets.ModelViewSet):
                                 f"Ticket #{obj.pk} assigned to you",
                                 f"{obj.title}\nPriority: {obj.priority}", obj)
                             from common.outbox import enqueue_email
-                            from accounts.email_utils import ticket_links as _tl
+                            from common.notification_delivery import ticket_links as _tl
                             ticket_pk = obj.pk
                             ticket_title = obj.title
                             ticket_status = obj.status

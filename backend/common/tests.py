@@ -1605,7 +1605,7 @@ class UserNotificationPreferenceTests(TestCase):
 
 
 class TicketNotificationTransactionTests(TestCase):
-    """Regression coverage for accounts.email_utils._notify_user.
+    """Regression coverage for common.notification_delivery._notify_user.
 
     The in-app notification must be created only after the surrounding
     transaction commits, so a rolled-back ticket creation or state change
@@ -1680,7 +1680,7 @@ class TicketNotificationTransactionTests(TestCase):
         self.assertEqual(Notification.objects.count(), 0)
 
 class TicketNotificationTransactionTests(TestCase):
-    """Regression coverage for accounts.email_utils._notify_user.
+    """Regression coverage for common.notification_delivery._notify_user.
 
     The in-app notification must be created only after the surrounding
     transaction commits, so a rolled-back ticket creation or state change
@@ -1755,7 +1755,7 @@ class TicketNotificationTransactionTests(TestCase):
         self.assertEqual(Notification.objects.count(), 0)
 
 class TicketNotificationTransactionTests(TestCase):
-    """Regression coverage for accounts.email_utils._notify_user.
+    """Regression coverage for common.notification_delivery._notify_user.
 
     The in-app notification must be created only after the surrounding
     transaction commits, so a rolled-back ticket creation or state change
@@ -1830,7 +1830,7 @@ class TicketNotificationTransactionTests(TestCase):
         self.assertEqual(Notification.objects.count(), 0)
 
 class TicketNotificationTransactionTests(TestCase):
-    """Regression coverage for accounts.email_utils._notify_user.
+    """Regression coverage for common.notification_delivery._notify_user.
 
     The in-app notification must be created only after the surrounding
     transaction commits, so a rolled-back ticket creation or state change
@@ -1905,7 +1905,7 @@ class TicketNotificationTransactionTests(TestCase):
         self.assertEqual(Notification.objects.count(), 0)
 
 class TicketNotificationTransactionTests(TestCase):
-    """Regression coverage for accounts.email_utils._notify_user.
+    """Regression coverage for common.notification_delivery._notify_user.
 
     The in-app notification must be created only after the surrounding
     transaction commits, so a rolled-back ticket creation or state change
@@ -1980,7 +1980,7 @@ class TicketNotificationTransactionTests(TestCase):
         self.assertEqual(Notification.objects.count(), 0)
 
 class TicketNotificationTransactionTests(TestCase):
-    """Regression coverage for accounts.email_utils._notify_user.
+    """Regression coverage for common.notification_delivery._notify_user.
 
     The in-app notification must be created only after the surrounding
     transaction commits, so a rolled-back ticket creation or state change
@@ -2055,7 +2055,7 @@ class TicketNotificationTransactionTests(TestCase):
         self.assertEqual(Notification.objects.count(), 0)
 
 class TicketNotificationTransactionTests(TestCase):
-    """Regression coverage for accounts.email_utils._notify_user.
+    """Regression coverage for common.notification_delivery._notify_user.
 
     The in-app notification must be created only after the surrounding
     transaction commits, so a rolled-back ticket creation or state change
@@ -2130,7 +2130,7 @@ class TicketNotificationTransactionTests(TestCase):
         self.assertEqual(Notification.objects.count(), 0)
 
 class TicketNotificationTransactionTests(TestCase):
-    """Regression coverage for accounts.email_utils._notify_user.
+    """Regression coverage for common.notification_delivery._notify_user.
 
     The in-app notification must be created only after the surrounding
     transaction commits, so a rolled-back ticket creation or state change

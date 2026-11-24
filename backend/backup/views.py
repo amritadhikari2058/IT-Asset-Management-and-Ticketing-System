@@ -3,7 +3,12 @@
 Provides CRUD for backup schedules, job history, and restore points.
 All mutating endpoints are IT-staff or system-admin only.
 """
+import os
+
+from django.conf import settings
 from django.db import transaction
+from django.db.models import Count
+from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -21,37 +26,17 @@ from .serializers import (
 )
 
 
-def _is_staff(user):
-    return bool(
-        user and user.is_authenticated
-        and getattr(user, "is_active", False)
-        and (
-            getattr(user, "role", "") in ("system_admin", "it_manager", "it_support")
-            or getattr(user, "is_superuser", False)
-        )
-    )
-
-
 class BackupScheduleViewSet(viewsets.ModelViewSet):
-    """CRUD for backup schedules. IT staff only for writes."""
+    """CRUD for backup schedules. IT staff only."""
 
-    queryset = BackupSchedule.objects.filter(is_deleted=False).order_by("name")
+    queryset = BackupSchedule.objects.filter(
+        is_deleted=False
+    ).annotate(job_count_annotated=Count("jobs")).order_by("name")
     serializer_class = BackupScheduleSerializer
-
-    def get_permissions(self):
-        if self.action in ("create", "update", "partial_update", "destroy",
-                           "hard_delete", "restore", "toggle"):
-            return [IsITStaff()]
-        return [IsITStaff()]
+    permission_classes = [IsITStaff]
 
     def get_queryset(self):
-        qs = super().get_queryset()
-        user = self.request.user
-        # Non-staff users (should not normally reach here due to permissions,
-        # but defense in depth) see nothing.
-        if not _is_staff(user):
-            return qs.none()
-        return qs
+        return super().get_queryset()
 
     def perform_create(self, serializer):
         obj = serializer.save(created_by=self.request.user)
@@ -168,6 +153,33 @@ class BackupJobViewSet(viewsets.ReadOnlyModelViewSet):
                    details={"cancelled": True})
         return Response(BackupJobSerializer(obj).data)
 
+    @action(detail=True, methods=["get"], permission_classes=[IsITStaff])
+    def download(self, request, pk=None):
+        """Download a backup artifact. IT staff only; path-traversal protected."""
+        obj = self.get_object()
+        artifact_path = (obj.artifact_path or "").strip()
+        if not artifact_path:
+            return Response({"detail": "No artifact available for this job."}, status=404)
+
+        base = getattr(settings, "BACKUP_ARTIFACT_DIR", None) or (
+            settings.BASE_DIR / "backup_artifacts")
+        base_real = os.path.realpath(str(base))
+        artifact_real = os.path.realpath(artifact_path)
+        try:
+            common = os.path.commonpath([base_real, artifact_real])
+        except ValueError:
+            common = ""
+        if common != base_real:
+            return Response({"detail": "Artifact path is not allowed."}, status=400)
+        if not os.path.isfile(artifact_real):
+            return Response({"detail": "Artifact file not found."}, status=404)
+
+        filename = os.path.basename(artifact_real)
+        log_action(actor=request.user, action="download", instance=obj,
+                   details={"filename": filename})
+        return FileResponse(open(artifact_real, "rb"), as_attachment=True,
+                            filename=filename)
+
 
 class RestorePointViewSet(viewsets.ReadOnlyModelViewSet):
     """Read-only view of restore points. IT staff only."""
@@ -197,11 +209,17 @@ class RestorePointViewSet(viewsets.ReadOnlyModelViewSet):
             )
         if obj.is_expired:
             return Response({"detail": "Restore point has expired."}, status=409)
+        # Actual restore execution is environment-specific and not automated here.
+        # We record the intent for audit/operational tracking.
         obj.status = "restoring"
         obj.save(update_fields=["status", "updated_at"])
         log_action(actor=request.user, action="update", instance=obj,
-                   details={"restore_started": True})
-        return Response({"detail": "Restore initiated.", "id": obj.pk})
+                   details={"restore_requested": True})
+        return Response({
+            "detail": "Restore marked as requested. Perform the environment-specific restore procedure using the recorded artifact.",
+            "id": obj.pk,
+            "artifact_path": obj.job.artifact_path if obj.job_id else "",
+        })
 
     @action(detail=False, methods=["post"], permission_classes=[IsSystemAdmin])
     def expire_old(self, request):
