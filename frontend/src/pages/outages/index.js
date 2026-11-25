@@ -1,0 +1,1 @@
+export { Outages } from './Outages';

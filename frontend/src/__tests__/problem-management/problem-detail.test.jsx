@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { ProblemDetail } from '../../components/problem-management/problem-detail';
+import { ProblemDetail } from '../../pages/problem-management/ProblemDetail';
 import { listTasks, problemDetail } from '../../services/problem-management';
 
 afterEach(cleanup);
@@ -117,3 +117,6 @@ describe('Problem Detail', () => {
     expect(screen.getByText('PRB-2026-000001')).toBeTruthy();
   });
 });
+
+
+

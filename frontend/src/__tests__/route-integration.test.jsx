@@ -2,15 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { HashRouter } from 'react-router-dom';
 import { AuthProvider } from '../auth';
-import { Dashboard } from '../dashboard';
+import { Dashboard } from '../pages/dashboard/Dashboard';
 import { Tickets } from '../pages';
 import { Assets } from '../pages';
 import { Users } from '../pages';
-import { ProblemList } from '../components/problem-management/problem-list';
+import { ProblemList } from '../pages/problem-management/ProblemList';
 import { CmdbItemList } from '../features/cmdb/cmdb-item-list';
 import { ChangeList } from '../features/changes/change-list';
-import { LifecycleDashboard } from '../lifecycle-dashboard';
-import { LicensingDashboard } from '../licensing-dashboard';
+import { LifecycleDashboard } from '../pages/lifecycle/LifecycleDashboard';
+import { LicensingDashboard } from '../pages/licensing/LicensingDashboard';
 
 const { mockGet, mockRequest } = vi.hoisted(() => ({
   mockGet: vi.fn(),

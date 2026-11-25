@@ -73,3 +73,5 @@ describe('Evidence archive contract', () => {
     expect(await screen.findByText('You do not have permission to archive evidence.')).toBeTruthy();
   });
 });
+
+

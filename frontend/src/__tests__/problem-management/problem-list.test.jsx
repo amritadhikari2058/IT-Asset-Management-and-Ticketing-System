@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { ProblemList } from '../../components/problem-management/problem-list';
+import { ProblemList } from '../../pages/problem-management/ProblemList';
 import { problemList } from '../../services/problem-management';
 
 afterEach(cleanup);
@@ -151,3 +151,6 @@ describe('Problem List', () => {
     expect(screen.queryByText('Create Problem')).toBeNull();
   });
 });
+
+
+

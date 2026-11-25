@@ -1,0 +1,1 @@
+export { MySoftware } from './MySoftware';

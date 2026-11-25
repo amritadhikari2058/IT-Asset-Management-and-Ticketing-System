@@ -1,65 +1,65 @@
 import React, { Suspense, useMemo, useState } from 'react';
 import { HashRouter, useLocation } from 'react-router-dom';
 import { useAuth, AuthProvider } from './auth';
-import { Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin, ResetPassword, SLAConfig, SLAReport, Tickets, Users, VerifyEmail } from './pages';
 import {
-  KnowledgeBaseCompare, KnowledgeBaseDetail,
-  KnowledgeBaseReviewQueue, KnowledgeBaseRevisionDetail,
-  KnowledgeBaseRevisions,
-} from './kb';
-import { AssetForm, AssetDetail } from './assets';
-import { AuditLogPage } from './audit';
-import { VendorForm, VendorsPage, VendorDetail } from './vendors';
-import { TicketForm, TicketDetail } from './tickets';
-import { ChangesPage } from './changes';
-import CmdbDashboard from './cmdb-dashboard';
-import { CmdbItemsList } from './cmdb-items';
-import { CiForm } from './cmdb-item-form';
-import { CiDetail } from './cmdb-item-detail';
-import { CiRelationshipsPage } from './cmdb-relationships';
-import { BaselinesPage } from './cmdb-baselines';
-import { DriftFindingsPage } from './cmdb-drift';
-import { VerificationQueuePage } from './cmdb-verification';
-import { ImpactAnalysisPage } from './cmdb-impact';
-import { DependencyMap } from './cmdb-dependency-map';
-import { CmdbReports } from './cmdb-reports';
-import { CiTypesPage } from './cmdb-types';
-import { ServiceMappingPage } from './cmdb-services';
-import { TicketQueuesPage } from './ticket-queues';
-import { TicketOperationsDashboard } from './ticket-operations';
-import { TicketBulkImportsPage, TicketBulkImportDetailPage } from './ticket-bulk-imports';
-import { CannedResponsesPage } from './ticket-canned-responses';
-import { TicketTemplatesPage } from './ticket-templates';
-import { SavedTicketViews } from './ticket-saved-views';
-import { TicketSatisfactionSurvey } from './ticket-satisfaction';
-import { TicketTimeline } from './ticket-timeline';
-import { TicketMergeDialog } from './ticket-merge';
+  Assets, Categories, Departments, EmployeeDetail, Login, Profile, RecycleBin,
+  ResetPassword, SLAConfig, SLAReport, Tickets, Users, VerifyEmail,
+} from './pages';
+import {
+  KnowledgeBaseCompare, KnowledgeBaseDetail, KnowledgeBaseReviewQueue,
+  KnowledgeBaseRevisionDetail, KnowledgeBaseRevisions,
+} from './pages/kb';
+import { AssetForm, AssetDetail } from './pages/assets';
+import { AuditLogPage } from './pages/audits';
+import { VendorForm, VendorsPage, VendorDetail } from './pages/vendors';
+import { TicketForm, TicketDetail } from './pages/tickets';
+import { ChangesPage } from './pages/changes';
+import { CmdbDashboard } from './pages/cmdb';
+import { CmdbItemsList } from './pages/cmdb';
+import { CiForm } from './pages/cmdb';
+import { CiDetail } from './pages/cmdb';
+import { CiRelationshipsPage } from './pages/cmdb';
+import { BaselinesPage } from './pages/cmdb';
+import { DriftFindingsPage } from './pages/cmdb';
+import { VerificationQueuePage } from './pages/cmdb';
+import { ImpactAnalysisPage } from './pages/cmdb';
+import { DependencyMap } from './pages/cmdb';
+import { CmdbReports } from './pages/cmdb';
+import { CiTypesPage } from './pages/cmdb';
+import { ServiceMappingPage } from './pages/cmdb';
+import { TicketQueuesPage } from './pages/tickets';
+import { TicketOperationsDashboard } from './pages/tickets';
+import { TicketBulkImportsPage, TicketBulkImportDetailPage } from './pages/tickets';
+import { CannedResponsesPage } from './pages/tickets';
+import { TicketTemplatesPage } from './pages/tickets';
+import { SavedTicketViews } from './pages/tickets';
+import { TicketSatisfactionSurvey } from './pages/tickets';
+import { TicketTimeline } from './pages/tickets';
+import { TicketMergeDialog } from './pages/tickets';
 import { ErrorBoundary } from './ErrorBoundary';
-import { Notifications, NotifBadge } from './notifications';
-import { Maintenance } from './maintenance';
-import { Disposals } from './disposals';
-import { Dashboard, DepartmentReports } from './dashboard';
-import { AssetReportsPage } from './asset-reports';
-import { SelfService } from "./self-service";
-import { SavedReports } from './saved-reports';
-import { ScheduledReports } from './scheduled-reports';
-import { NotificationSettings } from './settings';
-import { Privacy } from './privacy';
-import { Monitoring } from './monitoring';
-import { Retention } from './retention';
-import { Backup } from './backup';
-import { ServicesCatalogue, MyServiceRequests, ServiceRequestDetail } from './services';
-import Inventory, { InventoryItems, StockItemDetail, StockItemForm } from './inventory';
-import { ReceiveStock, Reservations, TransactionHistory, FulfilServiceRequest } from './inventory-ops';
-import Workflow from './workflow';
-import { ApprovalCenter } from './approvals';
-import {
-  LifecycleDashboard, LifecycleCases, LifecycleForm, LifecycleDetail,
-} from './lifecycle';
-import { ProcurementRouter } from './procurement';
-import { LicensingRouter } from './licensing';
-import { ProblemList } from './components/problem-management/problem-list';
-import { ProblemDetail } from './components/problem-management/problem-detail';
+import { Notifications, NotifBadge } from './pages/notifications';
+import { Maintenance } from './pages/maintenance';
+import { Disposals } from './pages/disposals';
+import { Dashboard, DepartmentReports } from './pages/dashboard';
+import { AssetReportsPage } from './pages/assets';
+import { SelfService } from './pages/self-service';
+import { SavedReports } from './pages/reports';
+import { ScheduledReports } from './pages/reports';
+import { NotificationSettings } from './pages/settings';
+import { Privacy } from './pages/privacy';
+import { Monitoring } from './pages/monitoring';
+import { Retention } from './pages/retention';
+import { Backup } from './pages/backup';
+import { ServicesCatalogue, MyServiceRequests, ServiceRequestDetail } from './pages/services';
+import { Inventory, InventoryItems, StockItemDetail, StockItemForm } from './pages/inventory';
+import { ReceiveStock, Reservations, TransactionHistory, FulfilServiceRequest } from './pages/inventory';
+import Workflow from './pages/workflow';
+import { ApprovalCenter } from './pages/approvals';
+import { LifecycleDashboard, LifecycleCases, LifecycleForm, LifecycleDetail } from './pages/lifecycle';
+import { ProcurementRouter } from './pages/procurement';
+import { LicensingRouter } from './pages/licensing';
+import { ProblemList } from './pages/problem-management';
+import { ProblemDetail } from './pages/problem-management';
 import { MonitoringOverview } from './features/monitoring/MonitoringOverview';
 import { SourceManagement } from './features/monitoring/SourceManagement';
 import { AlertList } from './features/monitoring/AlertList';
@@ -71,14 +71,31 @@ import { DirtyProvider, DirtyBlocker } from './dirty-form';
 const NAV = [
   { section: 'Overview' },
   { hash: '#/dashboard', label: 'Dashboard' },
+  { section: 'Change Management' },
+  { hash: '#/changes', label: 'Change Management', staffOnly: true },
+  { hash: '#/changes/new', label: 'New Change', staffOnly: true },
+  { hash: '#/changes/calendar', label: 'Calendar', staffOnly: true },
+  { hash: '#/changes/dashboard', label: 'Dashboard', staffOnly: true },
+  { hash: '#/changes/:id', label: 'Change Detail', staffOnly: true },
+  { hash: '#/changes/:id/edit', label: 'Edit Change', staffOnly: true },
+  { hash: '#/changes/:id/risk', label: 'Risk Assessment', staffOnly: true },
+  { hash: '#/changes/:id/tasks', label: 'Task Checklist', staffOnly: true },
+  { hash: '#/changes/:id/approvals', label: 'Approvals', staffOnly: true },
+  { hash: '#/changes/:id/conflicts', label: 'Conflicts', staffOnly: true },
+  { hash: '#/changes/:id/implementation', label: 'Implementation', staffOnly: true },
+  { hash: '#/changes/:id/pir', label: 'PIR & Closure', staffOnly: true },
+  { hash: '#/change-templates', label: 'Change Templates', staffOnly: true },
+  { hash: '#/maintenance-windows', label: 'Maintenance Windows', staffOnly: true },
+  { hash: '#/blackout-periods', label: 'Blackout Periods', staffOnly: true },
+  { hash: '#/scheduling-exceptions', label: 'Scheduling Exceptions', staffOnly: true },
+  { hash: '#/change-review-meetings', label: 'Review Meetings', staffOnly: true },
+  { hash: '#/outages', label: 'Outages', staffOnly: true },
   { section: 'Service Operations' },
   { hash: '#/tickets', label: 'Tickets' },
   { hash: '#/tickets/bulk-imports', label: 'Import Operations', staffOnly: true },
   { hash: '#/monitoring', label: 'Monitoring', cap: 'canUseMonitoring' },
   { hash: '#/problem-management', label: 'Problems', cap: 'canUseProblemManagement' },
-  { hash: '#/changes', label: 'Changes', staffOnly: true },
-  { hash: '#/services', label: 'Services' },
-{ section: 'Asset Operations' },
+  { section: 'Asset Operations' },
   { hash: '#/assets', label: 'Assets', staffOnly: true },
   { hash: '#/assets/reports', label: 'Asset Reports', staffOnly: true },
   { hash: '#/cmdb', label: 'CMDB', staffOnly: true },
@@ -90,6 +107,8 @@ const NAV = [
   { hash: '#/procurement/credit-notes', label: 'Vendor Credit Notes', staffOnly: true },
   { hash: '#/procurement/financial-dashboard', label: 'Procurement Financial Dashboard', cap: 'canViewProcurementReports' },
   { hash: '#/procurement/vendor-performance', label: 'Vendor Performance', cap: 'canViewProcurementReports' },
+  { hash: '#/services', label: 'Services' },
+  { hash: '#/service-requests', label: 'Service requests' },
   { section: 'Administration' },
   { hash: '#/users', label: 'Users', cap: 'isAdmin' },
   { hash: '#/categories', label: 'Categories', cap: 'isAdmin' },
@@ -120,6 +139,9 @@ function visibleNav(nav, caps) {
     while (j < kept.length && !kept[j].section) j += 1;
     if (j > i + 1) out.push(kept[i]);
   }
+  // Collapsible sections stay collapsed on load. The Change Management section
+  // is the largest section by far (17 routes) and would otherwise take the
+  // entire sidebar; keep it collapsed and let the user expand it.
   return out;
 }
 
