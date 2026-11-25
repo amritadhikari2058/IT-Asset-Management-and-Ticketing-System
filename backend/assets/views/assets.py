@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 
 
-from .shared import *
+from .shared import _asset_visible_qs, _apply_asset_ordering, _history
 
 class AssetViewSet(viewsets.ModelViewSet):
     queryset = Asset.objects.select_related(

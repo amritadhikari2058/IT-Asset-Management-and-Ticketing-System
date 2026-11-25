@@ -99,6 +99,20 @@ const NAV = [
   { hash: '#/assets', label: 'Assets', staffOnly: true },
   { hash: '#/assets/reports', label: 'Asset Reports', staffOnly: true },
   { hash: '#/cmdb', label: 'CMDB', staffOnly: true },
+  { section: 'Inventory' },
+  { hash: '#/inventory', label: 'Inventory', staffOnly: true },
+  { hash: '#/inventory/items', label: 'Stock items', staffOnly: true },
+  { section: 'Reports' },
+  { hash: '#/reports/coverage', label: 'Coverage', staffOnly: true },
+  { hash: '#/reports/verification_age', label: 'Verification Age', staffOnly: true },
+  { hash: '#/reports/orphans', label: 'Orphans', staffOnly: true },
+  { hash: '#/reports/ownership_gaps', label: 'Ownership Gaps', staffOnly: true },
+  { hash: '#/reports/relationship_coverage', label: 'Relationship Coverage', staffOnly: true },
+  { hash: '#/reports/drift', label: 'Drift', staffOnly: true },
+  { hash: '#/reports/critical_deps', label: 'Critical Dependencies', staffOnly: true },
+  { hash: '#/reports/asset_sync', label: 'Asset Sync', staffOnly: true },
+  { hash: '#/reports/software_sync', label: 'Software Sync', staffOnly: true },
+  { hash: '#/verification', label: 'Verification Queue', staffOnly: true },
   { section: 'Procurement' },
   { hash: '#/procurement', label: 'Procurement', staffOnly: true },
   { hash: '#/procurement/invoices', label: 'Supplier Invoices', staffOnly: true },
@@ -116,6 +130,7 @@ const NAV = [
   { hash: '#/sla-config', label: 'SLA', cap: 'isAdmin' },
   { hash: '#/notifications', label: 'Notifications', badge: true, cap: 'isAdmin' },
   { hash: '#/audit', label: 'Audit Log', cap: 'isAdmin' },
+  { hash: '#/recycle', label: 'Recycle Bin', cap: 'canAccessRecycleBin' },
 ];
 
 /** Drop staff-only entries, capability-gated entries, and any section left
@@ -320,25 +335,38 @@ function matchRoute(hash, auth) {
     if ((m = route.match(/^#\/monitoring\/alerts\/(\d+)$/))) return <AlertDetail alertId={m[1]} />;
     if (route === '#/monitoring/policies') return auth.canUseMonitoring ? <PolicyManagement /> : <AccessDenied />;
   }
-  if (route.startsWith('#/cmdb')) {
-    if (!auth.isStaff) return <AccessDenied />;
-    if (route === '#/cmdb') return <CmdbDashboard />;
-    if (route === '#/cmdb/items') return <CmdbItemsList />;
-    if (route === '#/cmdb/items/new') return <CiForm />;
-    if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/edit$/))) return <CiForm id={m[1]} />;
-    if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/impact$/))) return <ImpactAnalysisPage id={m[1]} />;
-    if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/dependencies$/))) return <DependencyMap id={m[1]} />;
-    if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/relationships$/))) return <CiRelationshipsPage id={m[1]} />;
-    if ((m = route.match(/^#\/cmdb\/items\/(\d+)$/))) return <CiDetail id={m[1]} />;
-    if (route === '#/cmdb/types') return <CiTypesPage />;
-    if (route === '#/cmdb/baselines') return <BaselinesPage />;
-    if (route === '#/cmdb/drift') return <DriftFindingsPage />;
-    if (route === '#/cmdb/verification') return <VerificationQueuePage />;
-    if (route === '#/cmdb/reports') return <CmdbReports />;
-    if (route === '#/cmdb/services') return <ServiceMappingPage />;
-    if (route === '#/cmdb/relationships') return <CmdbItemsList />;
-    return <CmdbDashboard />;
-  }
+  if (route === '#/reports/coverage') return <AssetReportsPage />;
+  if (route === '#/reports/verification_age') return <VerificationQueuePage />;
+  if (route === '#/reports/orphans') return <AssetReportsPage />;
+  if (route === '#/reports/ownership_gaps') return <AssetReportsPage />;
+  if (route === '#/reports/relationship_coverage') return <AssetReportsPage />;
+  if (route === '#/reports/drift') return <DriftFindingsPage />;
+  if (route === '#/reports/critical_deps') return <AssetReportsPage />;
+  if (route === '#reports/asset_sync') return <AssetReportsPage />;
+  if (route === '#reports/software_sync') return <AssetReportsPage />;
+  if (route === '#verification') return <VerificationQueuePage />;
+
+  // --- Service detail routes ---
+  if (route.startsWith('#/services/') && route.match(/\/graph$/)) return <ServiceGraphPage />;
+  if (route.startsWith('#/services/') && route.match(/\/impact$/)) return <ServiceImpactPage />;
+  if (route.startsWith('#/services/') && route.match(/\/single-points-of-failure$/)) return <ServiceSPOFPage />;
+
+  // --- CMDB dashboard and items ---
+  if (route === '#/cmdb') return <CmdbDashboard />;
+  if (route === '#/cmdb/items') return <CmdbItemsList />;
+  if (route === '#/cmdb/items/new') return <CiForm />;
+  if (route === '#cmdb/items/:id/edit') return <CiForm />;
+  if (route === '#cmdb/items/:id/impact') return <ImpactAnalysisPage />;
+  if (route === '#cmdb/items/:id/dependencies') return <DependencyMap />;
+  if (route === '#cmdb/items/:id/relationships') return <CiRelationshipsPage />;
+  if (route === '#/cmdb/types') return <CiTypesPage />;
+  if (route === '#/cmdb/baselines') return <BaselinesPage />;
+  if (route === '#/cmdb/drift') return <DriftFindingsPage />;
+  if (route === '#/cmdb/verification') return <VerificationQueuePage />;
+  if (route === '#/cmdb/reports') return <CmdbReports />;
+  if (route === '#/cmdb/services') return <ServiceMappingPage />;
+  if (route === '#/cmdb/relationships') return <CmdbItemsList />;
+
   if (route.startsWith('#/problem-management')) {
     if (!auth.canUseProblemManagement) return <AccessDenied />;
     if (route === '#/problem-management') return <ProblemList />;
@@ -412,6 +440,16 @@ function matchRoute(hash, auth) {
     '#/reports/departments': <DepartmentReports />,
     '#/reports/saved': <SavedReports />,
     '#/reports/schedules': <ScheduledReports />,
+    '#reports/coverage': <AssetReportsPage />,
+    '#reports/verification_age': <VerificationQueuePage />,
+    '#reports/orphans': <AssetReportsPage />,
+    '#reports/ownership_gaps': <AssetReportsPage />,
+    '#reports/relationship_coverage': <AssetReportsPage />,
+    '#reports/drift': <DriftFindingsPage />,
+    '#reports/critical_deps': <AssetReportsPage />,
+    '#reports/asset_sync': <AssetReportsPage />,
+    '#reports/software_sync': <AssetReportsPage />,
+    '#verification': <VerificationQueuePage />,
     '#/assets': <Assets />,
     '#/assets/reports': <AssetReportsPage />,
     '#/vendors': <VendorsPage />,
@@ -436,6 +474,7 @@ function matchRoute(hash, auth) {
     '#/changes': <ChangesPage />,
     '#/cmdb': <CmdbDashboard />,
   };
+  // Explicit route handlers above take precedence; routes object is fallback
   return routes[route] ?? <Tickets />;
 }
 
@@ -444,18 +483,18 @@ function isActive(hash, h) {
 }
 
 function Shell() {
-  const { access, logout, user, profileLoading, isAdmin, isStaff, canManageScheduledReports, canViewVendors, canViewProcurement, canViewProcurementReports } = useAuth();
+  const { access, logout, user, profileLoading, isAdmin, isStaff, canManageScheduledReports, canViewVendors, canViewProcurement, canViewProcurementReports, canAccessRecycleBin } = useAuth();
   const canUseMonitoring = !!isStaff && user?.is_active !== false;
   const canUseProblemManagement = !!isStaff && user?.is_active !== false;
   const caps = useMemo(() => ({
     isStaff, isAdmin, canManageScheduledReports, canViewVendors,
     canViewProcurement, canViewProcurementReports, canUseMonitoring,
-    canUseProblemManagement,
+    canUseProblemManagement, canAccessRecycleBin,
   }), [isStaff, isAdmin, canManageScheduledReports, canViewVendors,
     canViewProcurement, canViewProcurementReports, canUseMonitoring,
-    canUseProblemManagement]);
+    canUseProblemManagement, canAccessRecycleBin]);
   const routerLocation = useLocation();
-  const hash = routerLocation.pathname === '/' ? '#/tickets' : `#${routerLocation.pathname}${routerLocation.search}`;
+  const hash = routerLocation.hash || '#/tickets';
   const nav = useMemo(() => visibleNav(NAV, caps), [caps]);
   const [navOpen, setNavOpen] = useState(false);
   // Collapsible sections are collapsed by default. Only sections the user has
