@@ -1,3 +1,4 @@
+import { fmtDateTime } from '../../utils/format';
 import { useEffect, useState } from 'react';
 import api from '../../api';
 import { useAuth } from '../../auth';
@@ -34,7 +35,6 @@ const OPERATIONS = [
   { value: 'reassign', label: 'Reassign' },
 ];
 
-const fmtDateTime = (value) => (value ? new Date(value).toLocaleString() : '—');
 
 function titleize(value) {
   return String(value ?? '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());

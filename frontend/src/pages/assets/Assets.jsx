@@ -1,3 +1,4 @@
+import { fmtDate } from '../../utils/format';
 import { useEffect, useRef, useState } from 'react';
 import api from '../../api';
 import { useAuth } from '../../auth';import { Badge, CategorySelect, ConfirmDialog, DepartmentSelect, ErrorSummary, Field,
@@ -36,7 +37,6 @@ function attachmentName(f) {
 }
 const ATTACHMENT_MAX_MB = 10;
 
-const fmtDate = (d) => (d ? new Date(`${d}T00:00:00`).toLocaleDateString() : '—');
 const fmtMoney = (v) => {
   const n = Number(v);
   return Number.isFinite(n)

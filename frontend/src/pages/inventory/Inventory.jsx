@@ -1,3 +1,4 @@
+import { fmtDate, fmtDateTime } from '../../utils/format';
 import { useCallback, useEffect, useState } from 'react';
 import api from '../../api';
 import { useAuth } from '../../auth';
@@ -17,8 +18,6 @@ const fmtMoney = (v) => {
   return Number.isFinite(n) ? n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(v);
 };
 
-const fmtDate = (d) => d ? new Date(`${d}T00:00:00`).toLocaleDateString() : '—';
-const fmtDateTime = (d) => d ? new Date(d).toLocaleString() : '—';
 
 function stockStatus(item) {
   const avail = item.available != null ? item.available : (Number(item.quantity) - Number(item.reserved || 0));

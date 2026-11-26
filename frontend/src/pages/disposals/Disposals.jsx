@@ -1,3 +1,4 @@
+import { fmtDateTime } from '../../utils/format';
 import { useEffect, useMemo, useState } from 'react';
 import api from '../../api';
 import { useAuth } from '../../auth';
@@ -22,7 +23,6 @@ const APPROVAL_LABELS = {
   rejected: 'Rejected',
 };
 
-const fmtDateTime = (v) => (v ? new Date(v).toLocaleString() : '—');
 const fmtMoney = (v) => {
   const n = Number(v);
   return Number.isFinite(n)

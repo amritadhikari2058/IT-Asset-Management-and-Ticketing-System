@@ -1,3 +1,4 @@
+import { fmtDateTime } from '../../utils/format';
 import { useEffect, useMemo, useState } from 'react';
 import api from '../../api';
 import { useAuth } from '../../auth';
@@ -46,7 +47,6 @@ function defaultScheduled() {
   return toLocalInput(d.toISOString());
 }
 
-const fmtDateTime = (v) => (v ? new Date(v).toLocaleString() : '—');
 const fmtMoney = (v) => {
   const n = Number(v);
   return Number.isFinite(n)

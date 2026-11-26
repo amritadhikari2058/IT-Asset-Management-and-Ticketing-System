@@ -1,3 +1,4 @@
+import { fmtDate, fmtDateTime } from '../utils/format';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api';
 import { useAuth } from '../auth';
@@ -303,8 +304,6 @@ export function Tickets() {
 }
 
 /** Date/time/currency cell helpers keep one formatting convention per type. */
-const fmtDate = (d) => new Date(`${d}T00:00:00`).toLocaleDateString();
-const fmtDateTime = (d) => new Date(d).toLocaleString();
 const fmtMoney = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(v);

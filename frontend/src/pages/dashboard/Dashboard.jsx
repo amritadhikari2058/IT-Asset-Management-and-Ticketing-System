@@ -1,3 +1,4 @@
+import { fmtDateTime } from '../../utils/format';
 /* eslint-disable */ import { useEffect, useMemo, useState } from 'react';
 import api from '../../api';
 import { useAuth } from '../../auth';
@@ -50,7 +51,6 @@ const STATUS_LABELS = {
   rejected: 'Rejected',
 };
 const pretty = (v) => STATUS_LABELS[v] ?? String(v ?? '').replace(/_/g, ' ');
-const fmtDateTime = (v) => (v ? new Date(v).toLocaleString() : '—');
 const fmtHours = (v) => (v == null ? '—' : `${Number(v).toFixed(1)} h`);
 function Compliance({ pct }) {
   if (pct == null) return <span className="cell-muted">—</span>;

@@ -1,3 +1,4 @@
+import { fmtDateTime } from '../../../utils/format';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import api from '../../../api';
 import { useAuth } from '../../../auth';
@@ -11,7 +12,6 @@ const RESERVATION_STATUSES = ['active', 'released', 'fulfilled'];
 const FULFILLABLE_STATUSES = ['submitted', 'pending_approval', 'approved', 'in_progress', 'pending_employee'];
 const MOVEMENT_TYPES = ['receive', 'issue', 'return', 'adjustment', 'damage', 'lost', 'correction', 'reservation', 'release'];
 
-const fmtDateTime = (d) => d ? new Date(d).toLocaleString() : '—';
 
 function availableOf(item) {
   if (!item) return null;
