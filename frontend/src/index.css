@@ -704,3 +704,127 @@ table.grid th:last-child, table.grid td:last-child { padding-right: var(--sp-4);
 .diff-line-same { color: var(--main-text); }
 .diff-add { background: var(--success-bg); color: var(--success); border-radius: 2px; }
 .diff-remove { background: var(--danger-bg); color: var(--danger); text-decoration: line-through; border-radius: 2px; }
+
+/* ==========================================================================
+   Compatibility layer: Bootstrap-style classes used by the Change, Licensing,
+   Inventory and Vendors pages, mapped onto the design tokens above.
+   New code should use the core classes (panel, btn-*, error-summary, split-grid).
+   ========================================================================== */
+:root { --col-gap: var(--sp-3); }
+
+.mt-0 { margin-top: 0; }
+.mt-1 { margin-top: var(--sp-1); }
+.mt-2 { margin-top: var(--sp-2); }
+.mt-3 { margin-top: var(--sp-4); }
+.mt-4 { margin-top: var(--sp-6); }
+.mb-0 { margin-bottom: 0; }
+.mb-1 { margin-bottom: var(--sp-1); }
+.mb-2 { margin-bottom: var(--sp-2); }
+.mb-3 { margin-bottom: var(--sp-4); }
+.mb-4 { margin-bottom: var(--sp-6); }
+.p-2 { padding: var(--sp-2); }
+.p-3 { padding: var(--sp-4); }
+.w-100 { width: 100%; }
+.border { border: 1px solid var(--borders); }
+.rounded { border-radius: var(--radius); }
+.text-muted { color: var(--muted-text); }
+.text-danger { color: var(--danger); }
+.g-2 { gap: var(--sp-2); }
+.g-3 { gap: var(--sp-3); }
+
+.alert, .error {
+  margin-bottom: var(--sp-3); padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--neutral-border); border-radius: var(--radius);
+  background: var(--neutral-bg); color: var(--neutral-text); font-size: var(--font-body);
+}
+.alert-danger, .error { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger); }
+.alert-warning { background: var(--warning-bg); border-color: var(--warning-border); color: var(--warning); }
+.alert-success { background: var(--success-bg); border-color: var(--success-border); color: var(--success); }
+.alert-info { background: var(--info-bg); border-color: var(--info-border); color: var(--info); }
+
+.table { width: 100%; border-collapse: collapse; font-size: var(--font-body); }
+.table th, .table td { padding: var(--sp-2) var(--sp-3); text-align: left; vertical-align: top; border-bottom: 1px solid var(--borders); }
+.table th { background: var(--table-head-bg); color: var(--muted-text); font-size: var(--font-sm); font-weight: 600; }
+.table-sm th, .table-sm td { padding: var(--sp-1) var(--sp-2); }
+
+.card { background: var(--surface-background); border: 1px solid var(--borders); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+.card-body, .panel-body { padding: var(--sp-4); }
+
+.page-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.section-title { margin: var(--sp-4) 0 var(--sp-2); color: var(--heading-text); font-size: var(--font-lg); font-weight: 600; }
+
+.split-3, .split-4 { display: grid; gap: var(--sp-4); grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.split-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) { .split-3, .split-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .split-3, .split-4 { grid-template-columns: 1fr; } }
+
+.row { display: flex; flex-wrap: wrap; gap: var(--col-gap); }
+.row > * { flex: 0 0 100%; min-width: 0; }
+.col { flex: 1 1 0; min-width: 0; }.col-1 { flex: 0 0 calc(8.3333% - var(--col-gap) * 0.9167); }
+.col-2 { flex: 0 0 calc(16.6667% - var(--col-gap) * 0.8333); }
+.col-3 { flex: 0 0 calc(25% - var(--col-gap) * 0.75); }
+.col-4 { flex: 0 0 calc(33.3333% - var(--col-gap) * 0.6667); }
+.col-5 { flex: 0 0 calc(41.6667% - var(--col-gap) * 0.5833); }
+.col-6 { flex: 0 0 calc(50% - var(--col-gap) * 0.5); }
+.col-7 { flex: 0 0 calc(58.3333% - var(--col-gap) * 0.4167); }
+.col-8 { flex: 0 0 calc(66.6667% - var(--col-gap) * 0.3333); }
+.col-9 { flex: 0 0 calc(75% - var(--col-gap) * 0.25); }
+.col-10 { flex: 0 0 calc(83.3333% - var(--col-gap) * 0.1667); }
+.col-11 { flex: 0 0 calc(91.6667% - var(--col-gap) * 0.0833); }
+.col-12 { flex: 0 0 calc(100% - var(--col-gap) * 0); }
+@media (min-width: 576px) {
+  .col-sm-1 { flex: 0 0 calc(8.3333% - var(--col-gap) * 0.9167); }
+  .col-sm-2 { flex: 0 0 calc(16.6667% - var(--col-gap) * 0.8333); }
+  .col-sm-3 { flex: 0 0 calc(25% - var(--col-gap) * 0.75); }
+  .col-sm-4 { flex: 0 0 calc(33.3333% - var(--col-gap) * 0.6667); }
+  .col-sm-5 { flex: 0 0 calc(41.6667% - var(--col-gap) * 0.5833); }
+  .col-sm-6 { flex: 0 0 calc(50% - var(--col-gap) * 0.5); }
+  .col-sm-7 { flex: 0 0 calc(58.3333% - var(--col-gap) * 0.4167); }
+  .col-sm-8 { flex: 0 0 calc(66.6667% - var(--col-gap) * 0.3333); }
+  .col-sm-9 { flex: 0 0 calc(75% - var(--col-gap) * 0.25); }
+  .col-sm-10 { flex: 0 0 calc(83.3333% - var(--col-gap) * 0.1667); }
+  .col-sm-11 { flex: 0 0 calc(91.6667% - var(--col-gap) * 0.0833); }
+  .col-sm-12 { flex: 0 0 calc(100% - var(--col-gap) * 0); }
+}
+@media (min-width: 768px) {
+  .col-md-1 { flex: 0 0 calc(8.3333% - var(--col-gap) * 0.9167); }
+  .col-md-2 { flex: 0 0 calc(16.6667% - var(--col-gap) * 0.8333); }
+  .col-md-3 { flex: 0 0 calc(25% - var(--col-gap) * 0.75); }
+  .col-md-4 { flex: 0 0 calc(33.3333% - var(--col-gap) * 0.6667); }
+  .col-md-5 { flex: 0 0 calc(41.6667% - var(--col-gap) * 0.5833); }
+  .col-md-6 { flex: 0 0 calc(50% - var(--col-gap) * 0.5); }
+  .col-md-7 { flex: 0 0 calc(58.3333% - var(--col-gap) * 0.4167); }
+  .col-md-8 { flex: 0 0 calc(66.6667% - var(--col-gap) * 0.3333); }
+  .col-md-9 { flex: 0 0 calc(75% - var(--col-gap) * 0.25); }
+  .col-md-10 { flex: 0 0 calc(83.3333% - var(--col-gap) * 0.1667); }
+  .col-md-11 { flex: 0 0 calc(91.6667% - var(--col-gap) * 0.0833); }
+  .col-md-12 { flex: 0 0 calc(100% - var(--col-gap) * 0); }
+}
+@media (min-width: 992px) {
+  .col-lg-1 { flex: 0 0 calc(8.3333% - var(--col-gap) * 0.9167); }
+  .col-lg-2 { flex: 0 0 calc(16.6667% - var(--col-gap) * 0.8333); }
+  .col-lg-3 { flex: 0 0 calc(25% - var(--col-gap) * 0.75); }
+  .col-lg-4 { flex: 0 0 calc(33.3333% - var(--col-gap) * 0.6667); }
+  .col-lg-5 { flex: 0 0 calc(41.6667% - var(--col-gap) * 0.5833); }
+  .col-lg-6 { flex: 0 0 calc(50% - var(--col-gap) * 0.5); }
+  .col-lg-7 { flex: 0 0 calc(58.3333% - var(--col-gap) * 0.4167); }
+  .col-lg-8 { flex: 0 0 calc(66.6667% - var(--col-gap) * 0.3333); }
+  .col-lg-9 { flex: 0 0 calc(75% - var(--col-gap) * 0.25); }
+  .col-lg-10 { flex: 0 0 calc(83.3333% - var(--col-gap) * 0.1667); }
+  .col-lg-11 { flex: 0 0 calc(91.6667% - var(--col-gap) * 0.0833); }
+  .col-lg-12 { flex: 0 0 calc(100% - var(--col-gap) * 0); }
+}
+@media (min-width: 1200px) {
+  .col-xl-1 { flex: 0 0 calc(8.3333% - var(--col-gap) * 0.9167); }
+  .col-xl-2 { flex: 0 0 calc(16.6667% - var(--col-gap) * 0.8333); }
+  .col-xl-3 { flex: 0 0 calc(25% - var(--col-gap) * 0.75); }
+  .col-xl-4 { flex: 0 0 calc(33.3333% - var(--col-gap) * 0.6667); }
+  .col-xl-5 { flex: 0 0 calc(41.6667% - var(--col-gap) * 0.5833); }
+  .col-xl-6 { flex: 0 0 calc(50% - var(--col-gap) * 0.5); }
+  .col-xl-7 { flex: 0 0 calc(58.3333% - var(--col-gap) * 0.4167); }
+  .col-xl-8 { flex: 0 0 calc(66.6667% - var(--col-gap) * 0.3333); }
+  .col-xl-9 { flex: 0 0 calc(75% - var(--col-gap) * 0.25); }
+  .col-xl-10 { flex: 0 0 calc(83.3333% - var(--col-gap) * 0.1667); }
+  .col-xl-11 { flex: 0 0 calc(91.6667% - var(--col-gap) * 0.0833); }
+  .col-xl-12 { flex: 0 0 calc(100% - var(--col-gap) * 0); }
+}

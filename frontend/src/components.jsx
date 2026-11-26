@@ -1297,20 +1297,15 @@ export function Row({ children, className }) {
   );
 }
 export function Col({ children, sm, md, lg, xl, className }) {
-  const size = { sm: 'sm-', md: 'md-', lg: 'lg-', xl: 'xl-' };
-  const cls = size[sm] ? `${size[sm]}${sm}` : ''; // eslint-disable-line no-unused-vars
-  const cls2 = size[md] ? `${size[md]}${md}` : '';
-  const cls3 = size[lg] ? `${size[lg]}${lg}` : '';
-  const cls4 = size[xl] ? `${size[xl]}${xl}` : '';
-  return (
-    <div
-      className={`col ${cls2} ${cls3} ${cls4}${className ? ` ${className}` : ''}`}
-    >
-      {children}
-    </div>
-  );
-}
-export function Card({ children, className }) {
+  const sized = [
+    sm && `col-sm-${sm}`,
+    md && `col-md-${md}`,
+    lg && `col-lg-${lg}`,
+    xl && `col-xl-${xl}`,
+  ].filter(Boolean);
+  const cls = [...(sized.length ? sized : ['col']), className].filter(Boolean).join(' ');
+  return <div className={cls}>{children}</div>;
+}export function Card({ children, className }) {
   return (
     <div className={`card${className ? ` ${className}` : ''}`}>{children}</div>
   );

@@ -61,7 +61,7 @@ function VendorsPage() {
     ...(isStaff ? [
       { key: 'actions', label: 'Actions', thClass: 'table-actions', render: (v) => (
         <div style={{ display: 'flex', gap: '4px' }}>
-            <button className="btn btn-sm btn-outline secondary" onClick={() => { location.hash = `#/vendors/${v.id}`; }} title="View">
+            <button className="btn-small btn-secondary" onClick={() => { location.hash = `#/vendors/${v.id}`; }} title="View">
               View
             </button>
           {isAdmin ? (
@@ -680,7 +680,7 @@ function VendorDetail({ id }) {
                   )}
                   {isAdmin && (
                     <button
-                      className="btn btn-sm btn-outline secondary"
+                      className="btn-small btn-secondary"
                       onClick={() => handleDelete()}
                       disabled={deleteBusy}
                       style={{ marginLeft: '8px' }}>
@@ -744,10 +744,10 @@ function VendorDetail({ id }) {
                 <button className="btn-secondary" onClick={() => handleActivate()}>
                   {activateBusy ? 'Activating…' : 'Activate'}
                 </button>
-                <button className="btn btn-outline danger" onClick={() => handleDeactivate()}>
+                <button className="btn-danger" onClick={() => handleDeactivate()}>
                   {deactivateBusy ? 'Deactivating…' : 'Deactivate'}
                 </button>
-                <button className="btn btn-outline secondary" onClick={() => handleDelete()}>
+                <button className="btn-secondary" onClick={() => handleDelete()}>
                   {deleteBusy ? 'Deleting…' : 'Delete'}
                 </button>
               </div>

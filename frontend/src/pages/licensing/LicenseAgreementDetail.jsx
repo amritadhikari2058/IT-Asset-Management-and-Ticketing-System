@@ -113,7 +113,7 @@ function LicenseAgreementDetail({ id, agreementId }) {
           <button className="btn-secondary" onClick={() => doAction('suspend', { reason: 'suspended' })}>Suspend</button>
           <button className="btn-secondary" onClick={() => doAction('resume')}>Resume</button>
           <button className="btn-secondary" onClick={() => doAction('recalculate')}>Recalculate</button>
-          <button className="btn btn-outline danger" onClick={() => doAction('terminate', { reason: 'terminated' })}>Terminate</button>
+          <button className="btn-danger" onClick={() => doAction('terminate', { reason: 'terminated' })}>Terminate</button>
         </div>
       )}
       <div className="card mt-3" id="history"><div className="card-body">

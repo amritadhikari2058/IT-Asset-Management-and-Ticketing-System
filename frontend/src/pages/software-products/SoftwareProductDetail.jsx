@@ -41,7 +41,7 @@ function SoftwareProductDetail({ id, productId }) {
           <a className="btn-secondary" href={`#/software/products/${pid}/edit`}>Edit</a>
           <button className="btn-secondary" onClick={() => doAction('approve')}>Approve</button>
           <button className="btn-secondary" onClick={() => doAction('restrict')}>Restrict</button>
-          <button className="btn btn-outline danger" onClick={() => doAction('prohibit')}>Prohibit</button>
+          <button className="btn-danger" onClick={() => doAction('prohibit')}>Prohibit</button>
         </div>
       )}
     </div>

@@ -26,7 +26,7 @@ export function ProcurementVendorPerformance() {
   useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <p className="page-loading" role="status">Loading vendor performance…</p>;
-  if (error) return <div role="alert" className="error">{error} <button className="btn" onClick={load}>Retry</button></div>;
+  if (error) return <div role="alert" className="error">{error} <button className="btn-secondary" onClick={load}>Retry</button></div>;
   return (
     <div>
       <h1>Vendor Performance</h1>

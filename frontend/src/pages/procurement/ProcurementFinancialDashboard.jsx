@@ -26,7 +26,7 @@ export function ProcurementFinancialDashboard() {
   useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <p className="page-loading" role="status">Loading financial dashboard…</p>;
-  if (error) return <div role="alert" className="error">{error} <button className="btn" onClick={load}>Retry</button></div>;
+  if (error) return <div role="alert" className="error">{error} <button className="btn-secondary" onClick={load}>Retry</button></div>;
   const c = data?.cards || {};
   const cards = [
     ['Draft', c.draft], ['Submitted', c.submitted], ['Awaiting Match', c.awaiting_match], ['Matched', c.matched],

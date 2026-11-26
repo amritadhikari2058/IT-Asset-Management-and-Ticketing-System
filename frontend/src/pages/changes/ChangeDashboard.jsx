@@ -119,7 +119,7 @@ export function ChangeDashboard() {
         {href && (
           <div className="card-footer">
             {' '}
-            <a href={href} className="btn btn-sm btn-primary">
+            <a href={href} className="btn-small btn-primary">
               View Details
             </a>{' '}
           </div>

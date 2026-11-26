@@ -57,7 +57,7 @@ export function ChangeAttachments({ match }) {
                     {a.checksum && (
                       <p><strong>Checksum:</strong> {a.checksum}</p>
                     )}
-                    <a href={a.download_url} className="btn btn-sm btn-outline-primary w-100">
+                    <a href={a.download_url} className="btn-small btn-secondary w-100">
                       Download
                     </a>
                   </Col>

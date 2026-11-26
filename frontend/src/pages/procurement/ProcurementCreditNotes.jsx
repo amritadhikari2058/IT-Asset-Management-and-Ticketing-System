@@ -40,8 +40,8 @@ export function ProcurementCreditNotesPage() {
   if (loading) return <p className="page-loading" role="status">Loading credit notes…</p>;
   return (
     <div>
-      <div className="page-header"><h1>Credit Notes</h1><a className="btn" href="#/procurement/credit-notes/new">New Credit Note</a></div>
-      {error && <div role="alert" className="error">{error} <button className="btn" onClick={load}>Retry</button></div>}
+      <div className="page-header"><h1>Credit Notes</h1><a className="btn-primary" href="#/procurement/credit-notes/new">New Credit Note</a></div>
+      {error && <div role="alert" className="error">{error} <button className="btn-secondary" onClick={load}>Retry</button></div>}
       <Table columns={[
         { label: 'Credit Note Number', render: r => <a href={`#/procurement/credit-notes/${r.id}`}>{r.credit_note_number}</a> },
         { label: 'Vendor', render: r => r.vendor_name || r.vendor },

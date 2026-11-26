@@ -148,7 +148,7 @@ export function LifecycleCases({ caseType }) {
     }
     if (!isTerminal && canManage && !busy) {
       buttons.push(
-        <button key="complete" type="button" className="btn-small btn-outline"
+        <button key="complete" type="button" className="btn-small btn-secondary"
           onClick={() => doTransition(c.id, 'complete')}>
           Complete
         </button>

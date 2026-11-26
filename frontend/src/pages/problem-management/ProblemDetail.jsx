@@ -310,7 +310,7 @@ export function ProblemDetail({ problemId: problemIdProp }) {
                   <button
                     onClick={() => handleRemoveKbLink(a.id)}
                     disabled={kbRemoving.has(a.id)}
-                    className="btn btn-sm btn-danger"
+                    className="btn-small btn-danger"
                   >
                     {kbRemoving.has(a.id) ? 'Removing…' : 'Remove'}
                   </button>

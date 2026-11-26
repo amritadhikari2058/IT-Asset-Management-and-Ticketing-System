@@ -24,10 +24,10 @@ export function ProcurementInvoicesPage() {
   useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <p className="page-loading" role="status">Loading invoices…</p>;
-  if (error) return <div role="alert" className="error">{error} <button className="btn" onClick={load}>Retry</button></div>;
+  if (error) return <div role="alert" className="error">{error} <button className="btn-secondary" onClick={load}>Retry</button></div>;
   return (
     <div>
-      <div className="page-header"><h1>Supplier Invoices</h1><a className="btn" href="#/procurement/invoices/new">New Invoice</a></div>
+      <div className="page-header"><h1>Supplier Invoices</h1><a className="btn-primary" href="#/procurement/invoices/new">New Invoice</a></div>
       <Table
         columns={[
           { label: 'Invoice Number', render: r => <a href={`#/procurement/invoices/${r.id}`}>{r.invoice_number}</a> },
@@ -66,7 +66,7 @@ export function ProcurementInvoiceExceptionsPage() {
   useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   if (loading) return <p className="page-loading" role="status">Loading invoice exceptions…</p>;
-  if (error) return <div role="alert" className="error">{error} <button className="btn" onClick={load}>Retry</button></div>;
+  if (error) return <div role="alert" className="error">{error} <button className="btn-secondary" onClick={load}>Retry</button></div>;
   return (
     <div>
       <div className="page-header"><h1>Invoice Exceptions</h1></div>

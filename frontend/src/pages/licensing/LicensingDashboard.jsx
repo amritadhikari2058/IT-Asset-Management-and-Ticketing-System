@@ -43,7 +43,7 @@ export function LicensingDashboard() {
   const hasFilters = Object.values(filters).some(Boolean);
 
   if (loading) return <div className="panel-pad">Loading licensing dashboard…</div>;
-  if (error) return <div className="alert alert-danger">{error} <button className="btn btn-sm" onClick={load}>Retry</button></div>;
+  if (error) return <div className="alert alert-danger">{error} <button className="btn-small" onClick={load}>Retry</button></div>;
   if (!data) return <EmptyState title="No data" />;
 
   const kpis = [

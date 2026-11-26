@@ -384,7 +384,7 @@ export function LifecycleDetail({ id }) {
               <div key={actionKey} className="action-card">
                 <button
                   type="button"
-                  className={`btn ${needsReason ? 'btn-outline' : 'btn-primary'} btn-block`}
+                  className={`${needsReason ? 'btn-secondary' : 'btn-primary'} btn-block`}
                   onClick={() => setConfirming(actionKey)}
                   disabled={actionBusy[actionKey]}>
                   {actionBusy[actionKey] ? 'Working…' : getActionLabel(actionKey)}

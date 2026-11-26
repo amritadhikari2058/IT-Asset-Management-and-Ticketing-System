@@ -75,7 +75,7 @@ export function ChangeList({ initialFilters = {} }) {
       ) : error ? (
         <div className="mt-3">
           <p className="text-danger">Error: {error.global ?? 'Unknown error'}</p>
-          <button className="btn btn-sm btn-outline-secondary mt-1" onClick={() => setRefreshKey(prev => prev + 1)}>Retry</button>
+          <button className="btn-small btn-ghost mt-1" onClick={() => setRefreshKey(prev => prev + 1)}>Retry</button>
         </div>
       ) : changes.length === 0 ? (
         <EmptyState

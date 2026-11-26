@@ -37,7 +37,7 @@ export function ProcurementMatchingPage({ id }) {
   const latest = history[0];
   return (
     <div>
-      <div className="page-header"><h1>Three-Way Match: {inv.invoice_number}</h1><div><button className="btn" onClick={runMatch} disabled={busy}>{busy ? 'Matching…' : 'Run Match'}</button> <a className="btn" href={`#/procurement/invoices/${id}`}>Back to Invoice</a></div></div>
+      <div className="page-header"><h1>Three-Way Match: {inv.invoice_number}</h1><div><button className="btn-primary" onClick={runMatch} disabled={busy}>{busy ? 'Matching…' : 'Run Match'}</button> <a className="btn-secondary" href={`#/procurement/invoices/${id}`}>Back to Invoice</a></div></div>
       {error && <div role="alert" className="error">{error}</div>}
       {latest && (
         <div className="card">

@@ -40,8 +40,8 @@ export function ProcurementReturnsPage() {
   if (loading) return <p className="page-loading" role="status">Loading vendor returns…</p>;
   return (
     <div>
-      <div className="page-header"><h1>Vendor Returns</h1><a className="btn" href="#/procurement/returns/new">New Return</a></div>
-      {error && <div role="alert" className="error">{error} <button className="btn" onClick={load}>Retry</button></div>}
+      <div className="page-header"><h1>Vendor Returns</h1><a className="btn-primary" href="#/procurement/returns/new">New Return</a></div>
+      {error && <div role="alert" className="error">{error} <button className="btn-secondary" onClick={load}>Retry</button></div>}
       <Table columns={[
         { label: 'Return Number', render: r => <a href={`#/procurement/returns/${r.id}`}>{r.return_number}</a> },
         { label: 'Vendor', render: r => r.vendor_name || r.vendor },
@@ -170,7 +170,7 @@ export function ProcurementReturnDetail({ id }) {
           <label>Disposition<select value={line.disposition} onChange={e => setLine(l => ({ ...l, disposition: e.target.value }))}>{['refund','credit_note','replacement','repair','exchange','write_off','pending_vendor_decision'].map(v => <option key={v} value={v}>{v}</option>)}</select></label>
           <label>Reason<input value={line.reason} onChange={e => setLine(l => ({ ...l, reason: e.target.value }))} /></label>
           <label>Notes<textarea value={line.notes} onChange={e => setLine(l => ({ ...l, notes: e.target.value }))} /></label>
-          <button className="btn" disabled={busy === 'line'}>Add Line</button>
+          <button className="btn-primary" disabled={busy === 'line'}>Add Line</button>
         </form>
       )}
     </div>

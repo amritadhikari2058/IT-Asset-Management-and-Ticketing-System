@@ -120,7 +120,7 @@ export function ProcurementInvoiceDetail({ id }) {
         {actions.canRecordPayment && <button disabled={!!busy} onClick={() => { const ref = prompt('Payment reference'); if (!ref) return; const dt = prompt('Payment date (YYYY-MM-DD)'); if (dt) act('mark-paid', { payment_reference: ref, payment_date: dt }); }}>Mark Paid</button>}
         {actions.canCancel && <button disabled={!!busy} onClick={() => { const r = prompt('Cancel reason'); if (r) act('cancel', { reason: r, version: inv.version }); }}>Cancel</button>}
         {actions.canClose && <button disabled={!!busy} onClick={() => act('close')}>Close</button>}
-        <a className="btn" href={`#/procurement/invoices/${id}/match`}>Matching View</a>
+        <a className="btn-primary" href={`#/procurement/invoices/${id}/match`}>Matching View</a>
       </div>
       <dl className="detail-grid">
         <dt>Vendor</dt><dd>{inv.vendor_name || inv.vendor}</dd>
@@ -163,7 +163,7 @@ export function ProcurementInvoiceDetail({ id }) {
           <label>Discount Amount<input value={line.discount_amount} onChange={e => setLine(l => ({ ...l, discount_amount: e.target.value }))} /></label>
           <label>Tax Rate<input value={line.tax_rate} onChange={e => setLine(l => ({ ...l, tax_rate: e.target.value }))} /></label>
           <label>Tax Amount<input value={line.tax_amount} onChange={e => setLine(l => ({ ...l, tax_amount: e.target.value }))} /></label>
-          <button className="btn" type="submit" disabled={busy === 'line'}>Add Line</button>
+          <button className="btn-primary" type="submit" disabled={busy === 'line'}>Add Line</button>
         </form>
       )}
     </div>
