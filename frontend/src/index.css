@@ -828,3 +828,40 @@ table.grid th:last-child, table.grid td:last-child { padding-right: var(--sp-4);
   .col-xl-11 { flex: 0 0 calc(91.6667% - var(--col-gap) * 0.0833); }
   .col-xl-12 { flex: 0 0 calc(100% - var(--col-gap) * 0); }
 }
+
+/* ==========================================================================
+   Project classes referenced by pages but previously undefined.
+   ========================================================================== */
+.field { display: block; margin-bottom: var(--sp-3); }
+.field > span:first-child { display: block; margin-bottom: var(--sp-1); font-size: var(--font-body); font-weight: 600; color: var(--heading-text); }
+
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
+.page-header h1 { margin: 0; }
+
+.access-denied { max-width: 560px; margin: var(--sp-8) auto; }
+.alert-heading { margin: 0 0 var(--sp-2); font-size: var(--font-lg); }
+
+.kpi-card { padding: var(--sp-3) var(--sp-4); background: var(--surface-background); border: 1px solid var(--borders); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+
+.notice { margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--warning-border); border-radius: var(--radius); background: var(--warning-bg); color: var(--warning); font-size: var(--font-body); }
+.success-banner { margin-bottom: var(--sp-3); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--success-border); border-radius: var(--radius); background: var(--success-bg); color: var(--success); font-size: var(--font-body); }
+
+.button-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.small-list { margin: 0; padding-left: var(--sp-5); font-size: var(--font-md); }
+.small-list li { margin-bottom: var(--sp-1); }
+.mini-desc { color: var(--muted-text); font-size: var(--font-sm); }
+
+.modal-backdrop { position: fixed; inset: 0; z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; padding: var(--sp-4); background: rgba(15, 23, 42, 0.45); }
+.modal-foot { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-4); }
+
+.btn-link, .link-button { padding: 0; border: 0; background: none; color: var(--primary); font: inherit; text-decoration: underline; cursor: pointer; }
+.btn-link:hover, .link-button:hover { color: var(--primary-hover); }
+
+.text-primary { color: var(--primary); }
+.fw-bold { font-weight: 700; }
+.ms-1, .ml-1 { margin-left: var(--sp-1); }
+.ms-2 { margin-left: var(--sp-2); }
+.p-4 { padding: var(--sp-6); }
+.py-4 { padding-top: var(--sp-6); padding-bottom: var(--sp-6); }
+.list-unstyled { margin: 0; padding: 0; list-style: none; }
+.table-responsive { overflow-x: auto; }

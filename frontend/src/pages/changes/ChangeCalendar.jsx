@@ -111,7 +111,7 @@ export function ChangeCalendar() {
             Next
           </button>
         </div>
-        <button onClick={() => setMonth(new Date())} className="btn btn-sm btn-outline-secondary mt-2">Today</button>
+        <button onClick={() => setMonth(new Date())} className="btn-small btn-ghost mt-2">Today</button>
         <div className="table-responsive mt-3">
           <table className="table table-sm mb-0">
             <thead>
