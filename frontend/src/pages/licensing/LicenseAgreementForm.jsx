@@ -60,7 +60,7 @@ function LicenseAgreementForm({ id, agreementId, onSave, onClose }) {
       <Field label="Maintenance Included"><input type="checkbox" checked={form.maintenance_included} onChange={set('maintenance_included')} /></Field>
       <Field label="Support Included"><input type="checkbox" checked={form.support_included} onChange={set('support_included')} /></Field>
       <div className="modal-foot" style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <button type="button" className="btn btn-outline" onClick={() => { if (onClose) onClose(); else window.location.hash = '#/licenses'; }}>Cancel</button>
+        <button type="button" className="btn-secondary" onClick={() => { if (onClose) onClose(); else window.location.hash = '#/licenses'; }}>Cancel</button>
         <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
       </div>
     </form>

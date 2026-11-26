@@ -61,7 +61,7 @@ function SoftwareProductForm({ vendorId, onSave, onClose, productId }) {
       <Field label="Active"><input type="checkbox" name="is_active" checked={form.is_active} onChange={set('is_active')} /></Field>
       <Field label="License Required"><input type="checkbox" name="license_required" checked={form.license_required} onChange={set('license_required')} /></Field>
       <div className="modal-foot" style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <button type="button" className="btn btn-outline" onClick={() => { if (onClose) onClose(); else window.location.hash = '#/software/products'; }}>Cancel</button>
+        <button type="button" className="btn-secondary" onClick={() => { if (onClose) onClose(); else window.location.hash = '#/software/products'; }}>Cancel</button>
         <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
       </div>
     </form>

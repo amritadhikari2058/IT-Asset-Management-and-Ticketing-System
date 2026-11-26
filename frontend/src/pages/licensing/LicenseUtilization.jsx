@@ -106,7 +106,7 @@ function LicenseUtilizationPage() {
             <option value="true">Only overallocated</option>
           </select>
         </Field>
-        {hasFilters && <div style={{ alignSelf: 'flex-end' }}><button className="btn btn-sm btn-outline" onClick={clearFilters}>Clear filters</button></div>}
+        {hasFilters && <div style={{ alignSelf: 'flex-end' }}><button className="btn-small btn-secondary" onClick={clearFilters}>Clear filters</button></div>}
       </div>
 
       {summary && (

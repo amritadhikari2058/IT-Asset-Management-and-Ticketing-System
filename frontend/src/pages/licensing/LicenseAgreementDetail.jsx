@@ -101,18 +101,18 @@ function LicenseAgreementDetail({ id, agreementId }) {
           </div>
           {utilization.utilization_note && <p className="text-muted small mt-2 mb-0">{utilization.utilization_note}</p>}
           <div className="mt-2">
-            <a className="btn btn-sm btn-outline" href="#/license-compliance">View compliance findings</a>{' '}
-            <a className="btn btn-sm btn-outline" href={`#/licenses/${aid}/allocations`}>View allocations</a>
+            <a className="btn-small btn-secondary" href="#/license-compliance">View compliance findings</a>{' '}
+            <a className="btn-small btn-secondary" href={`#/licenses/${aid}/allocations`}>View allocations</a>
           </div>
         </div></div>
       )}
       {caps.canManageAgreements && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <a className="btn btn-outline" href={`#/licenses/${aid}/edit`}>Edit</a>
-          <button className="btn btn-outline" onClick={() => doAction('activate')}>Activate</button>
-          <button className="btn btn-outline" onClick={() => doAction('suspend', { reason: 'suspended' })}>Suspend</button>
-          <button className="btn btn-outline" onClick={() => doAction('resume')}>Resume</button>
-          <button className="btn btn-outline" onClick={() => doAction('recalculate')}>Recalculate</button>
+          <a className="btn-secondary" href={`#/licenses/${aid}/edit`}>Edit</a>
+          <button className="btn-secondary" onClick={() => doAction('activate')}>Activate</button>
+          <button className="btn-secondary" onClick={() => doAction('suspend', { reason: 'suspended' })}>Suspend</button>
+          <button className="btn-secondary" onClick={() => doAction('resume')}>Resume</button>
+          <button className="btn-secondary" onClick={() => doAction('recalculate')}>Recalculate</button>
           <button className="btn btn-outline danger" onClick={() => doAction('terminate', { reason: 'terminated' })}>Terminate</button>
         </div>
       )}
@@ -127,11 +127,11 @@ function LicenseAgreementDetail({ id, agreementId }) {
         />
       </div></div>
       <div className="mt-3">
-        <a className="btn btn-sm btn-outline" href={`#/licenses/${aid}/allocations`}>Allocations</a>{' '}
-        <a className="btn btn-sm btn-outline" href={`#/licenses/${aid}/installations`}>Installations</a>{' '}
-        <a className="btn btn-sm btn-outline" href={`#/licenses/${aid}/documents`}>Documents</a>{' '}
-        <a className="btn btn-sm btn-outline" href={`#/licenses/${aid}/history`}>History</a>{' '}
-        <a className="btn btn-sm btn-outline" href={`#/licenses/${aid}/renewal`}>Renewal</a>
+        <a className="btn-small btn-secondary" href={`#/licenses/${aid}/allocations`}>Allocations</a>{' '}
+        <a className="btn-small btn-secondary" href={`#/licenses/${aid}/installations`}>Installations</a>{' '}
+        <a className="btn-small btn-secondary" href={`#/licenses/${aid}/documents`}>Documents</a>{' '}
+        <a className="btn-small btn-secondary" href={`#/licenses/${aid}/history`}>History</a>{' '}
+        <a className="btn-small btn-secondary" href={`#/licenses/${aid}/renewal`}>Renewal</a>
       </div>
     </div>
   );

@@ -41,14 +41,14 @@ function LicenseRenewalsPage() {
     { key: 'requested_by_email', label: 'Requested By' },
     { key: 'actions', label: 'Actions', render: (v) => (
       <div style={{ display: 'flex', gap: 4 }}>
-        {v.status === 'draft' && <button className="btn btn-sm btn-outline" disabled={busyId === v.id} onClick={() => doAction(v.id, 'submit')}>Submit</button>}
+        {v.status === 'draft' && <button className="btn-small btn-secondary" disabled={busyId === v.id} onClick={() => doAction(v.id, 'submit')}>Submit</button>}
         {v.status === 'submitted' && caps.canApproveRenewals && <>
-          <button className="btn btn-sm btn-outline" disabled={busyId === v.id} onClick={() => doAction(v.id, 'approve', { decision: 'approved' })}>Approve</button>
-          <button className="btn btn-sm btn-outline danger" disabled={busyId === v.id} onClick={() => doAction(v.id, 'reject', { decision: 'rejected', review_reason: 'rejected' })}>Reject</button>
+          <button className="btn-small btn-secondary" disabled={busyId === v.id} onClick={() => doAction(v.id, 'approve', { decision: 'approved' })}>Approve</button>
+          <button className="btn-small btn-danger" disabled={busyId === v.id} onClick={() => doAction(v.id, 'reject', { decision: 'rejected', review_reason: 'rejected' })}>Reject</button>
         </>}
         {v.status === 'approved' && (
           <button
-            className="btn btn-sm btn-outline"
+            className="btn-small btn-secondary"
             disabled={busyId === v.id || ['draft', 'terminated', 'retired'].includes(v.agreement_status)}
             title={['draft', 'terminated', 'retired'].includes(v.agreement_status) ? 'Agreement is not eligible for renewal application' : ''}
             onClick={() => doAction(v.id, 'apply')}
@@ -56,7 +56,7 @@ function LicenseRenewalsPage() {
             Apply
           </button>
         )}
-        <button className="btn btn-sm btn-outline" disabled={busyId === v.id} onClick={() => doAction(v.id, 'cancel')}>Cancel</button>
+        <button className="btn-small btn-secondary" disabled={busyId === v.id} onClick={() => doAction(v.id, 'cancel')}>Cancel</button>
       </div>
     ) },
   ];

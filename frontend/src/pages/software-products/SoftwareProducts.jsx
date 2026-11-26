@@ -44,8 +44,8 @@ function SoftwareProductsPage() {
   ];
   if (caps.canManageProducts) columns.push({ key: 'actions', label: 'Actions', render: (v) => (
     <div style={{ display: 'flex', gap: 4 }}>
-      <a className="btn btn-sm btn-outline" href={`#/software/products/${v.id}`}>View</a>
-      <a className="btn btn-sm btn-outline" href={`#/software/products/${v.id}/edit`}>Edit</a>
+      <a className="btn-small btn-secondary" href={`#/software/products/${v.id}`}>View</a>
+      <a className="btn-small btn-secondary" href={`#/software/products/${v.id}/edit`}>Edit</a>
     </div>
   ) });
 

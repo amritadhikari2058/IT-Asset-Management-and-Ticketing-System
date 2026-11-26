@@ -65,12 +65,12 @@ function VendorsPage() {
               View
             </button>
           {isAdmin ? (
-            <button className="btn btn-sm btn-outline" onClick={() => openDeleteConfirm(v.id)} title="Delete">
+            <button className="btn-small btn-secondary" onClick={() => openDeleteConfirm(v.id)} title="Delete">
               Delete
             </button>
           ) : null}
           {isAdmin ? (
-            <button className="btn btn-sm btn-outline" onClick={() => v.is_active ? handleDeactivate(v.id) : handleActivate(v.id)} title={v.is_active ? 'Deactivate' : 'Activate'}>
+            <button className="btn-small btn-secondary" onClick={() => v.is_active ? handleDeactivate(v.id) : handleActivate(v.id)} title={v.is_active ? 'Deactivate' : 'Activate'}>
               {v.is_active ? 'Deactivate' : 'Activate'}
             </button>
           ) : null}
@@ -239,7 +239,7 @@ function VendorsPage() {
               {deleteBusy ? 'Deleting…' : 'New Vendor'}
             </button>
             {exportOpen && (
-              <button className="btn btn-outline" onClick={() => setExportOpen(false)} title="Close export">
+              <button className="btn-secondary" onClick={() => setExportOpen(false)} title="Close export">
                 ✕
               </button>
             )}
@@ -467,7 +467,7 @@ function VendorForm({ onSave, onClose, vendorId }) {
         </div>
 
         <div className="row-end" style={{ marginTop: 16 }}>
-          <button type="button" onClick={onClose} className="btn btn-outline" disabled={saving}>Cancel</button>
+          <button type="button" onClick={onClose} className="btn-secondary" disabled={saving}>Cancel</button>
           <button type="submit" className="btn btn-primary" disabled={saving}>
             {saving ? 'Saving…' : vendorId ? 'Update' : 'Create'}
           </button>
@@ -660,14 +660,14 @@ function VendorDetail({ id }) {
               {isAdmin && (
                 <div className="col-4">
                   <button
-                    className="btn btn-sm btn-outline"
+                    className="btn-small btn-secondary"
                     onClick={() => handleActivate()}
                     disabled={activateBusy}
                     style={{ marginRight: '8px' }}>
                     {activateBusy ? 'Activating…' : 'Activate'}
                   </button>
                   <button
-                    className="btn btn-sm btn-outline danger"
+                    className="btn-small btn-danger"
                     onClick={() => handleDeactivate()}
                     disabled={deactivateBusy}
                   >
@@ -736,12 +736,12 @@ function VendorDetail({ id }) {
         {/* Actions */}
         {isStaff && (
           <div className="vendor-actions">
-            <button className="btn btn-outline" onClick={() => /* navigate back */ history.back()}>
+            <button className="btn-secondary" onClick={() => /* navigate back */ history.back()}>
               Back to Vendors
             </button>
             {isAdmin ? (
               <div style={{ marginLeft: '16px', display: 'flex', gap: '8px' }}>
-                <button className="btn btn-outline" onClick={() => handleActivate()}>
+                <button className="btn-secondary" onClick={() => handleActivate()}>
                   {activateBusy ? 'Activating…' : 'Activate'}
                 </button>
                 <button className="btn btn-outline danger" onClick={() => handleDeactivate()}>

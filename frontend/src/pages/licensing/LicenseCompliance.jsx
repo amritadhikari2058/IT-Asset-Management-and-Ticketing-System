@@ -157,14 +157,14 @@ function LicenseCompliancePage() {
       const rowBusy = busyId === v.id;
       return (
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          <button className="btn btn-sm btn-outline" onClick={() => doAcknowledge(v)} disabled={rowBusy}>
+          <button className="btn-small btn-secondary" onClick={() => doAcknowledge(v)} disabled={rowBusy}>
             Acknowledge
           </button>
           {canManage && (
             <>
-              <button className="btn btn-sm btn-outline" onClick={() => openRemediate(v)} disabled={rowBusy}>Remediate</button>
-              <button className="btn btn-sm btn-outline" onClick={() => openResolve(v, false)} disabled={rowBusy}>Resolve</button>
-              <button className="btn btn-sm btn-outline" onClick={() => openResolve(v, true)} disabled={rowBusy}>False Positive</button>
+              <button className="btn-small btn-secondary" onClick={() => openRemediate(v)} disabled={rowBusy}>Remediate</button>
+              <button className="btn-small btn-secondary" onClick={() => openResolve(v, false)} disabled={rowBusy}>Resolve</button>
+              <button className="btn-small btn-secondary" onClick={() => openResolve(v, true)} disabled={rowBusy}>False Positive</button>
             </>
           )}
         </div>

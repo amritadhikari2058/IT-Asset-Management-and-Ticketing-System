@@ -696,35 +696,31 @@ export function Modal({ title, onClose, children, size }) {
 }
 
 /** Reusable confirmation dialog. Message must describe the actual operation. */
+const BUTTON_KINDS = {
+  primary: 'btn-primary',
+  secondary: 'btn-secondary',
+  danger: 'btn-danger',
+  ghost: 'btn-ghost',
+  small: 'btn-small',
+};
+
 export function Button({
   kind = 'primary',
   size = 'medium',
-  children,
   className = '',
-  disabled = false,
-  onClick,
   type = 'button',
+  children,
+  ...rest
 }) {
-  const base = 'btn';
-  const kindClass =
-    {
-      primary: 'btn-primary',
-      danger: 'btn-danger',
-      ghost: 'btn-ghost',
-      small: 'btn-small',
-    }[kind] || 'btn-primary';
-  const sizeClass =
-    {
-      small: 'btn-small',
-      medium: '',
-    }[size] || '';
+  const classes = [
+    BUTTON_KINDS[kind] || BUTTON_KINDS.primary,
+    size === 'small' && kind !== 'small' ? 'btn-small' : '',
+    className,
+  ]
+    .filter(Boolean)
+    .join(' ');
   return (
-    <button
-      type={type}
-      className={`${base} ${kindClass} ${sizeClass} ${className}`}
-      disabled={disabled}
-      onClick={onClick}
-    >
+    <button type={type} className={classes} {...rest}>
       {children}
     </button>
   );
@@ -1271,15 +1267,18 @@ export function UserSelect({ value, onChange, error, disabled, label }) {
   );
 }
 
+const ALERT_CLASSES = {
+  danger: 'error-summary',
+  success: 'success-summary',
+  info: 'info-summary',
+};
+
 export function Alert({ variant = 'info', children }) {
-  const cls =
-    variant === 'danger'
-      ? 'error-summary'
-      : variant === 'success'
-        ? 'success-summary'
-        : 'muted';
   return (
-    <div className={cls} role={variant === 'danger' ? 'alert' : 'status'}>
+    <div
+      className={ALERT_CLASSES[variant] || 'info-summary'}
+      role={variant === 'danger' ? 'alert' : 'status'}
+    >
       {children}
     </div>
   );
@@ -1316,12 +1315,13 @@ export function Card({ children, className }) {
     <div className={`card${className ? ` ${className}` : ''}`}>{children}</div>
   );
 }
-export function Input({ label, ...props }) {
+export function Input({ label, className = '', ...props }) {
+  const cls = className ? `input ${className}` : 'input';
   const el =
     props.rows || props.type === 'textarea' ? (
-      <textarea className="input" {...props} rows={props.rows || 3} />
+      <textarea {...props} className={cls} rows={props.rows || 3} />
     ) : (
-      <input className="input" {...props} />
+      <input {...props} className={cls} />
     );
   return label ? (
     <label className="field">
@@ -1332,9 +1332,10 @@ export function Input({ label, ...props }) {
     el
   );
 }
-export function Select({ label, children, ...props }) {
+export function Select({ label, className = '', children, ...props }) {
+  const cls = className ? `input ${className}` : 'input';
   const el = (
-    <select className="input" {...props}>
+    <select {...props} className={cls}>
       {children}
     </select>
   );

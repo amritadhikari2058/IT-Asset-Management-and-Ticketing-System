@@ -97,7 +97,7 @@ export function ProcurementReturnForm() {
         <label>Expected Resolution<textarea value={form.expected_resolution} onChange={e => set('expected_resolution', e.target.value)} /></label>
         <label><input type="checkbox" checked={form.replacement_expected} onChange={e => set('replacement_expected', e.target.checked)} /> Replacement Expected</label>
         <label>Replacement Due Date<input type="date" value={form.replacement_due_date} onChange={e => set('replacement_due_date', e.target.value)} /></label>
-        <button className="btn primary" disabled={saving}>{saving ? 'Saving…' : 'Create Return'}</button>
+        <button className="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Create Return'}</button>
       </form>
     </div>
   );

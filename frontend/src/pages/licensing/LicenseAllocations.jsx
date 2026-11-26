@@ -225,24 +225,24 @@ function LicenseAllocationsPage() {
       return (
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           {!['active', 'revoked', 'expired'].includes(v.status) && (
-            <button className="btn btn-sm btn-outline" disabled={rowBusy}
+            <button className="btn-small btn-secondary" disabled={rowBusy}
               onClick={() => { if (window.confirm('Activate this allocation? Entitlement capacity will be checked and the action is audited.')) doAction(v, 'activate'); }}>
               Activate
             </button>
           )}
           {!['suspended', 'revoked', 'expired'].includes(v.status) && (
-            <button className="btn btn-sm btn-outline" disabled={rowBusy}
+            <button className="btn-small btn-secondary" disabled={rowBusy}
               onClick={() => { const r = window.prompt('Suspension reason (capacity is released):'); if (r && r.trim()) doAction(v, 'suspend', { reason: r.trim() }); }}>
               Suspend
             </button>
           )}
-          <button className="btn btn-sm btn-outline" disabled={rowBusy} onClick={() => doAction(v, 'verify')}>Verify</button>
+          <button className="btn-small btn-secondary" disabled={rowBusy} onClick={() => doAction(v, 'verify')}>Verify</button>
           {!terminal && RELEASABLE_STATUSES.includes(v.status) && (
-            <button className="btn btn-sm btn-outline" disabled={rowBusy} onClick={() => openRelease(v)}>Release</button>
+            <button className="btn-small btn-secondary" disabled={rowBusy} onClick={() => openRelease(v)}>Release</button>
           )}
-          <button className="btn btn-sm btn-outline" disabled={rowBusy} onClick={() => openHistory(v)}>History</button>
+          <button className="btn-small btn-secondary" disabled={rowBusy} onClick={() => openHistory(v)}>History</button>
           {v.status !== 'revoked' && (
-            <button className="btn btn-sm btn-outline danger" disabled={rowBusy}
+            <button className="btn-small btn-danger" disabled={rowBusy}
               onClick={() => { const r = window.prompt('Revocation reason:'); if (r && r.trim()) doAction(v, 'revoke', { reason: r.trim() }); }}>
               Revoke
             </button>
@@ -283,7 +283,7 @@ function LicenseAllocationsPage() {
           </p>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
             <UserSelect value={offboardUserId} onChange={changeOffboardUser} disabled={offboardBusy} label="Employee" />
-            <button className="btn btn-outline" onClick={requestOffboardPreview}
+            <button className="btn-secondary" onClick={requestOffboardPreview}
               disabled={offboardPreviewLoading || offboardBusy || !offboardUserId}>
               {offboardPreviewLoading ? 'Loading preview…' : 'Preview affected seats'}
             </button>

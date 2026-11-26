@@ -49,7 +49,7 @@ function LicenseDocumentsPage({ agreementId }) {
       {loading ? <div>Loading…</div> : (
         <table className="table table-sm"><thead><tr><th>Type</th><th>Filename</th><th>Size</th><th>Uploaded By</th><th>Date</th><th>Actions</th></tr></thead><tbody>
           {items.map((d) => (
-            <tr key={d.id}><td>{d.document_type}</td><td>{d.original_filename}</td><td>{d.size}</td><td>{d.uploaded_by_email}</td><td>{d.created_at}</td><td><button className="btn btn-sm btn-outline" onClick={() => download(d)}>Download</button></td></tr>
+            <tr key={d.id}><td>{d.document_type}</td><td>{d.original_filename}</td><td>{d.size}</td><td>{d.uploaded_by_email}</td><td>{d.created_at}</td><td><button className="btn-small btn-secondary" onClick={() => download(d)}>Download</button></td></tr>
           ))}
         </tbody></table>
       )}
@@ -61,7 +61,7 @@ function LicenseDocumentsPage({ agreementId }) {
             <Field label="Description"><input className="input" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
             <Field label="File"><input className="input" type="file" onChange={(e) => setForm({ ...form, file: e.target.files?.[0] })} required /></Field>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button type="button" className="btn btn-outline" onClick={() => setShowUpload(false)}>Cancel</button>
+              <button type="button" className="btn-secondary" onClick={() => setShowUpload(false)}>Cancel</button>
               <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Uploading…' : 'Upload'}</button>
             </div>
           </form>

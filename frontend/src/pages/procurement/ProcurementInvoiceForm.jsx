@@ -88,7 +88,7 @@ export function ProcurementInvoiceForm() {
         <label>Other Charges<input value={form.other_charge_total} onChange={e => set('other_charge_total', e.target.value)} /></label>
         <label>Discount<input value={form.discount_total} onChange={e => set('discount_total', e.target.value)} /></label>
         <label>Notes<textarea value={form.notes} onChange={e => set('notes', e.target.value)} /></label>
-        <div><button className="btn primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Create Invoice'}</button></div>
+        <div><button className="btn-primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Create Invoice'}</button></div>
       </form>
     </div>
   );

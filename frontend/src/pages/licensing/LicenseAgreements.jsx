@@ -36,7 +36,7 @@ function LicenseAgreementsPage() {
     { key: 'quantity_available', label: 'Available', render: (v) => v.is_unlimited ? 'Unlimited' : v.quantity_available },
     { key: 'total_cost', label: 'Total Cost', render: (v) => caps.canViewCosts ? `${v.currency} ${v.total_cost}` : '—' },
   ];
-  if (caps.canManageAgreements) columns.push({ key: 'actions', label: 'Actions', render: (v) => (<div style={{ display: 'flex', gap: 4 }}><a className="btn btn-sm btn-outline" href={`#/licenses/${v.id}`}>View</a><a className="btn btn-sm btn-outline" href={`#/licenses/${v.id}/edit`}>Edit</a></div>) });
+  if (caps.canManageAgreements) columns.push({ key: 'actions', label: 'Actions', render: (v) => (<div style={{ display: 'flex', gap: 4 }}><a className="btn-small btn-secondary" href={`#/licenses/${v.id}`}>View</a><a className="btn-small btn-secondary" href={`#/licenses/${v.id}/edit`}>Edit</a></div>) });
   if (!caps.canView) return <div className="panel-pad">Access denied.</div>;
   return (
     <div className="license-agreements-page">

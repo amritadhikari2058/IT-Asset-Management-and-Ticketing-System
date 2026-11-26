@@ -91,7 +91,7 @@ export function ProcurementCreditNoteForm() {
         <label>Total<input value={form.total} onChange={e => set('total', e.target.value)} /></label>
         <label>Reason<textarea value={form.reason} onChange={e => set('reason', e.target.value)} /></label>
         <label>External Reference<input value={form.external_reference} onChange={e => set('external_reference', e.target.value)} /></label>
-        <button className="btn primary" disabled={saving}>{saving ? 'Saving…' : 'Create'}</button>
+        <button className="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Create'}</button>
       </form>
     </div>
   );

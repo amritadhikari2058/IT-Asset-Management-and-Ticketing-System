@@ -87,7 +87,7 @@ export function LicensingDashboard() {
             {EXPIRY_OPTIONS.map(([k, v]) => <option key={k || 'any'} value={k}>{v}</option>)}
           </select>
         </Field>
-        {hasFilters && <div style={{ alignSelf: 'flex-end' }}><button className="btn btn-sm btn-outline" onClick={clearFilters}>Clear filters</button></div>}
+        {hasFilters && <div style={{ alignSelf: 'flex-end' }}><button className="btn-small btn-secondary" onClick={clearFilters}>Clear filters</button></div>}
       </div>
 
       {Number(data.overallocated_agreements) > 0 && (
@@ -109,9 +109,9 @@ export function LicensingDashboard() {
       </div>
 
       <div className="mb-3" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <a className="btn btn-sm btn-outline" href="#/license-utilization">Entitlement utilization report</a>
-        <a className="btn btn-sm btn-outline" href="#/license-compliance">Compliance findings</a>
-        <a className="btn btn-sm btn-outline" href="#/license-renewals">Renewals</a>
+        <a className="btn-small btn-secondary" href="#/license-utilization">Entitlement utilization report</a>
+        <a className="btn-small btn-secondary" href="#/license-compliance">Compliance findings</a>
+        <a className="btn-small btn-secondary" href="#/license-renewals">Renewals</a>
       </div>
 
       {canViewLicenseReports && (data.annual_recurring_cost_by_currency || data.annual_cost_by_currency) && (

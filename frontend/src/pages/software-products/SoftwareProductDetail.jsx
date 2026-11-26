@@ -38,9 +38,9 @@ function SoftwareProductDetail({ id, productId }) {
       </div></div>
       {caps.canManageProducts && (
         <div style={{ display: 'flex', gap: 8 }}>
-          <a className="btn btn-outline" href={`#/software/products/${pid}/edit`}>Edit</a>
-          <button className="btn btn-outline" onClick={() => doAction('approve')}>Approve</button>
-          <button className="btn btn-outline" onClick={() => doAction('restrict')}>Restrict</button>
+          <a className="btn-secondary" href={`#/software/products/${pid}/edit`}>Edit</a>
+          <button className="btn-secondary" onClick={() => doAction('approve')}>Approve</button>
+          <button className="btn-secondary" onClick={() => doAction('restrict')}>Restrict</button>
           <button className="btn btn-outline danger" onClick={() => doAction('prohibit')}>Prohibit</button>
         </div>
       )}

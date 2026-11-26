@@ -59,8 +59,8 @@ function LicenseSecretsPage({ agreementId }) {
               <td>{SECRET_STATUS_LABELS[s.status] || s.status}</td>
               <td>{s.created_at}</td>
               <td>
-                {caps.canRevealSecrets && <button className="btn btn-sm btn-outline" onClick={() => reveal(s.id)}>Reveal</button>}{' '}
-                <button className="btn btn-sm btn-outline danger" onClick={() => revoke(s.id)}>Revoke</button>
+                {caps.canRevealSecrets && <button className="btn-small btn-secondary" onClick={() => reveal(s.id)}>Reveal</button>}{' '}
+                <button className="btn-small btn-danger" onClick={() => revoke(s.id)}>Revoke</button>
               </td>
             </tr>
           ))}
@@ -75,7 +75,7 @@ function LicenseSecretsPage({ agreementId }) {
             <Field label="Label"><input className="input" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} required /></Field>
             <Field label="Plaintext Value"><input className="input" type="password" value={form.plaintext_value} onChange={(e) => setForm({ ...form, plaintext_value: e.target.value })} required /></Field>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button type="button" className="btn btn-outline" onClick={() => setShowCreate(false)}>Cancel</button>
+              <button type="button" className="btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button>
               <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Create'}</button>
             </div>
           </form>
