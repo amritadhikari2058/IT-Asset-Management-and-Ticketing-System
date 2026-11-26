@@ -4,27 +4,71 @@ import { blobErrorMessage, downloadBlob, parseApiError } from './api-utils';
 import { useAuth } from './auth';
 
 const STATUS_TONE = {
-  open: 'blue', in_progress: 'amber', resolved: 'green', closed: 'gray',
-  reopened: 'purple', archived: 'gray',
-  available: 'green', assigned: 'blue', in_repair: 'amber', retired: 'gray',
-  lost: 'red', overdue: 'red', active: 'green', inactive: 'gray',
-  disposed: 'purple', scheduled: 'blue', completed: 'green', cancelled: 'gray',
-  pending: 'amber', approved: 'green', rejected: 'red',
+  open: 'blue',
+  in_progress: 'amber',
+  resolved: 'green',
+  closed: 'gray',
+  reopened: 'purple',
+  archived: 'gray',
+  available: 'green',
+  assigned: 'blue',
+  in_repair: 'amber',
+  retired: 'gray',
+  lost: 'red',
+  overdue: 'red',
+  active: 'green',
+  inactive: 'gray',
+  disposed: 'purple',
+  scheduled: 'blue',
+  completed: 'green',
+  cancelled: 'gray',
+  pending: 'amber',
+  approved: 'green',
+  rejected: 'red',
   pending_review: 'amber',
-  low_stock: 'amber', out_of_stock: 'red', in_stock: 'green',
+  low_stock: 'amber',
+  out_of_stock: 'red',
+  in_stock: 'green',
 };
-const PRIORITY_TONE = { low: 'gray', medium: 'blue', high: 'amber', critical: 'red' };
+const PRIORITY_TONE = {
+  low: 'gray',
+  medium: 'blue',
+  high: 'amber',
+  critical: 'red',
+};
 
 const STATUS_LABELS = {
-  open: 'Open', in_progress: 'In progress', resolved: 'Resolved', closed: 'Closed',
-  reopened: 'Reopened', archived: 'Archived', available: 'Available', assigned: 'Assigned',
-  in_repair: 'In repair', retired: 'Retired', lost: 'Lost', active: 'Active', inactive: 'Inactive',
-  disposed: 'Disposed', scheduled: 'Scheduled', completed: 'Completed', cancelled: 'Cancelled',
-  pending: 'Pending approval', approved: 'Approved', rejected: 'Rejected',
+  open: 'Open',
+  in_progress: 'In progress',
+  resolved: 'Resolved',
+  closed: 'Closed',
+  reopened: 'Reopened',
+  archived: 'Archived',
+  available: 'Available',
+  assigned: 'Assigned',
+  in_repair: 'In repair',
+  retired: 'Retired',
+  lost: 'Lost',
+  active: 'Active',
+  inactive: 'Inactive',
+  disposed: 'Disposed',
+  scheduled: 'Scheduled',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+  pending: 'Pending approval',
+  approved: 'Approved',
+  rejected: 'Rejected',
   pending_review: 'Pending review',
-  low_stock: 'Low stock', out_of_stock: 'Out of stock', in_stock: 'In stock',
+  low_stock: 'Low stock',
+  out_of_stock: 'Out of stock',
+  in_stock: 'In stock',
 };
-const PRIORITY_LABELS = { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' };
+const PRIORITY_LABELS = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  critical: 'Critical',
+};
 
 /** Human-readable label for status/priority values (kind: 'status' | 'priority'). */
 function prettyValue(kind, value) {
@@ -37,9 +81,10 @@ function prettyValue(kind, value) {
 
 /** Small status/priority indicator. kind: 'status' | 'priority'. */
 export function Badge({ kind, value, label }) {
-  const tone = kind === 'priority'
-    ? (PRIORITY_TONE[value] ?? 'gray')
-    : (STATUS_TONE[value] ?? 'gray');
+  const tone =
+    kind === 'priority'
+      ? (PRIORITY_TONE[value] ?? 'gray')
+      : (STATUS_TONE[value] ?? 'gray');
   const text = label ?? prettyValue(kind, value);
   return <span className={`badge badge-${tone}`}>{text}</span>;
 }
@@ -64,11 +109,14 @@ export function PhotoThumbnail({ id, getUrl, onPreview, label }) {
   const [busy, setBusy] = useState(!!id);
 
   useEffect(() => {
-    if (!id) { setBusy(false); // eslint-disable-line react/set-state-in-effect
-      return; }
+    if (!id) {
+      setBusy(false); // eslint-disable-line react/set-state-in-effect
+      return;
+    }
     let cancelled = false;
     setBusy(true);
-    api.get(getUrl(id), { responseType: 'blob' })
+    api
+      .get(getUrl(id), { responseType: 'blob' })
       .then((r) => {
         if (!cancelled) {
           // Replacement is handled by the cleanup effect below: it runs when
@@ -79,27 +127,57 @@ export function PhotoThumbnail({ id, getUrl, onPreview, label }) {
           setError(false);
         }
       })
-      .catch(() => { if (!cancelled) setError(true); })
-      .finally(() => { if (!cancelled) setBusy(false); });
-    return () => { cancelled = true; };
+      .catch(() => {
+        if (!cancelled) setError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id, getUrl]);
 
-  useEffect(() => () => { if (src) { try { URL.revokeObjectURL(src); } catch { /* ignore */ } } }, [src]);
+  useEffect(
+    () => () => {
+      if (src) {
+        try {
+          URL.revokeObjectURL(src);
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+    [src],
+  );
 
-  const open = () => { if (onPreview) onPreview(id); };
+  const open = () => {
+    if (onPreview) onPreview(id);
+  };
   const content = busy ? (
     <span className="spinner" aria-hidden="true" />
   ) : error ? (
-    <span className="photo-placeholder" aria-hidden="true">🙁</span>
+    <span className="photo-placeholder" aria-hidden="true">
+      🙁
+    </span>
   ) : (
     <img src={src} alt="" className="photo-thumb" />
   );
   return (
-    <button type="button" className="photo-cell" onClick={open}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } }}
+    <button
+      type="button"
+      className="photo-cell"
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          open();
+        }
+      }}
       aria-label={label || 'Photo'}
       title={label || 'Photo'}
-      disabled={error && !src}>
+      disabled={error && !src}
+    >
       {content}
     </button>
   );
@@ -136,8 +214,7 @@ export function PanelPad({ children }) {
 /** Navigation link (hash route) used inside panels. */
 export function Link({ href, children, className, style, title, ...rest }) {
   return (
-    <a href={href} className={className} style={style} title={title}
-       {...rest}>
+    <a href={href} className={className} style={style} title={title} {...rest}>
       {children}
     </a>
   );
@@ -159,7 +236,10 @@ export function EmptyState({ title, hint, action }) {
  * details. Offers a single way back to the dashboard and makes no repeated
  * unauthorized API calls.
  */
-export function AccessDenied({ reason = 'access', backLabel = 'Go to Dashboard' }) {
+export function AccessDenied({
+  reason = 'access',
+  backLabel = 'Go to Dashboard',
+}) {
   const messages = {
     access: 'You do not have permission to access this page.',
     action: 'You do not have permission to perform this action.',
@@ -174,14 +254,20 @@ export function AccessDenied({ reason = 'access', backLabel = 'Go to Dashboard' 
           administrator.
         </p>
         <hr className="my-3" />
-        <a className="btn btn-primary" href="#/dashboard">{backLabel}</a>
+        <a className="btn btn-primary" href="#/dashboard">
+          {backLabel}
+        </a>
       </div>
     </div>
   );
 }
 
 /** Table-shaped skeleton: same row rhythm as `table.grid`. */
-const SK_WIDTHS = [['10%', '30%', '14%', '14%'], ['10%', '24%', '14%', '18%'], ['10%', '34%', '14%', '12%']];
+const SK_WIDTHS = [
+  ['10%', '30%', '14%', '14%'],
+  ['10%', '24%', '14%', '18%'],
+  ['10%', '34%', '14%', '12%'],
+];
 
 export function LoadingRows({ n = 5 }) {
   return (
@@ -205,20 +291,25 @@ export function LoadingRows({ n = 5 }) {
  * Returns [sort, changeSort, orderingParam]. changeSort(field) updates
  * state and returns the next value synchronously for immediate loads;
  * orderingParam() yields the `ordering` query value ("" when unset). */
-export function useSort() { // eslint-disable-line react/only-export-components
+export function useSort() {
+  // eslint-disable-line react/only-export-components
   const [sort, setSort] = useState(null);
   const ref = useRef(null);
   const changeSort = (field) => {
     const cur = ref.current;
-    const next = !cur || cur.field !== field ? { field, dir: 'asc' }
-      : cur.dir === 'asc' ? { field, dir: 'desc' } : null;
+    const next =
+      !cur || cur.field !== field
+        ? { field, dir: 'asc' }
+        : cur.dir === 'asc'
+          ? { field, dir: 'desc' }
+          : null;
     ref.current = next;
     setSort(next);
     return next;
   };
   const orderingParam = (s) => {
     const v = s === undefined ? ref.current : s;
-    return !v ? '' : (v.dir === 'desc' ? `-${v.field}` : v.field);
+    return !v ? '' : v.dir === 'desc' ? `-${v.field}` : v.field;
   };
   return [sort, changeSort, orderingParam];
 }
@@ -257,10 +348,14 @@ function loadTablePrefs(tableKey, allKeys, defaultKeys) {
   } catch {
     return fallback; // malformed JSON → defaults, page still renders
   }
-  if (!saved || typeof saved !== 'object' || Array.isArray(saved)
-      || saved.v !== 1
-      || !Array.isArray(saved.columns)
-      || !Array.isArray(saved.known)) {
+  if (
+    !saved ||
+    typeof saved !== 'object' ||
+    Array.isArray(saved) ||
+    saved.v !== 1 ||
+    !Array.isArray(saved.columns) ||
+    !Array.isArray(saved.known)
+  ) {
     return fallback; // missing/invalid/outdated schema → defaults
   }
   const known = new Set(saved.known.filter((k) => typeof k === 'string'));
@@ -283,7 +378,12 @@ function saveTablePrefs(tableKey, visible, known, tableVisible) {
   try {
     window.localStorage.setItem(
       TABLE_PREFS_PREFIX + tableKey,
-      JSON.stringify({ v: 1, columns: [...visible], known: [...known], table: tableVisible }),
+      JSON.stringify({
+        v: 1,
+        columns: [...visible],
+        known: [...known],
+        table: tableVisible,
+      }),
     );
   } catch {
     // Quota/blocked storage: preferences simply stay in-memory for the
@@ -295,10 +395,13 @@ function saveTablePrefs(tableKey, visible, known, tableVisible) {
  * later app update can tell "the user hid this column" apart from
  * "this column did not exist when the preference was saved" and give
  * never-seen columns their current default visibility. */
-export function useTableColumns(tableKey, allKeys, defaultKeys) { // eslint-disable-line react/only-export-components
+export function useTableColumns(tableKey, allKeys, defaultKeys) {
+  // eslint-disable-line react/only-export-components
   // Synchronous load on first render: no frame ever shows an
   // incorrect default column while saved preferences load.
-  const [state, setState] = useState(() => loadTablePrefs(tableKey, allKeys, defaultKeys));
+  const [state, setState] = useState(() =>
+    loadTablePrefs(tableKey, allKeys, defaultKeys),
+  );
   const persist = (next) => {
     setState(next);
     saveTablePrefs(tableKey, next.visible, allKeys, next.tableVisible);
@@ -327,7 +430,14 @@ export function useTableColumns(tableKey, allKeys, defaultKeys) { // eslint-disa
   };
 }
 
-export function TableControls({ tableVisible, onToggleTable, columns, visible, onToggleColumn, onReset }) {
+export function TableControls({
+  tableVisible,
+  onToggleTable,
+  columns,
+  visible,
+  onToggleColumn,
+  onReset,
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div className="panel-title">
@@ -352,7 +462,12 @@ export function TableControls({ tableVisible, onToggleTable, columns, visible, o
         <button type="button" className="btn-small" onClick={onToggleTable}>
           {tableVisible ? 'Hide table' : 'Show table'}
         </button>
-        <button type="button" className="btn-small" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <button
+          type="button"
+          className="btn-small"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+        >
           Columns
         </button>
         <button type="button" className="btn-small" onClick={onReset}>
@@ -363,8 +478,21 @@ export function TableControls({ tableVisible, onToggleTable, columns, visible, o
   );
 }
 
-export function DataTable({ columns, rows, keyOf, selected, onToggle, emptyTitle, emptyHint, sort, onSort }) {
-  if (!rows.length) return <EmptyState title={emptyTitle ?? 'Nothing here yet.'} hint={emptyHint} />;
+export function DataTable({
+  columns,
+  rows,
+  keyOf,
+  selected,
+  onToggle,
+  emptyTitle,
+  emptyHint,
+  sort,
+  onSort,
+}) {
+  if (!rows.length)
+    return (
+      <EmptyState title={emptyTitle ?? 'Nothing here yet.'} hint={emptyHint} />
+    );
   const selectable = typeof onToggle === 'function';
   const sortable = typeof onSort === 'function';
   const arrow = (field) => {
@@ -376,22 +504,39 @@ export function DataTable({ columns, rows, keyOf, selected, onToggle, emptyTitle
       <table className="grid">
         <thead>
           <tr>
-            {selectable && <th className="th-select"><span className="visually-hidden">Select rows</span><span className="muted small" aria-hidden="true">✓</span></th>}
+            {selectable && (
+              <th className="th-select">
+                <span className="visually-hidden">Select rows</span>
+                <span className="muted small" aria-hidden="true">
+                  ✓
+                </span>
+              </th>
+            )}
             {columns.map((c) => (
               <th
                 key={c.key}
                 className={c.thClass}
-                aria-sort={sort && sort.field === c.sortable ? (sort.dir === 'desc' ? 'descending' : 'ascending') : undefined}
+                aria-sort={
+                  sort && sort.field === c.sortable
+                    ? sort.dir === 'desc'
+                      ? 'descending'
+                      : 'ascending'
+                    : undefined
+                }
               >
                 {sortable && c.sortable ? (
                   <button
-                    type="button" className="th-sort"
+                    type="button"
+                    className="th-sort"
                     onClick={() => onSort(c.sortable)}
                     aria-label={`Sort by ${c.label}`}
                   >
-                    {c.label}{arrow(c.sortable)}
+                    {c.label}
+                    {arrow(c.sortable)}
                   </button>
-                ) : c.label}
+                ) : (
+                  c.label
+                )}
               </th>
             ))}
           </tr>
@@ -405,13 +550,17 @@ export function DataTable({ columns, rows, keyOf, selected, onToggle, emptyTitle
                 {selectable && (
                   <td className="select-cell">
                     <input
-                      type="checkbox" checked={!!isSel} onChange={() => onToggle(k)}
+                      type="checkbox"
+                      checked={!!isSel}
+                      onChange={() => onToggle(k)}
                       aria-label={`Select row ${k}`}
                     />
                   </td>
                 )}
                 {columns.map((c) => (
-                  <td key={c.key}>{c.render ? c.render(r) : String(r[c.key] ?? '—')}</td>
+                  <td key={c.key}>
+                    {c.render ? c.render(r) : String(r[c.key] ?? '—')}
+                  </td>
                 ))}
               </tr>
             );
@@ -422,33 +571,74 @@ export function DataTable({ columns, rows, keyOf, selected, onToggle, emptyTitle
   );
 }
 
-export function Pager({ count, hasNext, hasPrev, onPrev, onNext, busy, pageLabel }) {
+export function Pager({
+  count,
+  hasNext,
+  hasPrev,
+  onPrev,
+  onNext,
+  busy,
+  pageLabel,
+}) {
   if (count == null && !hasNext && !hasPrev && !pageLabel) return null;
   return (
     <div className="pager">
-      <span>{count != null ? <><span className="page-count">{count}</span> {count === 1 ? 'item' : 'items'}</> : ''}</span>
+      <span>
+        {count != null ? (
+          <>
+            <span className="page-count">{count}</span>{' '}
+            {count === 1 ? 'item' : 'items'}
+          </>
+        ) : (
+          ''
+        )}
+      </span>
       {pageLabel ? <span className="muted">{pageLabel}</span> : null}
       <span className="spacer" />
-      <button type="button" className="btn-small" onClick={onPrev} disabled={!hasPrev || busy}>&larr; Prev</button>
-      <button type="button" className="btn-small" onClick={onNext} disabled={!hasNext || busy}>Next &rarr;</button>
+      <button
+        type="button"
+        className="btn-small"
+        onClick={onPrev}
+        disabled={!hasPrev || busy}
+      >
+        &larr; Prev
+      </button>
+      <button
+        type="button"
+        className="btn-small"
+        onClick={onNext}
+        disabled={!hasNext || busy}
+      >
+        Next &rarr;
+      </button>
     </div>
   );
 }
 
 export function Field({ label, error, hint, required, children }) {
-  const control = error && children && typeof children === 'object' && 'props' in children
-    ? { ...children, props: { ...children.props, 'aria-invalid': 'true' } }
-    : children;
+  const control =
+    error && children && typeof children === 'object' && 'props' in children
+      ? { ...children, props: { ...children.props, 'aria-invalid': 'true' } }
+      : children;
   return (
     <div className="form-field">
       <label className="form-label">
         <span>
           {label}
-          {required && <span className="required" aria-hidden="true"> *</span>}
+          {required && (
+            <span className="required" aria-hidden="true">
+              {' '}
+              *
+            </span>
+          )}
         </span>
         {control}
       </label>
-      {error ? <div className="field-error" role="alert">{error}</div> : null}
+      {error ? (
+        <div className="field-error" role="alert">
+          {error}
+        </div>
+      ) : null}
       {!error && hint ? <div className="field-hint">{hint}</div> : null}
     </div>
   );
@@ -456,12 +646,18 @@ export function Field({ label, error, hint, required, children }) {
 
 export function ErrorSummary({ parsed }) {
   if (!parsed?.global) return null;
-  return <div className="error-summary" role="alert">{parsed.global}</div>;
+  return (
+    <div className="error-summary" role="alert">
+      {parsed.global}
+    </div>
+  );
 }
 
 export function Modal({ title, onClose, children, size }) {
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -470,11 +666,28 @@ export function Modal({ title, onClose, children, size }) {
     if (first) first.focus();
   }, []);
   return (
-    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className={`modal${size ? ` modal-${size}` : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+    <div
+      className="modal-overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className={`modal${size ? ` modal-${size}` : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
         <div className="modal-head">
           <h3>{title}</h3>
-          <button type="button" className="btn-close" onClick={onClose} aria-label="Close">✕</button>
+          <button
+            type="button"
+            className="btn-close"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            ✕
+          </button>
         </div>
         <div className="modal-body">{children}</div>
       </div>
@@ -483,30 +696,62 @@ export function Modal({ title, onClose, children, size }) {
 }
 
 /** Reusable confirmation dialog. Message must describe the actual operation. */
-export function Button({ kind = 'primary', size = 'medium', children, className = '', disabled = false, onClick, type = 'button' }) {
+export function Button({
+  kind = 'primary',
+  size = 'medium',
+  children,
+  className = '',
+  disabled = false,
+  onClick,
+  type = 'button',
+}) {
   const base = 'btn';
-  const kindClass = {
-    primary: 'btn-primary',
-    danger: 'btn-danger',
-    ghost: 'btn-ghost',
-    small: 'btn-small',
-  }[kind] || 'btn-primary';
-  const sizeClass = {
-    small: 'btn-small',
-    medium: '',
-  }[size] || ''; return (
-    <button type={type} className={`${base} ${kindClass} ${sizeClass} ${className}`} disabled={disabled} onClick={onClick}>
+  const kindClass =
+    {
+      primary: 'btn-primary',
+      danger: 'btn-danger',
+      ghost: 'btn-ghost',
+      small: 'btn-small',
+    }[kind] || 'btn-primary';
+  const sizeClass =
+    {
+      small: 'btn-small',
+      medium: '',
+    }[size] || '';
+  return (
+    <button
+      type={type}
+      className={`${base} ${kindClass} ${sizeClass} ${className}`}
+      disabled={disabled}
+      onClick={onClick}
+    >
       {children}
     </button>
   );
 }
-export function ConfirmDialog({ title, message, children, confirmLabel = 'Confirm', danger = false, busy = false, onConfirm, onCancel }) {
+export function ConfirmDialog({
+  title,
+  message,
+  children,
+  confirmLabel = 'Confirm',
+  danger = false,
+  busy = false,
+  onConfirm,
+  onCancel,
+}) {
   return (
     <Modal title={title} onClose={onCancel}>
       <p style={{ marginTop: 0 }}>{message}</p>
       {children}
       <div className="row-end">
-        <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={onCancel}
+          disabled={busy}
+        >
+          Cancel
+        </button>
         <button
           type="button"
           className={danger ? 'btn-danger' : 'btn-primary'}
@@ -556,13 +801,10 @@ export function ExportDialog({
           if (v !== '' && v != null) p.set(k, v);
         }
       }
-      const r = await api.get(
-        `/common/exports/${dataset}/?${p.toString()}`,
-        {
-          responseType: 'blob',
-          headers: { Accept: 'application/octet-stream, */*' },
-        },
-      );
+      const r = await api.get(`/common/exports/${dataset}/?${p.toString()}`, {
+        responseType: 'blob',
+        headers: { Accept: 'application/octet-stream, */*' },
+      });
       const cd = r.headers?.['content-disposition'] || '';
       const m = cd.match(/filename="([^"]+)"/);
       const filename = (m && m[1]) || `${dataset}_export.${format}`;
@@ -614,10 +856,23 @@ export function ExportDialog({
             </div>
           )}
         </Field>
-        {error && <div className="field-error" role="alert">{error}</div>}
-        {msg && <div className="success-summary" role="status">{msg}</div>}
+        {error && (
+          <div className="field-error" role="alert">
+            {error}
+          </div>
+        )}
+        {msg && (
+          <div className="success-summary" role="status">
+            {msg}
+          </div>
+        )}
         <div className="row-end">
-          <button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={onClose}
+            disabled={busy}
+          >
             Cancel
           </button>
           <button
@@ -654,9 +909,17 @@ async function fetchAllPages(url) {
  * call site explicitly opts back in with allowCreate={true}. After
  * creation the new entry is auto-selected.
  */
-export function CategorySelect({ kind, value, onChange, error, disabled, allowCreate = kind !== 'ticket' }) {
+export function CategorySelect({
+  kind,
+  value,
+  onChange,
+  error,
+  disabled,
+  allowCreate = kind !== 'ticket',
+}) {
   const { isStaff } = useAuth();
-  const base = kind === 'ticket' ? '/tickets/categories/' : '/assets/categories/';
+  const base =
+    kind === 'ticket' ? '/tickets/categories/' : '/assets/categories/';
   const canCreate = allowCreate && isStaff;
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -678,7 +941,9 @@ export function CategorySelect({ kind, value, onChange, error, disabled, allowCr
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
+  useEffect(() => {
+    load();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
   const submit = async (ev) => {
     ev.preventDefault();
@@ -691,7 +956,10 @@ export function CategorySelect({ kind, value, onChange, error, disabled, allowCr
     setSaving(true);
     setSaveError('');
     try {
-      const r = await api.post(base, { name: trimmed, description: description.trim() });
+      const r = await api.post(base, {
+        name: trimmed,
+        description: description.trim(),
+      });
       await load();
       onChange(r.data.id); // auto-select the newly created category
       setName('');
@@ -711,36 +979,95 @@ export function CategorySelect({ kind, value, onChange, error, disabled, allowCr
         <select
           className="input input-auto"
           value={value ?? ''}
-          onChange={(e) => onChange(e.target.value ? Number(e.target.value) : '')}
+          onChange={(e) =>
+            onChange(e.target.value ? Number(e.target.value) : '')
+          }
           disabled={disabled || loading}
           aria-label={kind === 'ticket' ? 'Ticket category' : 'Asset category'}
         >
-          <option value="">{loading ? 'Loading…' : 'Select a category…'}</option>
-          {items.filter((c) => c.is_active !== false).map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
+          <option value="">
+            {loading ? 'Loading…' : 'Select a category…'}
+          </option>
+          {items
+            .filter((c) => c.is_active !== false)
+            .map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
         </select>
         {canCreate && (
-          <button type="button" className="btn-secondary" onClick={() => { setSaveError(''); setModalOpen(true); }} disabled={disabled}>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              setSaveError('');
+              setModalOpen(true);
+            }}
+            disabled={disabled}
+          >
             + Add
           </button>
         )}
       </div>
-      {loadError ? <div className="field-error" role="alert">{loadError}</div> : null}
-      {error ? <div className="field-error" role="alert">{error}</div> : null}
+      {loadError ? (
+        <div className="field-error" role="alert">
+          {loadError}
+        </div>
+      ) : null}
+      {error ? (
+        <div className="field-error" role="alert">
+          {error}
+        </div>
+      ) : null}
       {modalOpen && (
-        <Modal title={kind === 'ticket' ? 'Add ticket category' : 'Add asset category'} onClose={() => { if (!saving) setModalOpen(false); }}>
+        <Modal
+          title={
+            kind === 'ticket' ? 'Add ticket category' : 'Add asset category'
+          }
+          onClose={() => {
+            if (!saving) setModalOpen(false);
+          }}
+        >
           <form onSubmit={submit}>
             <Field label="Name" required>
-              <input className="input input-auto" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Hardware" disabled={saving} autoFocus />
+              <input
+                className="input input-auto"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Hardware"
+                disabled={saving}
+                autoFocus
+              />
             </Field>
             <Field label="Description">
-              <input className="input input-auto" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional" disabled={saving} />
+              <input
+                className="input input-auto"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Optional"
+                disabled={saving}
+              />
             </Field>
-            {saveError && <div className="field-error" role="alert">{saveError}</div>}
+            {saveError && (
+              <div className="field-error" role="alert">
+                {saveError}
+              </div>
+            )}
             <div className="row-end">
-              <button type="button" className="btn-ghost" onClick={() => setModalOpen(false)} disabled={saving}>Cancel</button>
-              <button type="submit" className="btn-primary" disabled={saving || !name.trim()}>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setModalOpen(false)}
+                disabled={saving}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={saving || !name.trim()}
+              >
                 {saving ? 'Saving…' : 'Create category'}
               </button>
             </div>
@@ -775,13 +1102,27 @@ export function DepartmentSelect({ value, onChange, error, disabled }) {
         disabled={disabled || loading}
         aria-label="Department"
       >
-        <option value="">{loading ? 'Loading…' : 'Select a department…'}</option>
-        {items.filter((d) => d.is_active !== false).map((d) => (
-          <option key={d.id} value={d.id}>{d.name}</option>
-        ))}
+        <option value="">
+          {loading ? 'Loading…' : 'Select a department…'}
+        </option>
+        {items
+          .filter((d) => d.is_active !== false)
+          .map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}
+            </option>
+          ))}
       </select>
-      {loadError ? <div className="field-error" role="alert">{loadError}</div> : null}
-      {error ? <div className="field-error" role="alert">{error}</div> : null}
+      {loadError ? (
+        <div className="field-error" role="alert">
+          {loadError}
+        </div>
+      ) : null}
+      {error ? (
+        <div className="field-error" role="alert">
+          {error}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -794,17 +1135,23 @@ export function AssetSelect({ value, onChange, error, disabled }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true); // eslint-disable-line react/set-state-in-effect
-    const t = setTimeout(async () => {
-      try {
-        const r = await api.get('/assets/', { params: q ? { q } : {} });
-        if (!cancelled) setItems(r.data.results ?? r.data ?? []);
-      } catch {
-        if (!cancelled) setItems([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }, q ? 300 : 0);
-    return () => { cancelled = true; clearTimeout(t); };
+    const t = setTimeout(
+      async () => {
+        try {
+          const r = await api.get('/assets/', { params: q ? { q } : {} });
+          if (!cancelled) setItems(r.data.results ?? r.data ?? []);
+        } catch {
+          if (!cancelled) setItems([]);
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      },
+      q ? 300 : 0,
+    );
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [q]);
   const selected = items.find((a) => a.id === Number(value));
   return (
@@ -813,15 +1160,26 @@ export function AssetSelect({ value, onChange, error, disabled }) {
         <select
           className="input"
           value={value ?? ''}
-          onChange={(e) => onChange(e.target.value ? Number(e.target.value) : '')}
+          onChange={(e) =>
+            onChange(e.target.value ? Number(e.target.value) : '')
+          }
           disabled={disabled}
           aria-label="Related asset (optional)"
         >
           <option value="">No asset</option>
-          {selected ? <option value={selected.id}>{selected.asset_tag} — {selected.name}</option> : null}
-          {items.filter((a) => a.id !== Number(value)).slice(0, 30).map((a) => (
-            <option key={a.id} value={a.id}>{a.asset_tag} — {a.name}</option>
-          ))}
+          {selected ? (
+            <option value={selected.id}>
+              {selected.asset_tag} — {selected.name}
+            </option>
+          ) : null}
+          {items
+            .filter((a) => a.id !== Number(value))
+            .slice(0, 30)
+            .map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.asset_tag} — {a.name}
+              </option>
+            ))}
         </select>
         <input
           className="input input-search"
@@ -833,7 +1191,11 @@ export function AssetSelect({ value, onChange, error, disabled }) {
         />
       </div>
       {loading ? <div className="field-hint">Loading assets…</div> : null}
-      {error ? <div className="field-error" role="alert">{error}</div> : null}
+      {error ? (
+        <div className="field-error" role="alert">
+          {error}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -844,15 +1206,23 @@ export function UserSelect({ value, onChange, error, disabled, label }) {
   const [items, setItems] = useState([]);
   useEffect(() => {
     let cancelled = false;
-    const t = setTimeout(async () => {
-      try {
-        const r = await api.get('/accounts/users/', { params: q ? { q } : {} });
-        if (!cancelled) setItems(r.data.results ?? r.data ?? []);
-      } catch {
-        if (!cancelled) setItems([]);
-      }
-    }, q ? 300 : 0);
-    return () => { cancelled = true; clearTimeout(t); };
+    const t = setTimeout(
+      async () => {
+        try {
+          const r = await api.get('/accounts/users/', {
+            params: q ? { q } : {},
+          });
+          if (!cancelled) setItems(r.data.results ?? r.data ?? []);
+        } catch {
+          if (!cancelled) setItems([]);
+        }
+      },
+      q ? 300 : 0,
+    );
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [q]);
   const selected = items.find((u) => u.id === Number(value));
   return (
@@ -862,15 +1232,26 @@ export function UserSelect({ value, onChange, error, disabled, label }) {
           className="input"
           data-testid="employee-select"
           value={value ?? ''}
-          onChange={(e) => onChange(e.target.value ? Number(e.target.value) : '')}
+          onChange={(e) =>
+            onChange(e.target.value ? Number(e.target.value) : '')
+          }
           disabled={disabled}
           aria-label={label || 'Assignee'}
         >
           <option value="">Unassigned</option>
-          {selected ? <option value={selected.id}>{selected.employee_id} — {selected.email}</option> : null}
-          {items.filter((u) => u.id !== Number(value)).slice(0, 30).map((u) => (
-            <option key={u.id} value={u.id}>{u.employee_id} — {u.email}</option>
-          ))}
+          {selected ? (
+            <option value={selected.id}>
+              {selected.employee_id} — {selected.email}
+            </option>
+          ) : null}
+          {items
+            .filter((u) => u.id !== Number(value))
+            .slice(0, 30)
+            .map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.employee_id} — {u.email}
+              </option>
+            ))}
         </select>
         <input
           className="input input-search"
@@ -881,14 +1262,27 @@ export function UserSelect({ value, onChange, error, disabled, label }) {
           aria-label="Search users"
         />
       </div>
-      {error ? <div className="field-error" role="alert">{error}</div> : null}
+      {error ? (
+        <div className="field-error" role="alert">
+          {error}
+        </div>
+      ) : null}
     </div>
   );
 }
 
 export function Alert({ variant = 'info', children }) {
-  const cls = variant === 'danger' ? 'error-summary' : variant === 'success' ? 'success-summary' : 'muted';
-  return <div className={cls} role={variant === 'danger' ? 'alert' : 'status'}>{children}</div>;
+  const cls =
+    variant === 'danger'
+      ? 'error-summary'
+      : variant === 'success'
+        ? 'success-summary'
+        : 'muted';
+  return (
+    <div className={cls} role={variant === 'danger' ? 'alert' : 'status'}>
+      {children}
+    </div>
+  );
 }
 
 export function Form({ children }) {
@@ -897,8 +1291,11 @@ export function Form({ children }) {
 
 export function Textarea({ rows, placeholder, ...props }) {
   return <textarea rows={rows} placeholder={placeholder} {...props} />;
-}export function Row({ children, className }) {
-  return <div className={`row${className ? ` ${className}` : ''}`}>{children}</div>;
+}
+export function Row({ children, className }) {
+  return (
+    <div className={`row${className ? ` ${className}` : ''}`}>{children}</div>
+  );
 }
 export function Col({ children, sm, md, lg, xl, className }) {
   const size = { sm: 'sm-', md: 'md-', lg: 'lg-', xl: 'xl-' };
@@ -906,20 +1303,49 @@ export function Col({ children, sm, md, lg, xl, className }) {
   const cls2 = size[md] ? `${size[md]}${md}` : '';
   const cls3 = size[lg] ? `${size[lg]}${lg}` : '';
   const cls4 = size[xl] ? `${size[xl]}${xl}` : '';
-  return <div className={`col ${cls2} ${cls3} ${cls4}${className ? ` ${className}` : ''}`}>{children}</div>;
+  return (
+    <div
+      className={`col ${cls2} ${cls3} ${cls4}${className ? ` ${className}` : ''}`}
+    >
+      {children}
+    </div>
+  );
 }
 export function Card({ children, className }) {
-  return <div className={`card${className ? ` ${className}` : ''}`}>{children}</div>;
+  return (
+    <div className={`card${className ? ` ${className}` : ''}`}>{children}</div>
+  );
 }
 export function Input({ label, ...props }) {
-  const el = (props.rows || props.type === 'textarea')
-    ? <textarea className="input" {...props} rows={props.rows || 3} />
-    : <input className="input" {...props} />;
-  return label ? <label className="field"><span>{label}</span>{el}</label> : el;
+  const el =
+    props.rows || props.type === 'textarea' ? (
+      <textarea className="input" {...props} rows={props.rows || 3} />
+    ) : (
+      <input className="input" {...props} />
+    );
+  return label ? (
+    <label className="field">
+      <span>{label}</span>
+      {el}
+    </label>
+  ) : (
+    el
+  );
 }
 export function Select({ label, children, ...props }) {
-  const el = <select className="input" {...props}>{children}</select>;
-  return label ? <label className="field"><span>{label}</span>{el}</label> : el;
+  const el = (
+    <select className="input" {...props}>
+      {children}
+    </select>
+  );
+  return label ? (
+    <label className="field">
+      <span>{label}</span>
+      {el}
+    </label>
+  ) : (
+    el
+  );
 }
 
 export function Option(props) {
@@ -933,7 +1359,12 @@ export function Option(props) {
  *  value: current page size number or '' for default.
  *  maxPageSize: maximum allowed value (default 100, matching DRF).
  */
-export function PageSizeSelector({ value, onChange, showCustom = true, maxPageSize = 100 }) {
+export function PageSizeSelector({
+  value,
+  onChange,
+  showCustom = true,
+  maxPageSize = 100,
+}) {
   const handleChange = (e) => {
     const raw = e.target.value.trim();
     if (raw === '') {
@@ -960,7 +1391,11 @@ export function PageSizeSelector({ value, onChange, showCustom = true, maxPageSi
     return (
       <div className="form-field form-field-small">
         <label className="form-label">Rows per page</label>
-        <select className="input" onChange={handleChange} aria-label="Rows per page">
+        <select
+          className="input"
+          onChange={handleChange}
+          aria-label="Rows per page"
+        >
           <option value="">Custom...</option>
           <option value={10}>10</option>
           <option value={20}>20</option>
@@ -976,7 +1411,12 @@ export function PageSizeSelector({ value, onChange, showCustom = true, maxPageSi
   return (
     <div className="form-field form-field-small">
       <label className="form-label">Rows per page</label>
-      <select className="input" value={String(value)} onChange={handleChange} aria-label="Rows per page">
+      <select
+        className="input"
+        value={String(value)}
+        onChange={handleChange}
+        aria-label="Rows per page"
+      >
         <option value={10}>10</option>
         <option value={25}>25</option>
         <option value={50}>50</option>
