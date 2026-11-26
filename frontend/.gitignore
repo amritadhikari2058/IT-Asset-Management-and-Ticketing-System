@@ -22,3 +22,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# build output and scratch files
+.assignment5-*/
+review/
+tmp*.txt
+run.txt
+test_output.txt
+*.bak*
+*.fixed
+*.new
