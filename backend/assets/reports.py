@@ -31,8 +31,16 @@ def _today():
     return timezone.now().date()
 
 
+def _scalar(value):
+    """Return a single filter value, tolerating list-valued param containers."""
+    if isinstance(value, (list, tuple)):
+        return value[-1] if value else None
+    return value
+
+
 def _coerce_date(value):
     """Accept a ``date`` or an ISO date string; return a ``date`` or ``None``."""
+    value = _scalar(value)
     if value in (None, ""):
         return None
     if isinstance(value, date):
@@ -42,6 +50,41 @@ def _coerce_date(value):
         return date(y, m, d)
     except (ValueError, TypeError):
         return None
+
+
+def _validate_positive_integer(value, field_name):
+    """Validate an optional positive integer query parameter."""
+    raw = _scalar(value)
+    if raw in (None, ""):
+        return None
+    try:
+        number = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be a positive integer.")
+    if number < 1:
+        raise ValueError(f"{field_name} must be a positive integer.")
+    return number
+
+
+def validate_report_params(params=None):
+    """Validate shared report query params supplied through an HTTP request.
+
+    Malformed dates and non-positive pagination values are rejected with a
+    clear error instead of being silently ignored or causing a 500.
+    """
+    params = params or {}
+    from_raw = _scalar(params.get("from_date"))
+    to_raw = _scalar(params.get("to_date"))
+    from_date = _coerce_date(from_raw)
+    to_date = _coerce_date(to_raw)
+    if from_raw not in (None, "") and from_date is None:
+        raise ValueError("from_date must be a valid ISO date (YYYY-MM-DD).")
+    if to_raw not in (None, "") and to_date is None:
+        raise ValueError("to_date must be a valid ISO date (YYYY-MM-DD).")
+    if from_date and to_date and from_date > to_date:
+        raise ValueError("from_date must be on or before to_date.")
+    _validate_positive_integer(params.get("page"), "page")
+    _validate_positive_integer(params.get("page_size"), "page_size")
 
 
 def _status_counts(queryset, field="status"):
@@ -61,24 +104,36 @@ def _status_counts(queryset, field="status"):
     return counts
 
 
-def financial_overview_data():
+def financial_overview_data(params=None):
     """Financial overview for the entire asset inventory (IT staff only).
 
+    Optional query params dict:
+    - from_date: filter assets with purchase_date >= this date (ISO date string)
+    - to_date: filter assets with purchase_date <= this date (ISO date string)
+
     Returns:
-    - total_purchase_cost: sum of purchase_cost across all non-deleted assets
-    - total_assets: count of non-deleted assets
+    - total_purchase_cost: sum of purchase_cost across filtered assets
+    - total_assets: count of filtered assets
     - by_category: list of {category, asset_count, purchase_cost} sorted by cost desc
     - by_vendor: list of {vendor, asset_count, purchase_cost} sorted by cost desc
-    - assets_without_cost: count of assets with no purchase_cost recorded
+    - assets_without_cost: count of filtered assets with no purchase_cost recorded
     - cost_to_value_ratio: total maintenance cost / total purchase cost (None if no purchase cost)
     """
+    params = params or {}
     assets = Asset.objects.all()
 
+    from_date = _coerce_date(params.get("from_date"))
+    to_date = _coerce_date(params.get("to_date"))
+    if from_date:
+        assets = assets.filter(purchase_date__gte=from_date)
+    if to_date:
+        assets = assets.filter(purchase_date__lte=to_date)
+
     total_assets = assets.count()
+
     total_purchase_cost = assets.aggregate(
-        s=Sum("purchase_cost", output_field=None)
-    )["s"]
-    total_purchase_cost = total_purchase_cost or 0
+        total_purchase_cost=Sum("purchase_cost", output_field=None)
+    )["total_purchase_cost"] or 0
 
     by_category = (
         assets.values("category__name")
@@ -152,20 +207,20 @@ def maintenance_analytics_data(params=None):
     today = _today()
     qs = Maintenance.objects.select_related("asset", "asset__category", "asset__vendor").all()
 
-    asset = params.get("asset")
+    asset = _scalar(params.get("asset"))
     if asset:
         try:
             qs = qs.filter(asset_id=int(asset))
         except (TypeError, ValueError):
             qs = qs.none()
 
-    status = params.get("status")
+    status = _scalar(params.get("status"))
     if status:
         qs = qs.filter(status=status)
-    maintenance_type = params.get("maintenance_type")
+    maintenance_type = _scalar(params.get("maintenance_type"))
     if maintenance_type:
         qs = qs.filter(maintenance_type=maintenance_type)
-    q = (params.get("q") or "").strip()
+    q = (_scalar(params.get("q")) or "").strip()
     if q:
         qs = qs.filter(
             Q(title__icontains=q)
@@ -326,8 +381,12 @@ def warranty_monitoring_data(params=None):
     }
 
 
-def utilization_data():
+def utilization_data(params=None):
     """Asset utilization insights (IT staff only).
+
+    Optional query params dict:
+    - from_date: filter assets with purchase_date >= this date (ISO date string)
+    - to_date: filter assets with purchase_date <= this date (ISO date string)
 
     Returns:
     - status_counts: {status: count}
@@ -335,7 +394,15 @@ def utilization_data():
     - assigned_count, available_count, maintenance_count, retired_count, disposed_count, lost_count
     - assignment_distribution: [{employee, employee_id, department, asset_count}] top holders
     """
+    params = params or {}
     qs = Asset.objects.all()
+
+    from_date = _coerce_date(params.get("from_date"))
+    to_date = _coerce_date(params.get("to_date"))
+    if from_date:
+        qs = qs.filter(purchase_date__gte=from_date)
+    if to_date:
+        qs = qs.filter(purchase_date__lte=to_date)
     status_counts = _status_counts(qs)
 
     total_assets = qs.count()
@@ -408,7 +475,7 @@ def asset_report_data(params=None):
         "category", "assigned_to", "department", "vendor"
     ).all()
 
-    q = (params.get("q") or "").strip()
+    q = (_scalar(params.get("q")) or "").strip()
     if q:
         qs = qs.filter(
             Q(name__icontains=q)
@@ -417,16 +484,16 @@ def asset_report_data(params=None):
             | Q(location__icontains=q)
             | Q(department__name__icontains=q)
         )
-    status = params.get("status")
+    status = _scalar(params.get("status"))
     if status:
         qs = qs.filter(status=status)
-    category = params.get("category")
+    category = _scalar(params.get("category"))
     if category:
         qs = qs.filter(category_id=category)
-    department = params.get("department")
+    department = _scalar(params.get("department"))
     if department:
         qs = qs.filter(department_id=department)
-    vendor = params.get("vendor")
+    vendor = _scalar(params.get("vendor"))
     if vendor:
         qs = qs.filter(vendor_id=vendor)
     from_date = _coerce_date(params.get("from_date"))
@@ -437,8 +504,8 @@ def asset_report_data(params=None):
         qs = qs.filter(purchase_date__lte=to_date)
 
     total = qs.count()
-    page_size = int(params.get("page_size", 100))
-    page = int(params.get("page", 1))
+    page_size = int(_scalar(params.get("page_size", 100)) or 100)
+    page = int(_scalar(params.get("page", 1)) or 1)
     offset = (page - 1) * page_size
     rows_qs = qs[offset : offset + page_size]
 
@@ -578,18 +645,8 @@ def warranty_by_department(params=None):
     today = timezone.now().date()
     qs = Asset.objects.select_related("category", "vendor", "department").all()
 
-    date_from = None
-    date_to = None
-    if params.get("from_date"):
-        try:
-            date_from = date.fromisoformat(str(params["from_date"])[:10])
-        except (ValueError, TypeError):
-            date_from = None
-    if params.get("to_date"):
-        try:
-            date_to = date.fromisoformat(str(params["to_date"])[:10])
-        except (ValueError, TypeError):
-            date_to = None
+    date_from = _coerce_date(params.get("from_date"))
+    date_to = _coerce_date(params.get("to_date"))
     if date_from:
         qs = qs.filter(warranty_expiry__gte=date_from)
     if date_to:
@@ -657,18 +714,8 @@ def warranty_by_category(params=None):
     today = timezone.now().date()
     qs = Asset.objects.select_related("category", "vendor").all()
 
-    date_from = None
-    date_to = None
-    if params.get("from_date"):
-        try:
-            date_from = date.fromisoformat(str(params["from_date"])[:10])
-        except (ValueError, TypeError):
-            date_from = None
-    if params.get("to_date"):
-        try:
-            date_to = date.fromisoformat(str(params["to_date"])[:10])
-        except (ValueError, TypeError):
-            date_to = None
+    date_from = _coerce_date(params.get("from_date"))
+    date_to = _coerce_date(params.get("to_date"))
     if date_from:
         qs = qs.filter(warranty_expiry__gte=date_from)
     if date_to:
@@ -736,18 +783,8 @@ def warranty_by_vendor(params=None):
     today = timezone.now().date()
     qs = Asset.objects.select_related("category", "vendor").all()
 
-    date_from = None
-    date_to = None
-    if params.get("from_date"):
-        try:
-            date_from = date.fromisoformat(str(params["from_date"])[:10])
-        except (ValueError, TypeError):
-            date_from = None
-    if params.get("to_date"):
-        try:
-            date_to = date.fromisoformat(str(params["to_date"])[:10])
-        except (ValueError, TypeError):
-            date_to = None
+    date_from = _coerce_date(params.get("from_date"))
+    date_to = _coerce_date(params.get("to_date"))
     if date_from:
         qs = qs.filter(warranty_expiry__gte=date_from)
     if date_to:

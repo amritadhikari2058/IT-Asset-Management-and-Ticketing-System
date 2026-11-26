@@ -412,9 +412,27 @@ def export_dataset(request, dataset):
     ids_raw = request.query_params.get("ids") or ""
     ids = [i for i in str(ids_raw).split(",") if i.strip()]
     if scope == "filtered":
+        # QueryDict.dict() yields scalar values (last value wins for repeated
+        # keys); dict(QueryDict) would make builders call .strip() on a list.
+        filters = request.query_params.dict()
+        if dataset == "assets":
+            try:
+                raw_from = filters.get("from_date")
+                raw_to = filters.get("to_date")
+                date_from = parse_date(raw_from) if raw_from else None
+                date_to = parse_date(raw_to) if raw_to else None
+                if raw_from and date_from is None:
+                    raise ValueError("from_date must be a valid ISO date (YYYY-MM-DD).")
+                if raw_to and date_to is None:
+                    raise ValueError("to_date must be a valid ISO date (YYYY-MM-DD).")
+                if date_from and date_to and date_from > date_to:
+                    raise ValueError("from_date must be on or before to_date.")
+            except ValueError as exc:
+                from rest_framework.exceptions import ValidationError
+                raise ValidationError({"detail": str(exc)}) from exc
         # Apply the same filter query params the list endpoint honors so the
         # export matches the user's current filtered view.
-        rows = build_rows(dataset, request.user, dict(request.query_params))
+        rows = build_rows(dataset, request.user, filters)
     else:
         rows = build_rows(dataset, request.user)
     if scope == "selected":

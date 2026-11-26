@@ -20,9 +20,9 @@ export function ChangeTemplates() {
       setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
-    fetchPage(`/change-templates/`)
+    fetchPage('/changes/templates/')
       .then((data) => {
-        setTemplates(data);
+        setTemplates(data.items);
         setLoading(false);
       })
       .catch((e) => {

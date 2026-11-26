@@ -16,6 +16,7 @@ from datetime import datetime
 
 from django.db.models import Count, Q
 from django.http import HttpResponse
+from django.utils.dateparse import parse_date
 from rest_framework.renderers import BaseRenderer
 
 EXPORT_FORMATS = ("csv", "xlsx", "pdf", "docx")
@@ -252,6 +253,24 @@ def department_rows(user=None, filters=None):
         }
 
 
+def _scalar_filter(filters, key):
+    """Return a single filter value, tolerating list-valued containers."""
+    value = filters.get(key)
+    if isinstance(value, (list, tuple)):
+        return value[-1] if value else None
+    return value
+
+
+def _asset_date_filter(filters, key):
+    raw = _scalar_filter(filters, key)
+    if raw in (None, ""):
+        return None
+    parsed = parse_date(str(raw))
+    if parsed is None:
+        raise ValueError(f"{key} must be a valid ISO date (YYYY-MM-DD).")
+    return parsed
+
+
 def asset_rows(user=None, filters=None):
     from assets.models import Asset
 
@@ -270,21 +289,27 @@ def asset_rows(user=None, filters=None):
             if getattr(user, "home_department_id", None):
                 filt |= Q(department_id=user.home_department_id)
             qs = qs.filter(filt)
-    q = (filters.get("q") or "").strip()
+    q = (_scalar_filter(filters, "q") or "").strip()
     if q:
         qs = qs.filter(
             Q(name__icontains=q) | Q(asset_tag__icontains=q)
             | Q(serial_number__icontains=q) | Q(location__icontains=q)
             | Q(department__name__icontains=q) | Q(department__code__icontains=q))
-    status = filters.get("status")
+    status = _scalar_filter(filters, "status")
     if status:
         qs = qs.filter(status=status)
-    category = filters.get("category")
+    category = _scalar_filter(filters, "category")
     if category:
         qs = qs.filter(category_id=category)
-    department = filters.get("department")
+    department = _scalar_filter(filters, "department")
     if department:
         qs = qs.filter(department_id=department)
+    from_date = _asset_date_filter(filters, "from_date")
+    to_date = _asset_date_filter(filters, "to_date")
+    if from_date:
+        qs = qs.filter(purchase_date__gte=from_date)
+    if to_date:
+        qs = qs.filter(purchase_date__lte=to_date)
     for a in qs.select_related(
             "category", "department").order_by("asset_tag").iterator(
                 chunk_size=1000):

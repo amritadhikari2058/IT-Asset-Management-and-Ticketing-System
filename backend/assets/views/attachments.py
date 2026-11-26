@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 
 from .shared import *
+from .shared import _asset_visible_qs, _positive_pk_param
 
 class AssetAttachmentViewSet(viewsets.ModelViewSet):
     """Private asset files. Same lifecycle as ticket attachments.

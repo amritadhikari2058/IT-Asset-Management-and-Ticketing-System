@@ -85,20 +85,24 @@ class AssetReportViewSet(viewsets.ReadOnlyModelViewSet):
         Supported reports: financial, maintenance, warranty, utilization, inventory.
         """
         report = (request.query_params.get("report") or "").strip()
-        params = dict(request.query_params)
-        # Strip routing params
+        # QueryDict.dict() yields scalar values (last value wins for repeated
+        # keys); dict(QueryDict) would turn every value into a list.
+        params = request.query_params.dict()
+        # Strip only the routing param; pagination belongs to report data.
         params.pop("report", None)
-        params.pop("page", None)
-        params.pop("page_size", None)
+        try:
+            reports.validate_report_params(params)
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
 
         if report == "financial":
-            data = reports.financial_overview_data()
+            data = reports.financial_overview_data(params)
         elif report == "maintenance":
             data = reports.maintenance_analytics_data(params)
         elif report == "warranty":
             data = reports.warranty_monitoring_data(params)
         elif report == "utilization":
-            data = reports.utilization_data()
+            data = reports.utilization_data(params)
         elif report == "inventory":
             data = reports.asset_report_data(params)
         elif report == "assets_by_department":

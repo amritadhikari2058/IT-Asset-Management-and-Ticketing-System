@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 
 from .shared import *
+from .shared import _asset_visible_qs
 
 class AssignmentViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Assignment.objects.select_related(

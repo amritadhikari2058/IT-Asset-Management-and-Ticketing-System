@@ -1,4 +1,6 @@
 """Email, privacy-erasure, and attachment-storage tests."""
+from datetime import date
+
 from django.core import mail
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
@@ -1345,6 +1347,96 @@ class ExportDatasetTests(TestCase):
         self.assertEqual(res.status_code, 200)
         blob = res.content.decode("utf-8")
         self.assertIn("HIDDEN-2", blob)
+
+    def test_filtered_asset_export_date_filter(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="DateFiltered")
+        Asset.objects.create(
+            asset_tag="DATE-OLD", name="old purchase", category=cat,
+            purchase_date=date(2025, 6, 14))
+        Asset.objects.create(
+            asset_tag="DATE-EDGE", name="final selected day", category=cat,
+            purchase_date=date(2025, 6, 15))
+        Asset.objects.create(
+            asset_tag="DATE-LATER", name="after range", category=cat,
+            purchase_date=date(2025, 6, 16))
+
+        res = self.c.get(
+            "/api/common/exports/assets/?format=csv&scope=filtered"
+            "&from_date=2025-06-15&to_date=2025-06-15")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("DATE-EDGE", blob)
+        self.assertNotIn("DATE-OLD", blob)
+        self.assertNotIn("DATE-LATER", blob)
+
+    def test_filtered_asset_export_search(self):
+        from assets.models import Asset, AssetCategory
+        cat = AssetCategory.objects.create(name="SearchFiltered")
+        Asset.objects.create(
+            asset_tag="SRCH-EXPORT", name="target", category=cat)
+        Asset.objects.create(
+            asset_tag="OTHER-EXPORT", name="other", category=cat)
+
+        res = self.c.get(
+            "/api/common/exports/assets/?format=csv&scope=filtered"
+            "&q=SRCH-EXPORT")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("SRCH-EXPORT", blob)
+        self.assertNotIn("OTHER-EXPORT", blob)
+
+    def test_filtered_asset_export_rejects_invalid_date(self):
+        res = self.c.get(
+            "/api/common/exports/assets/?format=csv&scope=filtered"
+            "&from_date=15-06-2025")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("from_date", str(res.data))
+
+    def test_all_scope_export_respects_employee_scope(self):
+        from accounts.models import Department
+        from assets.models import Asset, AssetCategory
+        other_dep = Department.objects.create(name="AllScopeOther", code="ASO")
+        cat = AssetCategory.objects.create(name="AllScopeCat")
+        visible = Asset.objects.create(
+            asset_tag="ALL-VISIBLE", name="visible", category=cat,
+            department=self.dep)
+        hidden = Asset.objects.create(
+            asset_tag="ALL-HIDDEN", name="hidden", category=cat,
+            department=other_dep)
+
+        res = self.c.get("/api/common/exports/assets/?format=csv&scope=all")
+        self.assertEqual(res.status_code, 200)
+        manager_blob = res.content.decode("utf-8")
+        self.assertIn("ALL-VISIBLE", manager_blob)
+        self.assertIn("ALL-HIDDEN", manager_blob)
+
+        auth(self.c, self.emp)
+        res = self.c.get("/api/common/exports/assets/?format=csv&scope=all")
+        self.assertEqual(res.status_code, 200)
+        employee_blob = res.content.decode("utf-8")
+        self.assertIn("ALL-VISIBLE", employee_blob)
+        self.assertNotIn("ALL-HIDDEN", employee_blob)
+
+    def test_employee_filtered_export_still_scoped(self):
+        from accounts.models import Department
+        from assets.models import Asset, AssetCategory
+        other_dep = Department.objects.create(name="FilteredOther", code="FO")
+        cat = AssetCategory.objects.create(name="FilteredCat")
+        Asset.objects.create(
+            asset_tag="SCOPE-VISIBLE", name="visible", category=cat,
+            department=self.dep)
+        Asset.objects.create(
+            asset_tag="SCOPE-HIDDEN", name="hidden", category=cat,
+            department=other_dep)
+
+        auth(self.c, self.emp)
+        res = self.c.get(
+            "/api/common/exports/assets/?format=csv&scope=filtered&q=SCOPE-")
+        self.assertEqual(res.status_code, 200)
+        blob = res.content.decode("utf-8")
+        self.assertIn("SCOPE-VISIBLE", blob)
+        self.assertNotIn("SCOPE-HIDDEN", blob)
 
 
 

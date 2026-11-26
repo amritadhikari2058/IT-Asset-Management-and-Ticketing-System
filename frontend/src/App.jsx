@@ -76,14 +76,6 @@ const NAV = [
   { hash: '#/changes/new', label: 'New Change', staffOnly: true },
   { hash: '#/changes/calendar', label: 'Calendar', staffOnly: true },
   { hash: '#/changes/dashboard', label: 'Dashboard', staffOnly: true },
-  { hash: '#/changes/:id', label: 'Change Detail', staffOnly: true },
-  { hash: '#/changes/:id/edit', label: 'Edit Change', staffOnly: true },
-  { hash: '#/changes/:id/risk', label: 'Risk Assessment', staffOnly: true },
-  { hash: '#/changes/:id/tasks', label: 'Task Checklist', staffOnly: true },
-  { hash: '#/changes/:id/approvals', label: 'Approvals', staffOnly: true },
-  { hash: '#/changes/:id/conflicts', label: 'Conflicts', staffOnly: true },
-  { hash: '#/changes/:id/implementation', label: 'Implementation', staffOnly: true },
-  { hash: '#/changes/:id/pir', label: 'PIR & Closure', staffOnly: true },
   { hash: '#/change-templates', label: 'Change Templates', staffOnly: true },
   { hash: '#/maintenance-windows', label: 'Maintenance Windows', staffOnly: true },
   { hash: '#/blackout-periods', label: 'Blackout Periods', staffOnly: true },
@@ -233,8 +225,7 @@ const TITLES = {
   '#/procurement/reports': 'Procurement reports',
 };
 
-/** Sticky-header breadcrumb: parent → record → action, so the header
- *  adds orientation instead of repeating the page title below it. */
+/** Sticky-header breadcrumb: parent -> record -> action. */
 function crumbs(hash) {
   const h = hash.split('?')[0];
   let m;
@@ -317,6 +308,32 @@ function crumbs(hash) {
   if (h.startsWith('#/procurement/receipts')) return ['Procurement', 'Goods Receipts'];
   if (h.startsWith('#/procurement/assets')) return ['Procurement', 'Asset registration'];
   if (h.startsWith('#/procurement/reports')) return ['Procurement', 'Reports'];
+  // Change Management breadcrumbs
+  if (h === '#/changes') return ['Change Management', 'Changes'];
+  if (h === '#/changes/new') return ['Change Management', 'New Change'];
+  if (h === '#/changes/calendar') return ['Change Management', 'Calendar'];
+  if (h === '#/changes/schedule') return ['Change Management', 'Schedule'];
+  if (h === '#/changes/dashboard') return ['Change Management', 'Dashboard'];
+
+  if ((m = h.match(/^#\/changes\/(\d+)(?:\/(edit|risk|tasks|approvals|conflicts|implementation|pir))?$/))) {
+    const labels = {
+      edit: 'Edit',
+      risk: 'Risk Assessment',
+      tasks: 'Tasks',
+      approvals: 'Approvals',
+      conflicts: 'Conflicts',
+      implementation: 'Implementation',
+      pir: 'Post-Implementation Review',
+    };
+    return ['Change Management', `Change #${m[1]}`, ...(m[2] ? [labels[m[2]]] : [])];
+  }
+
+  if (h === '#/change-templates') return ['Change Management', 'Templates'];
+  if (h === '#/maintenance-windows') return ['Change Management', 'Maintenance Windows'];
+  if (h === '#/blackout-periods') return ['Change Management', 'Blackout Periods'];
+  if (h === '#/scheduling-exceptions') return ['Change Management', 'Scheduling Exceptions'];
+  if (h === '#/change-review-meetings') return ['Change Management', 'Review Meetings'];
+  if (h === '#/outages') return ['Change Management', 'Outages'];
   return [TITLES[h] ?? 'Tickets'];
 }
 
@@ -325,10 +342,11 @@ function AccessDenied() {
 }
 
 function matchRoute(hash, auth) {
-  const route = hash.split('?')[0];
+  let route = hash.split('?')[0];
   let m;
   if (route.startsWith('#/monitoring')) {
     if (!auth.canUseMonitoring) return <AccessDenied />;
+    if (route === '#/monitoring') return <Monitoring />;
     if (route === '#/monitoring/overview') return <MonitoringOverview />;
     if (route === '#/monitoring/sources') return auth.isAdmin ? <SourceManagement /> : <AccessDenied />;
     if (route === '#/monitoring/alerts') return <AlertList />;
@@ -342,23 +360,22 @@ function matchRoute(hash, auth) {
   if (route === '#/reports/relationship_coverage') return <AssetReportsPage />;
   if (route === '#/reports/drift') return <DriftFindingsPage />;
   if (route === '#/reports/critical_deps') return <AssetReportsPage />;
-  if (route === '#reports/asset_sync') return <AssetReportsPage />;
-  if (route === '#reports/software_sync') return <AssetReportsPage />;
-  if (route === '#verification') return <VerificationQueuePage />;
+  if (route === '#/reports/asset_sync') return <AssetReportsPage />;
+  if (route === '#/reports/software_sync') return <AssetReportsPage />;
+  if (route === '#/verification') return <VerificationQueuePage />;
 
   // --- Service detail routes ---
-  if (route.startsWith('#/services/') && route.match(/\/graph$/)) return <ServiceGraphPage />;
-  if (route.startsWith('#/services/') && route.match(/\/impact$/)) return <ServiceImpactPage />;
-  if (route.startsWith('#/services/') && route.match(/\/single-points-of-failure$/)) return <ServiceSPOFPage />;
+
 
   // --- CMDB dashboard and items ---
   if (route === '#/cmdb') return <CmdbDashboard />;
   if (route === '#/cmdb/items') return <CmdbItemsList />;
   if (route === '#/cmdb/items/new') return <CiForm />;
-  if (route === '#cmdb/items/:id/edit') return <CiForm />;
-  if (route === '#cmdb/items/:id/impact') return <ImpactAnalysisPage />;
-  if (route === '#cmdb/items/:id/dependencies') return <DependencyMap />;
-  if (route === '#cmdb/items/:id/relationships') return <CiRelationshipsPage />;
+  if ((m = route.match(/^#\/cmdb\/items\/(\d+)$/))) return <CiDetail id={m[1]} />;
+  if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/edit$/))) return <CiForm id={m[1]} />;
+  if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/impact$/))) return <ImpactAnalysisPage id={m[1]} />;
+  if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/dependencies$/))) return <DependencyMap id={m[1]} />;
+  if ((m = route.match(/^#\/cmdb\/items\/(\d+)\/relationships$/))) return <CiRelationshipsPage id={m[1]} />;
   if (route === '#/cmdb/types') return <CiTypesPage />;
   if (route === '#/cmdb/baselines') return <BaselinesPage />;
   if (route === '#/cmdb/drift') return <DriftFindingsPage />;
@@ -392,6 +409,20 @@ function matchRoute(hash, auth) {
   if (route === '#/vendors/new') return <VendorForm />;
   if ((m = route.match(/^#\/vendors\/(\d+)$/))) return <VendorDetail id={m[1]} />;
   if ((m = route.match(/^#\/users\/(\d+)\/?$/))) return <EmployeeDetail id={m[1]} />;
+  if (route === '#/kb') return <KnowledgeBase />;
+  const changeManagementRoutes = [
+    '#/change-templates',
+    '#/maintenance-windows',
+    '#/blackout-periods',
+    '#/scheduling-exceptions',
+    '#/change-review-meetings',
+    '#/outages',
+  ];
+  if (
+    route === '#/changes' ||
+    route.startsWith('#/changes/') ||
+    changeManagementRoutes.includes(route)
+  ) return <ChangesPage />;
   if (route === '#/kb/pending') return <KnowledgeBaseReviewQueue />;
   if ((m = route.match(/^#\/kb\/(\d+)\/revisions\/(\d+)$/))) return <KnowledgeBaseRevisionDetail id={m[1]} number={m[2]} />;
   if ((m = route.match(/^#\/kb\/(\d+)\/revisions$/))) return <KnowledgeBaseRevisions id={m[1]} />;
@@ -440,16 +471,16 @@ function matchRoute(hash, auth) {
     '#/reports/departments': <DepartmentReports />,
     '#/reports/saved': <SavedReports />,
     '#/reports/schedules': <ScheduledReports />,
-    '#reports/coverage': <AssetReportsPage />,
-    '#reports/verification_age': <VerificationQueuePage />,
-    '#reports/orphans': <AssetReportsPage />,
-    '#reports/ownership_gaps': <AssetReportsPage />,
-    '#reports/relationship_coverage': <AssetReportsPage />,
-    '#reports/drift': <DriftFindingsPage />,
-    '#reports/critical_deps': <AssetReportsPage />,
-    '#reports/asset_sync': <AssetReportsPage />,
-    '#reports/software_sync': <AssetReportsPage />,
-    '#verification': <VerificationQueuePage />,
+    '#/reports/coverage': <AssetReportsPage />,
+    '#/reports/verification_age': <VerificationQueuePage />,
+    '#/reports/orphans': <AssetReportsPage />,
+    '#/reports/ownership_gaps': <AssetReportsPage />,
+    '#/reports/relationship_coverage': <AssetReportsPage />,
+    '#/reports/drift': <DriftFindingsPage />,
+    '#/reports/critical_deps': <AssetReportsPage />,
+    '#/reports/asset_sync': <AssetReportsPage />,
+    '#/reports/software_sync': <AssetReportsPage />,
+    '#/verification': <VerificationQueuePage />,
     '#/assets': <Assets />,
     '#/assets/reports': <AssetReportsPage />,
     '#/vendors': <VendorsPage />,
@@ -468,8 +499,8 @@ function matchRoute(hash, auth) {
     '#/sla-config': <SLAConfig />,
     '#/users': <Users />,
     '#/profile': <Profile />,
-    '#verify-email': <VerifyEmail />,
-    '#reset-password': <ResetPassword />,
+    '#/verify-email': <VerifyEmail />,
+    '#/reset-password': <ResetPassword />,
     '#/self-service': <SelfService />,
     '#/changes': <ChangesPage />,
     '#/cmdb': <CmdbDashboard />,
@@ -494,7 +525,7 @@ function Shell() {
     canViewProcurement, canViewProcurementReports, canUseMonitoring,
     canUseProblemManagement, canAccessRecycleBin]);
   const routerLocation = useLocation();
-  const hash = routerLocation.hash || '#/tickets';
+  const hash = '#' + routerLocation.pathname + routerLocation.search;
   const nav = useMemo(() => visibleNav(NAV, caps), [caps]);
   const [navOpen, setNavOpen] = useState(false);
   // Collapsible sections are collapsed by default. Only sections the user has
@@ -521,7 +552,7 @@ function Shell() {
   if (profileLoading) {
     return (
       <p className="page-loading" role="status">
-        <span className="spinner" aria-hidden="true" />Loading your workspace…
+        <span className="spinner" aria-hidden="true" />Loading your workspace{'\u2026'}
       </p>
     );
   }
@@ -551,7 +582,7 @@ function Shell() {
                     className="sidenav-section-chevron"
                     aria-hidden="true"
                   >
-                    {isSectionCollapsed(n.section) ? '▶' : '▼'}
+                    {isSectionCollapsed(n.section) ? '\u25B6' : '\u25BC'}
                   </span>
                 </button>
                 <div
@@ -597,7 +628,7 @@ function Shell() {
       <div className={`sidebar-scrim${navOpen ? ' nav-open' : ''}`} onClick={() => setNavOpen(false)} aria-hidden="true" />
       <div className="main-col">
         <div className="topbar">
-          <button type="button" className="nav-toggle" onClick={() => setNavOpen((v) => !v)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen}>☰</button>
+          <button type="button" className="nav-toggle" onClick={() => setNavOpen((v) => !v)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen}>{'\u2630'}</button>
           <nav className="crumbs" aria-label="Breadcrumb">
             {crumbs(hash).map((c, i, arr) => (
               <span key={i}>
@@ -616,7 +647,7 @@ function Shell() {
               </div>
             }
           >
-            <Suspense fallback={<p className="page-loading" role="status"><span className="spinner" aria-hidden="true" />Loading page…</p>}>
+            <Suspense fallback={<p className="page-loading" role="status"><span className="spinner" aria-hidden="true" />Loading page{'\u2026'}</p>}>
               {el}
             </Suspense>
           </ErrorBoundary>

@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 
 from .shared import *
+from .shared import _history_maintenance, _notify_maintenance
 
 class MaintenanceViewSet(viewsets.ModelViewSet):
     """Maintenance records for assets. IT staff manage; reads open."""

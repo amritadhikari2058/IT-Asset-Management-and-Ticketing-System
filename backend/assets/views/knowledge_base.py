@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 
 from .shared import *
+from .shared import _can_manage
 
 class KnowledgeBaseConflict(APIException):
     """HTTP 409 for stale article edits / restoration conflicts."""

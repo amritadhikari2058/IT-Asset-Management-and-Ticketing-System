@@ -20,9 +20,9 @@ export function ChangeReviewMeetings() {
       setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
-    fetchPage(`/change-review-meetings/`)
+    fetchPage('/changes/review-meetings/')
       .then((data) => {
-        setMeetings(data);
+        setMeetings(data.items);
         setLoading(false);
       })
       .catch((e) => {

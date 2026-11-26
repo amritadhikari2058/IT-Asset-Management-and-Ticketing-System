@@ -30,9 +30,9 @@ export function ChangeCalendar() {
       setLoading(false); // eslint-disable-line react/set-state-in-effect
       return;
     }
-    fetchPage(`/changes/calendar?start=${selectedYear}-${selectedMonth + 1}-01&end=${selectedYear}-${selectedMonth + 1}-31`)
+    fetchPage(`/changes/calendar/?start=${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-01&end=${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-${String(new Date(selectedYear, selectedMonth + 1, 0).getDate()).padStart(2, '0')}`)
       .then((data) => {
-        setChanges(data);
+        setChanges(data.items);
         setLoading(false);
       })
       .catch((e) => {

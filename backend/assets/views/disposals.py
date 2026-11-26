@@ -61,6 +61,8 @@ logger = logging.getLogger(__name__)
 
 
 from .shared import *
+from .shared import (_complete_disposal, _history_disposal,
+                     _notify_disposal, _record_disposal_decision)
 
 class DisposalViewSet(viewsets.ModelViewSet):
     """Asset disposal workflow: draft -> approve/reject -> complete.

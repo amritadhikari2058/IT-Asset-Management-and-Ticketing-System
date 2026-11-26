@@ -118,6 +118,11 @@ export function AssetReportsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [data, setData] = useState(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+  const [totalCount, setTotalCount] = useState(0);
+  const [hasNext, setHasNext] = useState(false);
+  const [hasPrev, setHasPrev] = useState(false);
 
   // Report-specific filter state
   const [fromDate, setFromDate] = useState('');
@@ -131,6 +136,11 @@ export function AssetReportsPage() {
     return () => window.removeEventListener('hashchange', sync);
   }, []);
 
+  // Reset pagination whenever filters or the active report change.
+  useEffect(() => {
+    setPage(1);
+  }, [fromDate, toDate, route]);
+
   useEffect(() => {
     if (!isStaff) return undefined;
     let cancelled = false;
@@ -143,20 +153,48 @@ export function AssetReportsPage() {
           if (!cancelled) {
             setError('Unknown report.');
             setData(null);
+            setPage(1);
+            setPageSize(100);
+            setTotalCount(0);
+            setHasNext(false);
+            setHasPrev(false);
           }
           return;
         }
         const params = {};
         if (fromDate) params.from_date = fromDate;
         if (toDate) params.to_date = toDate;
-        if (route === 'inventory') params.page_size = 100;
+        if (route === 'inventory') {
+          params.page = page;
+          params.page_size = pageSize;
+        }
 
         const r = await api.get(url, { params });
-        if (!cancelled) setData(r.data);
+        if (!cancelled) {
+          setData(r.data);
+          if (route === 'inventory') {
+            setTotalCount(r.data.count);
+            setPage(r.data.page);
+            setPageSize(r.data.page_size);
+            setHasNext(r.data.has_next);
+            setHasPrev(r.data.has_prev);
+          } else {
+            setPage(1);
+            setPageSize(100);
+            setTotalCount(0);
+            setHasNext(false);
+            setHasPrev(false);
+          }
+        }
       } catch {
         if (!cancelled) {
           setError('Could not load report.');
           setData(null);
+          setPage(1);
+          setPageSize(100);
+          setTotalCount(0);
+          setHasNext(false);
+          setHasPrev(false);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -164,7 +202,7 @@ export function AssetReportsPage() {
     })();
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStaff, route, resetFilters, fromDate, toDate]);
+  }, [isStaff, route, resetFilters, fromDate, toDate, page]);
 
   if (!isStaff) {
     return (
@@ -178,6 +216,8 @@ export function AssetReportsPage() {
 
   const goTo = (key) => {
     setRoute(key);
+    setPage(1);
+    setPageSize(100);
     window.location.hash = `#/assets/reports?report=${key}`;
   };
 
@@ -255,6 +295,12 @@ export function AssetReportsPage() {
           toDate={toDate}
           exportOpen={exportOpen}
           setExportOpen={setExportOpen}
+          page={page}
+          pageSize={pageSize}
+          totalCount={totalCount}
+          hasNext={hasNext}
+          hasPrev={hasPrev}
+          setPage={setPage}
         />
       )}
       {route === 'assets_by_department' && <AssetsByDepartment data={data} />}
@@ -604,7 +650,7 @@ function Utilization({ data }) {
   );
 }
 
-function InventoryReport({ data, fromDate, toDate, exportOpen, setExportOpen }) {
+function InventoryReport({ data, fromDate, toDate, exportOpen, setExportOpen, page, pageSize, totalCount, hasNext, hasPrev, setPage }) {
   if (!data) return null;
   const items = data.items || [];
   return (
@@ -613,12 +659,36 @@ function InventoryReport({ data, fromDate, toDate, exportOpen, setExportOpen }) 
       <div className="row-gap" style={{ marginTop: 'var(--sp-3)', justifyContent: 'space-between', alignItems: 'flex-end' }}>
         <div>
           <h4 style={{ marginTop: 0 }}>Inventory results</h4>
-          <p className="muted small">{data.count ?? items.length} asset{(data.count ?? items.length) !== 1 ? 's' : ''} in result set</p>
+          <p className="muted small">
+            {totalCount} asset{totalCount !== 1 ? 's' : ''} in result set · showing {pageSize} per page
+          </p>
+        </div>
+        <div style={{ marginLeft: 'var(--sp-2)' }}>
+          <button
+            type="button"
+            className={hasPrev ? 'btn-ghost btn-small' : 'btn-ghost btn-small disabled'}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={!hasPrev}
+            aria-label="Previous page"
+          >
+            Previous
+          </button>
+          <span className="small">Page {page} of {Math.max(1, Math.ceil(totalCount / pageSize))}</span>
+          <button
+            type="button"
+            className={hasNext ? 'btn-ghost btn-small' : 'btn-ghost btn-small disabled'}
+            onClick={() => setPage((p) => p + 1)}
+            disabled={!hasNext}
+            aria-label="Next page"
+          >
+            Next
+          </button>
         </div>
         <button type="button" className="btn-secondary" onClick={() => setExportOpen(true)}>
           Export…
         </button>
       </div>
+
       {exportOpen && (
         <ExportDialog
           dataset="assets"

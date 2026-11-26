@@ -1,14 +1,15 @@
 """Tests for Asset Management reporting and analytics functions."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
 from rest_framework.test import APIClient
 
-from assets.models import Asset, AssetCategory
+from assets.models import Asset, AssetCategory, Maintenance
 from assets import reports
 
 
@@ -286,3 +287,191 @@ class ReportPermissionTests(TestCase):
         res = client.get("/api/assets/reports/?report=nonexistent")
         self.assertEqual(res.status_code, 400)
         self.assertIn("Unsupported report", res.data["detail"])
+
+
+class ReportQueryParamTests(TestCase):
+    """Exercise report filtering through real HTTP query strings."""
+
+    def setUp(self):
+        from accounts.tests import make_users
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.support = get_user_model().objects.create_user(
+            username="support-qp@local", email="support-qp@local",
+            employee_id="QP-SUP", role="it_support", is_active=True,
+            home_department=self.dep)
+
+        cat = AssetCategory.objects.create(name="Reporting laptop")
+        self.a_old = Asset.objects.create(
+            asset_tag="OLD-1", name="old purchase", category=cat,
+            purchase_date=date(2024, 12, 31),
+            warranty_expiry=date(2024, 12, 31),
+            purchase_cost=Decimal("100.00"), status="available")
+        self.a_edge = Asset.objects.create(
+            asset_tag="EDGE-1", name="final selected day", category=cat,
+            purchase_date=date(2025, 6, 15),
+            warranty_expiry=date(2025, 6, 15),
+            purchase_cost=Decimal("200.00"), status="assigned",
+            assigned_to=self.emp)
+        self.a_later = Asset.objects.create(
+            asset_tag="LATER-1", name="after range", category=cat,
+            purchase_date=date(2025, 6, 16),
+            warranty_expiry=date(2025, 6, 16),
+            purchase_cost=Decimal("300.00"), status="retired")
+        self.a_none = Asset.objects.create(
+            asset_tag="NONE-1", name="no dates", category=cat,
+            status="available")
+        self.a_search = Asset.objects.create(
+            asset_tag="SRCH-1", name="search target", category=cat,
+            purchase_date=date(2025, 6, 15),
+            warranty_expiry=date(2025, 6, 15),
+            purchase_cost=Decimal("50.00"), status="in_repair")
+
+        for tag, day, cost, status in (
+            ("before", date(2025, 6, 14), Decimal("10.00"), "completed"),
+            ("edge", date(2025, 6, 15), Decimal("20.00"), "completed"),
+            ("after", date(2025, 6, 16), Decimal("30.00"), "scheduled"),
+        ):
+            asset = (self.a_old if tag == "before"
+                     else self.a_edge if tag == "edge" else self.a_later)
+            Maintenance.objects.create(
+                asset=asset,
+                title=f"maintenance {tag}",
+                scheduled_date=timezone.make_aware(
+                    datetime.combine(day, time.min)),
+                cost=cost,
+                status=status,
+            )
+
+    def _client(self, user=None):
+        client = APIClient()
+        if user is not None:
+            client.force_authenticate(user=user)
+        return client
+
+    def test_financial_endpoint_honors_date_filters(self):
+        res = self._client(self.mgr).get(
+            "/api/assets/reports/",
+            {"report": "financial", "from_date": "2025-06-15",
+             "to_date": "2025-06-15"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["total_assets"], 2)
+        self.assertEqual(
+            Decimal(str(res.data["total_purchase_cost"])),
+            Decimal("250.00"))
+
+    def test_utilization_endpoint_honors_date_filters(self):
+        res = self._client(self.mgr).get(
+            "/api/assets/reports/",
+            {"report": "utilization", "from_date": "2025-06-15",
+             "to_date": "2025-06-15"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["total_assets"], 2)
+        self.assertEqual(res.data["status_counts"]["assigned"], 1)
+        self.assertEqual(res.data["status_counts"]["in_repair"], 1)
+
+    def test_warranty_endpoint_honors_date_filters(self):
+        res = self._client(self.mgr).get(
+            "/api/assets/reports/",
+            {"report": "warranty", "from_date": "2025-06-15",
+             "to_date": "2025-06-15"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["total_with_warranty"], 2)
+        self.assertEqual(res.data["expired_count"], 2)
+        self.assertEqual(res.data["without_warranty"], 0)
+
+    def test_maintenance_endpoint_honors_date_filters(self):
+        res = self._client(self.mgr).get(
+            "/api/assets/reports/",
+            {"report": "maintenance", "from_date": "2025-06-15",
+             "to_date": "2025-06-15"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["total_records"], 1)
+        self.assertEqual(
+            Decimal(str(res.data["total_cost"])), Decimal("20.00"))
+
+    def test_inventory_endpoint_honors_date_filters(self):
+        res = self._client(self.mgr).get(
+            "/api/assets/reports/",
+            {"report": "inventory", "from_date": "2025-06-15",
+             "to_date": "2025-06-15"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["count"], 2)
+        self.assertEqual(
+            {row["asset_tag"] for row in res.data["items"]},
+            {"EDGE-1", "SRCH-1"})
+
+    def test_inventory_pagination_pages_and_out_of_range(self):
+        client = self._client(self.mgr)
+        first = client.get(
+            "/api/assets/reports/",
+            {"report": "inventory", "page": 1, "page_size": 2})
+        second = client.get(
+            "/api/assets/reports/",
+            {"report": "inventory", "page": 2, "page_size": 2})
+        out_of_range = client.get(
+            "/api/assets/reports/",
+            {"report": "inventory", "page": 99, "page_size": 2})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.data["count"], 5)
+        self.assertEqual(first.data["page"], 1)
+        self.assertEqual(first.data["page_size"], 2)
+        self.assertTrue(first.data["has_next"])
+        self.assertFalse(first.data["has_prev"])
+        self.assertEqual(len(first.data["items"]), 2)
+
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.data["page"], 2)
+        self.assertTrue(second.data["has_next"])
+        self.assertTrue(second.data["has_prev"])
+        self.assertEqual(len(second.data["items"]), 2)
+        first_tags = {row["asset_tag"] for row in first.data["items"]}
+        second_tags = {row["asset_tag"] for row in second.data["items"]}
+        self.assertTrue(first_tags.isdisjoint(second_tags))
+
+        self.assertEqual(out_of_range.status_code, 200)
+        self.assertEqual(out_of_range.data["page"], 99)
+        self.assertEqual(out_of_range.data["items"], [])
+        self.assertFalse(out_of_range.data["has_next"])
+        self.assertTrue(out_of_range.data["has_prev"])
+
+    def test_inventory_search_q(self):
+        res = self._client(self.mgr).get(
+            "/api/assets/reports/",
+            {"report": "inventory", "q": "SRCH-1"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["count"], 1)
+        self.assertEqual(res.data["items"][0]["asset_tag"], "SRCH-1")
+
+    def test_invalid_dates_and_pagination_are_rejected(self):
+        client = self._client(self.mgr)
+        bad_requests = (
+            {"report": "financial", "from_date": "15-06-2025"},
+            {"report": "financial", "from_date": "2025-06-16",
+             "to_date": "2025-06-15"},
+            {"report": "inventory", "page": "0"},
+            {"report": "inventory", "page_size": "abc"},
+        )
+        for params in bad_requests:
+            with self.subTest(params=params):
+                res = client.get("/api/assets/reports/", params)
+                self.assertEqual(res.status_code, 400)
+                self.assertIn("detail", res.data)
+
+    def test_report_rbac_through_endpoint(self):
+        for user, expected in (
+            (self.mgr, 200),
+            (self.support, 200),
+            (self.emp, 403),
+            (None, 401),
+        ):
+            with self.subTest(user=user):
+                res = self._client(user).get(
+                    "/api/assets/reports/",
+                    {"report": "financial"})
+                self.assertEqual(res.status_code, expected)
+                if expected != 200:
+                    body = str(res.data)
+                    self.assertNotIn("EDGE-1", body)
+                    self.assertNotIn("250.00", body)
+                    self.assertNotIn("purchase_cost", body)

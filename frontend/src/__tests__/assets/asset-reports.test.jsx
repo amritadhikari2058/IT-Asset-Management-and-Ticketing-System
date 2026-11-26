@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { HashRouter } from 'react-router-dom';
 
 // Mock global objects for jsdom environment
@@ -61,6 +61,14 @@ const utilizationData = {
 };
 
 const inventoryData = { items: [], count: 0, page: 1, page_size: 100, has_next: false, has_prev: false, by_category: [] };
+const inventoryPage1 = {
+  items: [{ id: 1, asset_tag: 'LT-1', name: 'Laptop', category: 'Laptop', status: 'available' }],
+  count: 150, page: 1, page_size: 100, has_next: true, has_prev: false, by_category: [],
+};
+const inventoryPage2 = {
+  items: [{ id: 101, asset_tag: 'LT-101', name: 'Laptop 101', category: 'Laptop', status: 'assigned' }],
+  count: 150, page: 2, page_size: 100, has_next: false, has_prev: true, by_category: [],
+};
 
 const byDeptData = { total: 120, by_department: [{ department: 'No department', asset_count: 7 }, { department: 'Engineering', asset_count: 30 }], by_category: [] };
 const byLocData = { total: 120, by_location: [{ location: 'Unassigned', asset_count: 7 }, { location: 'HQ', asset_count: 40 }], by_category: [] };
@@ -128,7 +136,66 @@ describe('AssetReportsPage', () => {
     mockRoutes('inventory', inventoryData);
     render(<HashRouter><AssetReportsPage /></HashRouter>);
     await screen.findByText(/Asset inventory/i);
-    expect(mockGet).toHaveBeenCalledWith('/assets/reports/?report=inventory', { params: { page_size: 100 } });
+    expect(mockGet).toHaveBeenCalledWith('/assets/reports/?report=inventory', { params: { page: 1, page_size: 100 } });
+    expect(screen.getByLabelText('Previous page').disabled).toBe(true);
+    expect(screen.getByLabelText('Next page').disabled).toBe(true);
+    expect(screen.getByText(/Page 1 of 1/)).toBeTruthy();
+  });
+
+  it('navigates between inventory pages using has_next/has_prev', async () => {
+    staff();
+    window.location.hash = '#/assets/reports?report=inventory';
+    mockGet.mockImplementation((url, { params }) => Promise.resolve({
+      data: params.page === 2 ? inventoryPage2 : inventoryPage1,
+    }));
+    render(<HashRouter><AssetReportsPage /></HashRouter>);
+    await screen.findByText(/Page 1 of 2/);
+    expect(screen.getByLabelText('Previous page').disabled).toBe(true);
+    expect(screen.getByLabelText('Next page').disabled).toBe(false);
+    expect(screen.getByText(/150 assets in result set/)).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Next page'));
+    await screen.findByText(/Page 2 of 2/);
+    expect(mockGet).toHaveBeenLastCalledWith('/assets/reports/?report=inventory', { params: { page: 2, page_size: 100 } });
+    expect(screen.getByLabelText('Previous page').disabled).toBe(false);
+    expect(screen.getByLabelText('Next page').disabled).toBe(true);
+    expect(screen.getByText(/LT-101/)).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Previous page'));
+    await screen.findByText(/Page 1 of 2/);
+    expect(mockGet).toHaveBeenLastCalledWith('/assets/reports/?report=inventory', { params: { page: 1, page_size: 100 } });
+    expect(screen.getByLabelText('Previous page').disabled).toBe(true);
+    expect(screen.getByLabelText('Next page').disabled).toBe(false);
+  });
+
+  it('resets to page 1 when switching reports after pagination', async () => {
+    staff();
+    window.location.hash = '#/assets/reports?report=inventory';
+    mockGet.mockImplementation((url, { params }) => Promise.resolve({
+      data: url.includes('report=inventory')
+        ? (params.page === 2 ? inventoryPage2 : inventoryPage1)
+        : financialData,
+    }));
+    render(<HashRouter><AssetReportsPage /></HashRouter>);
+    await screen.findByText(/Page 1 of 2/);
+    fireEvent.click(screen.getByLabelText('Next page'));
+    await screen.findByText(/Page 2 of 2/);
+
+    fireEvent.click(screen.getByRole('tab', { name: /Financial/i }));
+    await screen.findByText(/Total assets/i);
+    fireEvent.click(screen.getByRole('tab', { name: /Inventory/i }));
+    await screen.findByText(/Page 1 of 2/);
+    expect(mockGet).toHaveBeenLastCalledWith('/assets/reports/?report=inventory', { params: { page: 1, page_size: 100 } });
+  });
+
+  it('shows empty inventory state with pagination controls disabled', async () => {
+    staff();
+    mockRoutes('inventory', inventoryData);
+    render(<HashRouter><AssetReportsPage /></HashRouter>);
+    await screen.findByText(/No assets match the current filters/i);
+    expect(screen.getByText(/Page 1 of 1/)).toBeTruthy();
+    expect(screen.getByLabelText('Previous page').disabled).toBe(true);
+    expect(screen.getByLabelText('Next page').disabled).toBe(true);
   });
 
   it('renders assets by department', async () => {
