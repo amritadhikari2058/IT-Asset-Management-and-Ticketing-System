@@ -52,6 +52,21 @@ class UserSerializer(serializers.ModelSerializer):
                             "has_photo"]
 
 
+class UserDirectorySerializer(UserSerializer):
+    """Narrow representation for non-staff users.
+
+    Ordinary employees can read only their own directory entry. They do not
+    need another user's phone/job title, role/permission flags, verification
+    state, or account metadata; the full self-profile remains on `/me/`.
+    """
+
+    class Meta(UserSerializer.Meta):
+        fields = ["id", "employee_id", "first_name", "last_name", "email",
+                  "home_department", "home_department_name", "is_active",
+                  "has_photo"]
+        read_only_fields = fields
+
+
 class UserCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
 

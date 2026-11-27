@@ -4,9 +4,68 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import api from '../../api';
 import { PageHeader, Badge, Button } from '../../components';
 import { useAuth } from '../../auth';
-import { fetchPage, parseApiError, formatDate, formatDateTime, statusBadgeVariant, riskBadgeVariant, priorityBadgeVariant, actionAvailability, STATUS_LABELS, CHANGE_TYPE_LABELS, RISK_LEVEL_LABELS, PRIORITY_LABELS } from '../../shared/changes-utils';
+import { parseApiError, formatDate, formatDateTime, statusBadgeVariant, riskBadgeVariant, priorityBadgeVariant, actionAvailability, STATUS_LABELS, CHANGE_TYPE_LABELS, RISK_LEVEL_LABELS, PRIORITY_LABELS } from '../../shared/changes-utils';
+
+// Action keys are the exact backend @action names under /changes/{id}/.
+// Keeping them explicit avoids deriving endpoint names from display labels.
+const DISPATCHABLE_ACTIONS = new Set([
+  'submit',
+  'cancel',
+  'approve',
+  'reject',
+  'return_for_correction',
+  'start_implementation',
+  'begin_validation',
+  'complete',
+  'fail',
+  'start_rollback',
+  'request_pir',
+  'close',
+  'hold',
+  'resume',
+]);
+
+// Returns the request body for an action, or null when the user cancels a
+// confirmation prompt and no request should be sent.
+const ACTION_BODY_BUILDERS = {
+  submit: () => ({}),
+  cancel: () => (window.confirm('Are you sure you want to cancel this change?') ? {} : null),
+  approve: () => {
+    const reason = window.prompt('Approval decision reason (optional):');
+    if (reason === null) return null;
+    return { decision_reason: reason || '' };
+  },
+  reject: () => {
+    const reason = window.prompt('Rejection reason (required):');
+    if (reason === null) return null;
+    return { decision_reason: reason };
+  },
+  return_for_correction: () => ({}),
+  start_implementation: () => ({}),
+  begin_validation: () => ({}),
+  complete: () => {
+    const notes = window.prompt('Implementation notes (optional):');
+    if (notes === null) return null;
+    return { implementation_notes: notes || '' };
+  },
+  fail: () => {
+    const reason = window.prompt('Failure reason (required):');
+    if (reason === null) return null;
+    return { failure_reason: reason };
+  },
+  start_rollback: () => ({}),
+  request_pir: () => ({}),
+  close: () => {
+    const summary = window.prompt('Closure summary (optional):');
+    if (summary === null) return null;
+    return { closure_summary: summary || '' };
+  },
+  hold: () => ({}),
+  resume: () => ({}),
+};
 
 export function ChangeDetail({ match }) {
   const { isStaff, role } = useAuth();
@@ -39,14 +98,15 @@ export function ChangeDetail({ match }) {
 
   // Action buttons based on user role and change status
   const getActions = () => {
-    if (!change || !isStaff) return null;
+    if (!change || !isStaff) return [];
     const status = change.status;
     const actions = [];
+    const addAction = (label, key, variant) => actions.push({ label, key, variant });
     
     // Draft actions
     if (status === 'draft') {
       if (actionAvailability(role, status, 'submit_draft')) {
-        actions.push({ label: 'Submit for Review', onClick: () => submitChange(), variant: 'primary' });
+        addAction('Submit for Review', 'submit', 'primary');
       }
       actions.push({ label: 'Edit', href: `#/changes/${change.id}/edit`, variant: 'secondary' });
     }
@@ -57,23 +117,23 @@ export function ChangeDetail({ match }) {
         actions.push({ label: 'Edit', href: `#/changes/${change.id}/edit`, variant: 'secondary' });
       }
       if (actionAvailability(role, status, 'cancel')) {
-        actions.push({ label: 'Cancel', onClick: () => cancelChange(), variant: 'danger' });
+        addAction('Cancel', 'cancel', 'danger');
       }
     }
     
     // Pending approval actions (for approvers)
     if (status === 'pending_approval') {
       if (actionAvailability(role, status, 'approve')) {
-        actions.push({ label: 'Approve', onClick: () => approveChange(), variant: 'success' });
+        addAction('Approve', 'approve', 'success');
       }
       if (actionAvailability(role, status, 'reject')) {
-        actions.push({ label: 'Reject', onClick: () => rejectChange(), variant: 'danger' });
+        addAction('Reject', 'reject', 'danger');
       }
       if (actionAvailability(role, status, 'return_correction')) {
-        actions.push({ label: 'Return for Correction', onClick: () => returnForCorrection(), variant: 'warning' });
+        addAction('Return for Correction', 'return_for_correction', 'warning');
       }
       if (actionAvailability(role, status, 'cancel')) {
-        actions.push({ label: 'Cancel', onClick: () => cancelChange(), variant: 'danger' });
+        addAction('Cancel', 'cancel', 'danger');
       }
     }
     
@@ -83,87 +143,87 @@ export function ChangeDetail({ match }) {
         actions.push({ label: 'Schedule', href: `#/changes/${change.id}/implementation`, variant: 'primary' });
       }
       if (actionAvailability(role, status, 'cancel')) {
-        actions.push({ label: 'Cancel', onClick: () => cancelChange(), variant: 'danger' });
+        addAction('Cancel', 'cancel', 'danger');
       }
     }
     
     // Scheduled actions
     if (status === 'scheduled') {
       if (actionAvailability(role, status, 'start_implementation')) {
-        actions.push({ label: 'Start Implementation', onClick: () => startImplementation(), variant: 'primary' });
+        addAction('Start Implementation', 'start_implementation', 'primary');
       }
       if (actionAvailability(role, status, 'hold')) {
-        actions.push({ label: 'Put on Hold', onClick: () => holdChange(), variant: 'warning' });
+        addAction('Put on Hold', 'hold', 'warning');
       }
       if (actionAvailability(role, status, 'reschedule')) {
-        actions.push({ label: 'Reschedule', onClick: () => rescheduleChange(), variant: 'secondary' });
+        actions.push({ label: 'Reschedule', href: `#/changes/${change.id}/implementation`, variant: 'secondary' });
       }
     }
     
     // In Progress actions
     if (status === 'in_progress') {
       if (actionAvailability(role, status, 'begin_validation')) {
-        actions.push({ label: 'Begin Validation', onClick: () => beginValidation(), variant: 'success' });
+        addAction('Begin Validation', 'begin_validation', 'success');
       }
       if (actionAvailability(role, status, 'fail')) {
-        actions.push({ label: 'Fail Implementation', onClick: () => failChange(), variant: 'danger' });
+        addAction('Fail Implementation', 'fail', 'danger');
       }
       if (actionAvailability(role, status, 'start_rollback')) {
-        actions.push({ label: 'Start Rollback', onClick: () => startRollback(), variant: 'warning' });
+        addAction('Start Rollback', 'start_rollback', 'warning');
       }
       if (actionAvailability(role, status, 'hold')) {
-        actions.push({ label: 'Put on Hold', onClick: () => holdChange(), variant: 'warning' });
+        addAction('Put on Hold', 'hold', 'warning');
       }
     }
     
     // Validation actions
     if (status === 'validation') {
       if (actionAvailability(role, status, 'complete')) {
-        actions.push({ label: 'Complete', onClick: () => completeChange(), variant: 'success' });
+        addAction('Complete', 'complete', 'success');
       }
       if (actionAvailability(role, status, 'fail')) {
-        actions.push({ label: 'Fail', onClick: () => failChange(), variant: 'danger' });
+        addAction('Fail', 'fail', 'danger');
       }
     }
     
     // Completed actions
     if (status === 'completed') {
       if (actionAvailability(role, status, 'request_pir')) {
-        actions.push({ label: 'Request PIR', onClick: () => requestPIR(), variant: 'primary' });
+        addAction('Request PIR', 'request_pir', 'primary');
       }
     }
     
     // PIR Required actions
     if (status === 'pir_required') {
       if (actionAvailability(role, status, 'close')) {
-        actions.push({ label: 'Close Change', onClick: () => closeChange(), variant: 'success' });
+        addAction('Close Change', 'close', 'success');
       }
     }
     
     // Failed actions
     if (status === 'failed') {
       if (actionAvailability(role, status, 'start_rollback')) {
-        actions.push({ label: 'Start Rollback', onClick: () => startRollback(), variant: 'warning' });
+        addAction('Start Rollback', 'start_rollback', 'warning');
       }
       if (actionAvailability(role, status, 'close')) {
-        actions.push({ label: 'Close Change', onClick: () => closeChange(), variant: 'secondary' });
+        addAction('Close Change', 'close', 'secondary');
       }
     }
     
     // Rolled Back actions
     if (status === 'rolled_back') {
       if (actionAvailability(role, status, 'close')) {
-        actions.push({ label: 'Close Change', onClick: () => closeChange(), variant: 'success' });
+        addAction('Close Change', 'close', 'success');
       }
     }
     
     // On Hold actions
     if (status === 'on_hold') {
       if (actionAvailability(role, status, 'resume')) {
-        actions.push({ label: 'Resume', onClick: () => resumeChange(), variant: 'primary' });
+        addAction('Resume', 'resume', 'primary');
       }
       if (actionAvailability(role, status, 'cancel')) {
-        actions.push({ label: 'Cancel', onClick: () => cancelChange(), variant: 'danger' });
+        addAction('Cancel', 'cancel', 'danger');
       }
     }
     
@@ -175,95 +235,29 @@ export function ChangeDetail({ match }) {
       window.location.hash = action.href;
       return;
     }
+    if (!action.key || !DISPATCHABLE_ACTIONS.has(action.key)) return;
+    const body = ACTION_BODY_BUILDERS[action.key]();
+    if (body === null) return;
     setActionErrors(null);
     try {
-      const endpoints = {
-        submitChange: `/changes/${change.id}/submit/`,
-        cancelChange: `/changes/${change.id}/cancel/`,
-        approveChange: `/changes/${change.id}/approve/`,
-        rejectChange: `/changes/${change.id}/reject/`,
-        returnForCorrection: `/changes/${change.id}/return_for_correction/`,
-        startImplementation: `/changes/${change.id}/start_implementation/`,
-        beginValidation: `/changes/${change.id}/begin_validation/`,
-        completeChange: `/changes/${change.id}/complete/`,
-        failChange: `/changes/${change.id}/fail/`,
-        startRollback: `/changes/${change.id}/start_rollback/`,
-        requestPIR: `/changes/${change.id}/request_pir/`,
-        closeChange: `/changes/${change.id}/close/`,
-        holdChange: `/changes/${change.id}/hold/`,
-        resumeChange: `/changes/${change.id}/resume/`,
-        rescheduleChange: `/changes/${change.id}/reschedule/`,
-      };
-      const endpoint = endpoints[action.label.toLowerCase().replace(/\s+/g, '_')];
-      if (endpoint) {
-        const body = action.body || {};
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('access')}` },
-          body: JSON.stringify(body),
-        });
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          setActionErrors(errorData.detail || Object.values(errorData).join(' '));
-          return;
-        }
-        // Refresh the change data
-        const refreshed = await fetchPage(`/changes/${change.id}/`);
-        setChange(refreshed);
-      }
+      await api.post(`/changes/${change.id}/${action.key}/`, body);
+      const response = await api.get(`/changes/${change.id}/`);
+      setChange(response.data);
     } catch (err) {
-      setActionErrors(parseApiError(err));
+      const parsed = parseApiError(err);
+      const message = parsed.global
+        || Object.values(parsed.fields || {}).filter(Boolean).join(' ')
+        || 'Could not complete the action.';
+      setActionErrors(message);
     }
   };
-
-  const submitChange = () => handleAction({ label: 'Submit for Review' });
-  const cancelChange = () => {
-    if (window.confirm('Are you sure you want to cancel this change?')) {
-      handleAction({ label: 'Cancel' });
-    }
-  };
-  const approveChange = () => {
-    const reason = window.prompt('Approval decision reason (optional):');
-    handleAction({ label: 'Approve', body: { decision_reason: reason || '' } });
-  };
-  const rejectChange = () => {
-    const reason = window.prompt('Rejection reason (required):');
-    if (reason !== null) {
-      handleAction({ label: 'Reject', body: { decision_reason: reason } });
-    }
-  };
-  const returnForCorrection = () => handleAction({ label: 'Return for Correction' });
-  const startImplementation = () => handleAction({ label: 'Start Implementation' });
-  const beginValidation = () => handleAction({ label: 'Begin Validation' });
-  const completeChange = () => {
-    const notes = window.prompt('Implementation notes (optional):');
-    handleAction({ label: 'Complete', body: { implementation_notes: notes || '' } });
-  };
-  const failChange = () => {
-    const reason = window.prompt('Failure reason (required):');
-    if (reason !== null) {
-      handleAction({ label: 'Fail Implementation', body: { failure_reason: reason } });
-    }
-  };
-  const startRollback = () => handleAction({ label: 'Start Rollback' });
-  const requestPIR = () => handleAction({ label: 'Request PIR' });
-  const closeChange = () => {
-    const summary = window.prompt('Closure summary (optional):');
-    handleAction({ label: 'Close Change', body: { closure_summary: summary || '' } });
-  };
-  const holdChange = () => handleAction({ label: 'Put on Hold' });
-  const resumeChange = () => handleAction({ label: 'Resume' });
-  const rescheduleChange = () => {
-    window.location.hash = `#/changes/${change.id}/implementation`;
-  };
-
 
   useEffect(() => {
     const id = match.params.id;
     if (!id) return;
-    fetchPage(`/changes/${id}/`)
-      .then((data) => {
-        setChange(data);
+    api.get(`/changes/${id}/`)
+      .then((r) => {
+        setChange(r.data);
         setLoading(false);
       })
       .catch((e) => {

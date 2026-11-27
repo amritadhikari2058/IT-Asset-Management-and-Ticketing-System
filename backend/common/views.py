@@ -17,6 +17,7 @@ from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
 from rest_framework.decorators import (action, api_view, permission_classes,
                                         renderer_classes)
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -24,7 +25,9 @@ from common.audit import log_action
 from common.models import (AuditLog, BackgroundTaskRun, EmailProcessing,
                            Notification, SavedReport, ScheduledReport,
                            ScheduledReportRun, UserNotificationPreference)
-from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
+from common.permissions import (IsActiveAuthenticated, IsITStaff,
+                                IsSystemAdmin, is_it_staff, is_system_admin)
+from common.report_security import validate_scheduled_report_owner
 from common.serializers import (
     AuditLogSerializer, NotificationSerializer, RecycleBinEntrySerializer,
     SavedReportSerializer, ScheduledReportSerializer,
@@ -373,17 +376,16 @@ def data_integrity(request):
 
 
 def _can_access_export(user, permission):
+    if not (user and user.is_authenticated
+            and getattr(user, "is_active", False)):
+        return False
     if permission == "it_staff":
-        return bool(
-            user
-            and user.is_authenticated
-            and getattr(user, "role", "") in
-            ("system_admin", "it_manager", "it_support"))
-    return bool(user and user.is_authenticated)
+        return is_it_staff(user)
+    return True
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsActiveAuthenticated])
 @renderer_classes(EXPORT_RENDERER_CLASSES)
 def export_dataset(request, dataset):
     """Render a read-only dataset export (CSV / XLSX / PDF / DOCX).
@@ -980,20 +982,32 @@ def _deliver_scheduled_report(sr):
         from rest_framework.test import APIRequestFactory
         from common.email import send_scheduled_report_email
 
+        # Retry paths call report views directly, bypassing DRF dispatch.
+        # Validate ownership at execution time and fail closed before any
+        # report data is generated or delivered.
+        fresh_saved = SavedReport.objects.select_related("user").get(
+            pk=sr.saved_report_id)
+        report_owner = validate_scheduled_report_owner(fresh_saved)
         factory = APIRequestFactory()
         req = factory.get("/api/tickets/reports/by-category/",
-                          data=sr.saved_report.filters or {})
-        req.user = sr.saved_report.user
+                          data=fresh_saved.filters or {})
+        req.user = report_owner
 
-        if sr.saved_report.report_type == "ticket_category":
+        if fresh_saved.report_type == "ticket_category":
             resp = category_report(req)
-        elif sr.saved_report.report_type == "ticket_sla":
+        elif fresh_saved.report_type == "ticket_sla":
             resp = sla_report(req)
         else:
             raise ValueError(
-                f"Unknown report type: {sr.saved_report.report_type}")
+                f"Unknown report type: {fresh_saved.report_type}")
 
-        payload = resp.data if hasattr(resp, "data") else resp
+        resp_status = getattr(resp, "status_code", None)
+        if resp_status != 200:
+            raise PermissionDenied(
+                f"Report endpoint returned status {resp_status}.")
+        payload = getattr(resp, "data", None)
+        if payload is None:
+            raise ValueError("Report endpoint returned no data.")
         fmt = sr.format or "csv"
         content = _render_report(payload, fmt)
         filename = f"{sr.saved_report.name.replace(' ', '_')}_{now:%Y%m%d}.{fmt}"

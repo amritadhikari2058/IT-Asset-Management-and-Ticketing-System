@@ -149,7 +149,6 @@ export function LifecycleDetail({ id }) {
       const p = parseApiError(e);
       if (e?.response?.status === 409) {
         setStaleMsg('This case changed while you were working. The latest version has been loaded.');
-        setFieldErrors(p.fields);
         await load();
       } else if (e?.response?.status === 403) {
         setTransitionErr('You do not have permission to perform this action.');

@@ -15,6 +15,7 @@ vi.mock('../../services/problem-management', () => ({
   linkedProducts: vi.fn(),
   linkedServices: vi.fn(),
   linkedTickets: vi.fn(),
+  archiveEvidence: vi.fn(),
   createKbLink: vi.fn(),
   deleteKbLink: vi.fn(),
   listEvidence: vi.fn(),
@@ -26,6 +27,14 @@ vi.mock('../../services/problem-management', () => ({
   problemHistory: vi.fn(),
   problemReadiness: vi.fn(),
   rootCauseFactors: vi.fn(),
+}));
+
+vi.mock('../../auth', () => ({
+  useAuth: () => ({
+    isStaff: true,
+    isManagerOrAdmin: true,
+    isSupportOrAbove: true,
+  }),
 }));
 
 const PROBLEM = {
@@ -117,6 +126,8 @@ describe('Problem Detail', () => {
     expect(screen.getByText('PRB-2026-000001')).toBeTruthy();
   });
 });
+
+
 
 
 

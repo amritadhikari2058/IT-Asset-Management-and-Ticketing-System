@@ -19,6 +19,8 @@ from django.http import HttpResponse
 from django.utils.dateparse import parse_date
 from rest_framework.renderers import BaseRenderer
 
+from common.permissions import is_it_staff
+
 EXPORT_FORMATS = ("csv", "xlsx", "pdf", "docx")
 
 
@@ -281,14 +283,15 @@ def asset_rows(user=None, filters=None):
     # in their home department. IT staff see everything. This prevents the
     # export from bypassing list-level IDOR/scope restrictions so an
     # employee cannot enumerate every asset (incl. purchase cost) via export.
-    if user is not None and getattr(user, "is_authenticated", False):
-        role = getattr(user, "role", "")
-        if (role not in ("system_admin", "it_manager", "it_support")
-                and not getattr(user, "is_superuser", False)):
-            filt = Q(assigned_to=user)
-            if getattr(user, "home_department_id", None):
-                filt |= Q(department_id=user.home_department_id)
-            qs = qs.filter(filt)
+    # Fail closed for missing/inactive callers and for unknown roles.
+    if not (user and getattr(user, "is_authenticated", False)
+            and getattr(user, "is_active", False)):
+        return
+    if not is_it_staff(user):
+        filt = Q(assigned_to=user)
+        if getattr(user, "home_department_id", None):
+            filt |= Q(department_id=user.home_department_id)
+        qs = qs.filter(filt)
     q = (_scalar_filter(filters, "q") or "").strip()
     if q:
         qs = qs.filter(
@@ -361,8 +364,18 @@ def ticket_rows(user=None, filters=None):
 
     filters = filters or {}
     qs = Ticket.objects.all()
-    if user is not None and user.pk and getattr(user, "role", "") == "employee":
-        qs = qs.filter(Q(requester=user) | Q(assignee=user))
+    # Mirror the ticket list API (_ticket_visible_qs): non-staff callers only
+    # see tickets they requested or tickets in their home department. Missing
+    # or inactive callers get nothing (fail closed), so an export can never
+    # widen list-level scoping.
+    if not (user and getattr(user, "is_authenticated", False)
+            and getattr(user, "is_active", False)):
+        return
+    if not is_it_staff(user):
+        filt = Q(requester=user)
+        if getattr(user, "home_department_id", None):
+            filt |= Q(department_id=user.home_department_id)
+        qs = qs.filter(filt)
     q = (filters.get("q") or "").strip()
     if q:
         qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q))
@@ -508,9 +521,9 @@ BUILDERS = {
     "assets": asset_rows,
     "assignments": assignment_rows,
     "tickets": ticket_rows,
-    "ticket_categories": lambda filters=None: category_rows(
+    "ticket_categories": lambda user=None, filters=None: category_rows(
         __import__("tickets.models", fromlist=["TicketCategory"]).TicketCategory, filters),
-    "asset_categories": lambda filters=None: category_rows(
+    "asset_categories": lambda user=None, filters=None: category_rows(
         __import__("assets.models", fromlist=["AssetCategory"]).AssetCategory, filters),
     "ticket_history": ticket_history_rows,
     "knowledge_base": kb_rows,

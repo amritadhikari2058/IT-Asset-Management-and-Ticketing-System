@@ -255,8 +255,11 @@ describe('Application sidebar navigation', () => {
       expect(sections[1]).toBe('Change Management');
       expect(sections[2]).toBe('Service Operations');
       expect(sections[3]).toBe('Asset Operations');
-      expect(sections[4]).toBe('Procurement');
-      expect(sections[5]).toBe('Administration');
+      expect(sections[4]).toBe('Inventory');
+      expect(sections[5]).toBe('Reports');
+      expect(sections[6]).toBe('Procurement');
+      expect(sections[7]).toBe('Administration');
+      expect(sections).toHaveLength(8);
     });
   });
 
@@ -264,8 +267,6 @@ describe('Application sidebar navigation', () => {
     it('shows concise labels without long legacy names', () => {
       renderApp('system_admin');
       const allLinks = screen.getAllByRole('link');
-      // Overview + Change Management (17) + Service Operations (5) + Asset Operations (3) + Procurement (9) + Administration (14) = 47 links.
-      // Overview 1 + Change Management 17 + Service Operations 5 + Asset Operations 3 + Procurement 9 + Administration 11 = 46 links.
       const linkTexts = allLinks.map((l) => l.textContent.trim());
       const dashboardLinks = allLinks.filter((l) => l.getAttribute('href') === '#/dashboard' || l.getAttribute('href') === '#/changes/dashboard');
       expect(dashboardLinks).toHaveLength(2); // Overview + Change Management
@@ -279,24 +280,20 @@ describe('Application sidebar navigation', () => {
       expect(linkTexts).toContain('Services');
       expect(linkTexts).toContain('Assets');
       expect(linkTexts).toContain('CMDB');
+      expect(linkTexts).toContain('Inventory');
+      expect(linkTexts).toContain('Stock items');
+      expect(linkTexts).toContain('Coverage');
       expect(linkTexts).toContain('Procurement');
       expect(linkTexts).toContain('Users');
       expect(linkTexts).toContain('Categories');
       expect(linkTexts).toContain('Departments');
       expect(linkTexts).toContain('SLA');
       expect(linkTexts.some((t) => /Notifications/.test(t))).toBeTruthy();
-      // Change Management sub-items (all inside the Change Management section)
+      // Change Management keeps top-level workflows in the sidebar; record
+      // actions live on the change detail page instead of as nav links.
       expect(linkTexts).toContain('New Change');
       expect(linkTexts).toContain('Calendar');
       expect(linkTexts).toContain('Dashboard');
-      expect(linkTexts).toContain('Change Detail');
-      expect(linkTexts).toContain('Edit Change');
-      expect(linkTexts).toContain('Risk Assessment');
-      expect(linkTexts).toContain('Task Checklist');
-      expect(linkTexts).toContain('Approvals');
-      expect(linkTexts).toContain('Conflicts');
-      expect(linkTexts).toContain('Implementation');
-      expect(linkTexts).toContain('PIR & Closure');
       expect(linkTexts).toContain('Change Templates');
       expect(linkTexts).toContain('Maintenance Windows');
       expect(linkTexts).toContain('Blackout Periods');
@@ -311,7 +308,6 @@ describe('Application sidebar navigation', () => {
       expect(screen.queryByText('Operations')).toBeNull();
       expect(screen.queryByText('Lifecycle')).toBeNull();
       expect(screen.queryByText('Workflow')).toBeNull();
-      expect(screen.queryByText('Inventory')).toBeNull();
       expect(screen.queryByText('Disposals')).toBeNull();
       expect(screen.queryByText('Software Dashboard')).toBeNull();
       expect(screen.queryByText('Vendors')).toBeNull();
@@ -435,11 +431,22 @@ describe('Application sidebar navigation', () => {
   });
 
   describe('Active state', () => {
-    it('marks active route with aria-current="page"', () => {
+    it('marks the default Tickets page active at the root route', () => {
       renderApp('system_admin');
       const links = screen.getAllByRole('link', { name: 'Tickets' });
       const navLink = links.find((l) => l.getAttribute('href') === '#/tickets');
       expect(navLink.getAttribute('aria-current')).toBe('page');
+    });
+
+    it('marks the matching nav link active for an explicit hash route', () => {
+      window.location.hash = '#/assets';
+      try {
+        renderApp('system_admin');
+        const navLink = screen.getByRole('link', { name: 'Assets' });
+        expect(navLink.getAttribute('aria-current')).toBe('page');
+      } finally {
+        window.location.hash = '#/';
+      }
     });
   });
 
@@ -462,6 +469,11 @@ describe('Application sidebar navigation', () => {
       const navLink = links.find((l) => l.getAttribute('href') === '#/tickets');
       expect(navLink).toBeTruthy();
     });
+    it('has existing Inventory route', () => {
+      renderApp('system_admin');
+      const links = screen.getAllByRole('link', { name: 'Inventory' });
+      expect(links.some((l) => l.getAttribute('href') === '#/inventory')).toBeTruthy();
+    });
   });
 
   describe('Unsupported destinations absent', () => {
@@ -476,10 +488,6 @@ describe('Application sidebar navigation', () => {
     it('does not render Workflow', () => {
       renderApp('system_admin');
       expect(screen.queryByText('Workflow')).toBeNull();
-    });
-    it('does not render Inventory', () => {
-      renderApp('system_admin');
-      expect(screen.queryByText('Inventory')).toBeNull();
     });
     it('does not render Profile in Administration section', () => {
       renderApp('system_admin');
@@ -580,6 +588,40 @@ describe('Application sidebar navigation', () => {
       expect(sectionContent.classList.contains('collapsed')).toBeTruthy();
       fireEvent.click(overviewHeader);
       expect(sectionContent.classList.contains('collapsed')).toBeFalsy();
+    });
+  });
+
+  describe('User-management route protection', () => {
+    it('blocks employees from the user directory route', () => {
+      window.location.hash = '#/users';
+      try {
+        renderApp('employee');
+        expect(screen.getByRole('alert').textContent).toMatch(/permission/i);
+        expect(screen.queryByTestId('mock-Users')).toBeNull();
+      } finally {
+        window.location.hash = '#/';
+      }
+    });
+
+    it('blocks employees from the employee detail route', () => {
+      window.location.hash = '#/users/7';
+      try {
+        renderApp('employee');
+        expect(screen.getByRole('alert').textContent).toMatch(/permission/i);
+        expect(screen.queryByTestId('mock-EmployeeDetail')).toBeNull();
+      } finally {
+        window.location.hash = '#/';
+      }
+    });
+
+    it('still allows system admins into the user directory', () => {
+      window.location.hash = '#/users';
+      try {
+        renderApp('system_admin');
+        expect(screen.getByTestId('mock-Users')).toBeTruthy();
+      } finally {
+        window.location.hash = '#/';
+      }
     });
   });
 });

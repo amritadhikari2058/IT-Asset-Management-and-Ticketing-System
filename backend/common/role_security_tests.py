@@ -126,19 +126,20 @@ class RoleSecurityTests(TestCase):
     # User management separation
     # ----------------------------------------------------------------
     def test_employee_can_list_user_directory(self):
-        """User directory is readable by all authenticated users."""
+        """Employees may list only their own directory entry."""
         c = self._as("employee")
         res = c.get("/api/accounts/users/")
         self.assertEqual(res.status_code, 200, res.data)
         ids = [u["employee_id"] for u in res.data.get("results", [])]
-        self.assertIn(self.mgr.employee_id, ids)
+        self.assertEqual(ids, [self.emp.employee_id])
+        self.assertNotIn(self.mgr.employee_id, ids)
 
     def test_employee_can_see_other_profile(self):
-        """User profile detail is readable by all authenticated users."""
+        """Direct object IDs for other users are not readable by employees."""
         c = self._as("employee")
         res = c.get(f"/api/accounts/users/{self.mgr.pk}/")
-        self.assertEqual(res.status_code, 200, res.data)
-        self.assertEqual(res.data["employee_id"], self.mgr.employee_id)
+        self.assertEqual(res.status_code, 404, res.data)
+        self.assertNotIn(self.mgr.employee_id, str(res.data))
 
     def test_employee_cannot_update_other_user(self):
         c = self._as("employee")
@@ -185,12 +186,12 @@ class RoleSecurityTests(TestCase):
         self.assertEqual(res.data["employee_id"], self.emp.employee_id)
 
     def test_employee_can_see_other_profile(self):
-        """User profile detail is readable by all authenticated users
-        (directory behavior)."""
+        """User profile detail is scoped to self for ordinary employees."""
         c = self._as("employee")
         res = c.get(f"/api/accounts/users/{self.mgr.pk}/")
-        self.assertEqual(res.status_code, 200, res.data)
-        self.assertEqual(res.data["employee_id"], self.mgr.employee_id)
+        self.assertEqual(res.status_code, 404, res.data)
+        self.assertEqual(
+            c.get(f"/api/accounts/users/{self.emp.pk}/").status_code, 200)
 
     # ----------------------------------------------------------------
     # Vendor permission separation

@@ -487,3 +487,118 @@ class ScheduledReportLeaseTaskTests(TestCase):
         self.assertEqual(
             ScheduledReportRun.objects.filter(scheduled_report=sr).count(), 0)
 
+
+@override_settings(
+    **{"EMAIL_BACKEND": "django.core.mail.backends.locmem.EmailBackend"})
+class ScheduledReportExecutionAuthorizationTests(TestCase):
+    """Direct-call report execution is authorized independently of DRF views."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.c = APIClient()
+        self.cat = TicketCategory.objects.create(name="Authz category")
+        self.staff_report = SavedReport.objects.create(
+            user=self.mgr, report_type="ticket_category", name="Staff report",
+            filters={})
+        self.emp_report = SavedReport.objects.create(
+            user=self.emp, report_type="ticket_category", name="Employee report",
+            filters={})
+        self.emp_sla_report = SavedReport.objects.create(
+            user=self.emp, report_type="ticket_sla", name="Employee SLA",
+            filters={})
+
+    def _schedule(self, saved_report, **over):
+        defaults = {
+            "saved_report": saved_report, "schedule": "weekly",
+            "recipients": ["ops@example.com"], "format": "csv",
+            "enabled": True,
+            "next_run_at": timezone.now() - timezone.timedelta(hours=1),
+        }
+        defaults.update(over)
+        return ScheduledReport.objects.create(**defaults)
+
+    def test_staff_owned_due_report_executes_and_delivers(self):
+        sr = self._schedule(self.staff_report)
+        results = run_scheduled_reports()
+        self.assertEqual(results["sent"], 1, results)
+        run = ScheduledReportRun.objects.get(scheduled_report=sr)
+        self.assertEqual(run.status, "succeeded")
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_employee_owned_due_report_is_skipped_without_rendering(self):
+        sr = self._schedule(self.emp_report)
+        from unittest.mock import patch
+        with patch("tickets.views.category_report") as report:
+            results = run_scheduled_reports()
+        report.assert_not_called()
+        self.assertEqual(results["sent"], 0, results)
+        self.assertEqual(results["failed"], 1, results)
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(scheduled_report=sr).count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_employee_owned_sla_report_cannot_expose_staff_data(self):
+        sr = self._schedule(self.emp_sla_report)
+        from unittest.mock import patch
+        with patch("tickets.views.sla_report") as report:
+            results = run_scheduled_reports()
+        report.assert_not_called()
+        self.assertEqual(results["sent"], 0, results)
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(scheduled_report=sr).count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_staff_retry_of_employee_owned_report_fails_closed(self):
+        sr = self._schedule(self.emp_report)
+        old_run = ScheduledReportRun.objects.create(
+            scheduled_report=sr, status="failed", success=False,
+            error_summary="previous failure")
+        from unittest.mock import patch
+        auth(self.c, self.mgr)
+        with patch("tickets.views.category_report") as report:
+            res = self.c.post(
+                f"/api/common/scheduled-report-runs/{old_run.pk}/retry/",
+                {}, format="json")
+        report.assert_not_called()
+        self.assertEqual(res.status_code, 500, res.data)
+        self.assertFalse(res.data["retried"])
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(
+            ScheduledReportRun.objects.filter(
+                scheduled_report=sr, status="succeeded").count(), 0)
+
+    def test_error_response_from_report_view_is_not_delivered(self):
+        sr = self._schedule(self.staff_report)
+        from unittest.mock import patch
+        from rest_framework.response import Response
+        with patch("tickets.views.category_report") as report:
+            report.return_value = Response(
+                {"detail": "Forbidden."}, status=403)
+            results = run_scheduled_reports()
+        self.assertEqual(results["sent"], 0, results)
+        self.assertEqual(len(mail.outbox), 0)
+        run = ScheduledReportRun.objects.get(scheduled_report=sr)
+        self.assertEqual(run.status, "failed")
+        self.assertEqual(run.error_summary, "PermissionDenied")
+
+    def test_helper_rejects_missing_deleted_inactive_and_non_staff_owners(self):
+        from rest_framework.exceptions import PermissionDenied
+        from common.report_security import validate_scheduled_report_owner
+
+        class FakeReport:
+            def __init__(self, user=None, is_deleted=False):
+                self.user = user
+                self.is_deleted = is_deleted
+
+        for bad in (None, FakeReport(is_deleted=True), FakeReport(),
+                    FakeReport(self.emp)):
+            with self.assertRaises(PermissionDenied):
+                validate_scheduled_report_owner(bad)
+
+        self.mgr.is_active = False
+        with self.assertRaises(PermissionDenied):
+            validate_scheduled_report_owner(FakeReport(self.mgr))
+        self.mgr.is_active = True
+        self.assertEqual(validate_scheduled_report_owner(self.staff_report),
+                         self.mgr)
+

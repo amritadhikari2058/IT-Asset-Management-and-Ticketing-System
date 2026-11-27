@@ -408,7 +408,7 @@ function matchRoute(hash, auth) {
   if ((m = route.match(/^#\/vendors\/(\d+)\/edit$/))) return <VendorForm vendorId={m[1]} />;
   if (route === '#/vendors/new') return <VendorForm />;
   if ((m = route.match(/^#\/vendors\/(\d+)$/))) return <VendorDetail id={m[1]} />;
-  if ((m = route.match(/^#\/users\/(\d+)\/?$/))) return <EmployeeDetail id={m[1]} />;
+  if ((m = route.match(/^#\/users\/(\d+)\/?$/))) return auth.isAdmin ? <EmployeeDetail id={m[1]} /> : <AccessDenied />;
   if (route === '#/kb') return <KnowledgeBase />;
   const changeManagementRoutes = [
     '#/change-templates',
@@ -497,7 +497,7 @@ function matchRoute(hash, auth) {
     '#/recycle': <RecycleBin />,
     '#/audit': <AuditLogPage />,
     '#/sla-config': <SLAConfig />,
-    '#/users': <Users />,
+    '#/users': auth.isAdmin ? <Users /> : <AccessDenied />,
     '#/profile': <Profile />,
     '#/verify-email': <VerifyEmail />,
     '#/reset-password': <ResetPassword />,
@@ -525,7 +525,11 @@ function Shell() {
     canViewProcurement, canViewProcurementReports, canUseMonitoring,
     canUseProblemManagement, canAccessRecycleBin]);
   const routerLocation = useLocation();
-  const hash = '#' + routerLocation.pathname + routerLocation.search;
+  // HashRouter reports the default root as pathname '/'. Keep the historical
+  // default (Tickets) so the rendered page and the highlighted nav item agree.
+  const hash = routerLocation.pathname === '/'
+    ? '#/tickets'
+    : '#' + routerLocation.pathname + routerLocation.search;
   const nav = useMemo(() => visibleNav(NAV, caps), [caps]);
   const [navOpen, setNavOpen] = useState(false);
   // Collapsible sections are collapsed by default. Only sections the user has

@@ -506,7 +506,6 @@ class AssetViewSet(viewsets.ModelViewSet):
         obj = Asset.all_objects.get(pk=pk)
         refs = {
             "assignments": obj.assignments.count(),
-            "asset_assignments": obj.asset_assignments.count(),
             "history": obj.history.count(),
             "attachments": obj.attachments.count(),
             "maintenance": obj.maintenance.count(),

@@ -4,6 +4,7 @@ import { ConfirmDialog, EmptyState, PageHeader } from '../../components';
 
 export function Notifications() {
   const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [busyAll, setBusyAll] = useState(false);
   const [allMsg, setAllMsg] = useState('');

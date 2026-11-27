@@ -13,6 +13,7 @@ vi.mock('../../api', () => ({
     patch: vi.fn(),
     delete: vi.fn(),
   },
+  setApiErrorHandler: vi.fn(),
 }));
 
 vi.mock('../../auth', () => ({

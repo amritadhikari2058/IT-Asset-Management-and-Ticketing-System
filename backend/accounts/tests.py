@@ -1,4 +1,5 @@
 """Accounts + soft-delete + recycle-bin tests (spec sections 6-7)."""
+from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -288,6 +289,7 @@ class BulkImportReportTests(TestCase):
 
 class UserAdminActionTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.dep, self.admin, self.mgr, self.emp = make_users()
         self.c = APIClient()
 
@@ -542,6 +544,10 @@ class UserEditPermissionTests(TestCase):
 
 class ChangePasswordTests(TestCase):
     def setUp(self):
+        # TestCase rolls back DB rows (and SQLite row IDs) but not the shared
+        # cache, so clear account-action cooldowns between tests to avoid
+        # leaking a 429 from one password-change case into the next.
+        cache.clear()
         self.dep, self.admin, self.mgr, self.emp = make_users()
         self.c = APIClient()
 
@@ -921,3 +927,275 @@ class DepartmentVisibilityTests(TestCase):
         res = self.c.get("/api/accounts/departments/", {"q": "sal"})
         self.assertEqual(res.status_code, 200, res.data)
         self.assertEqual(res.data["results"], [])
+
+
+class UserPrivilegeBoundaryTests(TestCase):
+    """Regression: staff cannot modify equal/higher-role accounts."""
+
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.sup = _make_user("S1", "s1@x", "s1@x", "it_support", self.dep)
+        self.mgr2 = _make_user("M2", "m2@x", "m2@x", "it_manager", self.dep)
+        self.c = APIClient()
+
+    def test_it_manager_cannot_patch_system_admin(self):
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/accounts/users/{self.admin.pk}/",
+                           {"first_name": "Hacked"}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.admin.refresh_from_db()
+        self.assertNotEqual(self.admin.first_name, "Hacked")
+
+    def test_it_manager_cannot_patch_peer_manager(self):
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/accounts/users/{self.mgr2.pk}/",
+                           {"phone": "999"}, format="json")
+        self.assertEqual(res.status_code, 403)
+
+    def test_it_support_cannot_patch_it_manager(self):
+        auth(self.c, self.sup)
+        res = self.c.patch(f"/api/accounts/users/{self.mgr.pk}/",
+                           {"phone": "999"}, format="json")
+        self.assertEqual(res.status_code, 403)
+
+    def test_system_admin_can_patch_it_manager(self):
+        auth(self.c, self.admin)
+        res = self.c.patch(f"/api/accounts/users/{self.mgr.pk}/",
+                           {"phone": "111"}, format="json")
+        self.assertEqual(res.status_code, 200)
+
+    def test_it_manager_cannot_deactivate_system_admin(self):
+        auth(self.c, self.mgr)
+        res = self.c.post(f"/api/accounts/users/{self.admin.pk}/deactivate/",
+                          {}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.is_active)
+
+    def test_it_manager_cannot_reactivate_system_admin(self):
+        self.admin.is_active = False
+        self.admin.save(update_fields=["is_active"])
+        auth(self.c, self.mgr)
+        res = self.c.post(f"/api/accounts/users/{self.admin.pk}/reactivate/",
+                          {}, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.admin.refresh_from_db()
+        self.assertFalse(self.admin.is_active)
+
+    def test_it_manager_cannot_delete_system_admin(self):
+        auth(self.c, self.mgr)
+        res = self.c.delete(f"/api/accounts/users/{self.admin.pk}/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_bulk_update_skips_higher_role_target(self):
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/accounts/users/bulk_update/",
+                          {"rows": [{"employee_id": "A1", "phone": "999"}],
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.admin.refresh_from_db()
+        self.assertNotEqual(self.admin.phone, "999")
+        self.assertTrue(any(
+            r.get("employee_id") == "A1" for r in res.data.get("skipped", [])))
+
+    def test_bulk_activate_skips_higher_role_target(self):
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/accounts/users/bulk_activate/",
+                          {"ids": [self.admin.pk], "activate": False,
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.is_active)
+        self.assertTrue(res.data.get("skipped"))
+
+    def test_bulk_delete_skips_higher_role_target(self):
+        target = _make_user("X1", "x1@x", "x1@x", "system_admin", self.dep)
+        auth(self.c, self.mgr)
+        res = self.c.post("/api/accounts/users/bulk_delete/",
+                          {"ids": [target.pk],
+                           "preview": False, "confirm": True}, format="json")
+        self.assertEqual(res.status_code, 200)
+        target.refresh_from_db()
+        self.assertFalse(target.is_deleted)
+        self.assertTrue(res.data.get("skipped"))
+
+    def test_user_cannot_change_own_role_via_patch(self):
+        auth(self.c, self.mgr)
+        res = self.c.patch(f"/api/accounts/users/{self.mgr.pk}/",
+                           {"role": "system_admin"}, format="json")
+        # Patch is allowed on self? IT staff can patch users; but role is read-only.
+        # The key security property: role must not change.
+        self.mgr.refresh_from_db()
+        self.assertEqual(self.mgr.role, "it_manager")
+
+    def test_it_support_cannot_create_it_manager(self):
+        auth(self.c, self.sup)
+        res = self.c.post("/api/accounts/users/", {
+            "employee_id": "N1", "username": "n1@x", "email": "n1@example.com",
+            "password": "pw12345678", "first_name": "N", "last_name": "1",
+            "role": "it_manager", "home_department": self.dep.pk,
+        }, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        u = User.objects.get(employee_id="N1")
+        self.assertEqual(u.role, "employee")
+
+
+class UserReadAuthorizationTests(TestCase):
+    """Read-side PII boundaries for user list/retrieve endpoints."""
+
+    DIRECTORY_FIELDS = {
+        "id", "employee_id", "first_name", "last_name", "email",
+        "home_department", "home_department_name", "is_active", "has_photo",
+    }
+    SECRET_FIELDS = {
+        "password", "last_login", "groups", "user_permissions",
+        "is_superuser", "receive_ticket_emails", "photo", "deleted_at",
+        "deleted_by", "deletion_reason",
+    }
+    NON_STAFF_FIELDS = SECRET_FIELDS | {
+        "username", "email_verified", "role", "phone", "job_title",
+        "can_create_tickets", "is_deleted", "date_joined",
+    }
+
+    def setUp(self):
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.other_dep = Department.objects.create(name="Other", code="OTHR")
+        self.support = User.objects.create_user(
+            username="s@x", email="s@x", employee_id="S1",
+            password="pw12345678", role="it_support",
+            home_department=self.other_dep)
+        self.other_emp = User.objects.create_user(
+            username="o@x", email="o@x", employee_id="O1",
+            password="pw12345678", role="employee", first_name="Other",
+            last_name="Employee", phone="555-9999", job_title="Analyst",
+            home_department=self.other_dep)
+        self.inactive = User.objects.create_user(
+            username="i@x", email="i@x", employee_id="I1",
+            password="pw12345678", role="employee", is_active=False,
+            home_department=self.dep)
+        self.superuser = User.objects.create_user(
+            username="su@x", email="su@x", employee_id="SU1",
+            password="pw12345678", role="employee", is_superuser=True,
+            home_department=self.dep)
+        self.c = APIClient()
+
+    def _ids(self, res):
+        self.assertEqual(res.status_code, 200, res.data)
+        return [row["employee_id"] for row in res.data["results"]]
+
+    def _payload_fields(self, payload):
+        fields = set()
+        if isinstance(payload, dict):
+            fields.update(str(key) for key in payload)
+            for value in payload.values():
+                fields.update(self._payload_fields(value))
+        elif isinstance(payload, (list, tuple)):
+            for value in payload:
+                fields.update(self._payload_fields(value))
+        return fields
+
+    def _assert_no_fields(self, payload, forbidden):
+        fields = {field.lower() for field in self._payload_fields(payload)}
+        self.assertFalse(fields & forbidden)
+        # Also reject secret names embedded in error/detail text.
+        blob = str(payload).lower()
+        for marker in ("password", "last_login", "user_permissions",
+                       "is_superuser", "receive_ticket_emails"):
+            self.assertNotIn(marker, blob)
+
+    def test_unauthenticated_and_inactive_reads_denied(self):
+        self.assertIn(
+            self.c.get("/api/accounts/users/").status_code, (401, 403))
+        self.assertIn(
+            self.c.get(f"/api/accounts/users/{self.emp.pk}/").status_code,
+            (401, 403))
+        auth(self.c, self.inactive)
+        self.assertIn(
+            self.c.get("/api/accounts/users/").status_code, (401, 403))
+        self.assertIn(
+            self.c.get(f"/api/accounts/users/{self.other_emp.pk}/").status_code,
+            (401, 403))
+
+    def test_employee_list_is_self_only_and_filters_cannot_bypass(self):
+        auth(self.c, self.emp)
+        res = self.c.get("/api/accounts/users/")
+        self.assertEqual(self._ids(res), [self.emp.employee_id])
+        self.assertEqual(set(res.data["results"][0]), self.DIRECTORY_FIELDS)
+        self._assert_no_fields(res.data, self.NON_STAFF_FIELDS)
+
+        # Filters/search are applied after the self-only queryset.
+        self.assertEqual(self._ids(self.c.get(
+            "/api/accounts/users/", {"q": "O1"})), [])
+        self.assertEqual(self._ids(self.c.get(
+            "/api/accounts/users/",
+            {"department": self.other_dep.pk})), [])
+        self.assertEqual(self._ids(self.c.get(
+            "/api/accounts/users/", {"role": "system_admin"})), [])
+
+    def test_employee_retrieve_self_safe_other_ids_404(self):
+        auth(self.c, self.emp)
+        res = self.c.get(f"/api/accounts/users/{self.emp.pk}/")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(set(res.data), self.DIRECTORY_FIELDS)
+        self.assertEqual(res.data["employee_id"], self.emp.employee_id)
+        self._assert_no_fields(res.data, self.NON_STAFF_FIELDS)
+
+        for target in (self.admin, self.mgr, self.support,
+                       self.other_emp, self.superuser, self.inactive):
+            res = self.c.get(f"/api/accounts/users/{target.pk}/")
+            self.assertEqual(res.status_code, 404, target.employee_id)
+            self.assertNotIn(target.employee_id, str(res.data))
+
+    def test_employee_options_does_not_advertise_private_fields(self):
+        auth(self.c, self.emp)
+        res = self.c.options("/api/accounts/users/")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIn("employee_id", str(res.data))
+        self._assert_no_fields(res.data, self.NON_STAFF_FIELDS)
+
+    def test_it_staff_get_full_cross_department_directory(self):
+        for staff in (self.mgr, self.support):
+            auth(self.c, staff)
+            res = self.c.get("/api/accounts/users/")
+            ids = self._ids(res)
+            self.assertIn(self.admin.employee_id, ids)
+            self.assertIn(self.other_emp.employee_id, ids)
+            self.assertIn(self.emp.employee_id, ids)
+
+            detail = self.c.get(
+                f"/api/accounts/users/{self.other_emp.pk}/")
+            self.assertEqual(detail.status_code, 200, detail.data)
+            self.assertEqual(detail.data["phone"], "555-9999")
+            self.assertEqual(detail.data["job_title"], "Analyst")
+            self.assertIn("role", detail.data)
+            self.assertIn("can_create_tickets", detail.data)
+            self._assert_no_fields(detail.data, self.SECRET_FIELDS)
+
+    def test_admin_and_superuser_keep_full_directory_access(self):
+        for privileged in (self.admin, self.superuser):
+            auth(self.c, privileged)
+            res = self.c.get("/api/accounts/users/")
+            ids = self._ids(res)
+            self.assertIn(self.other_emp.employee_id, ids)
+            self.assertIn(self.mgr.employee_id, ids)
+
+            detail = self.c.get(
+                f"/api/accounts/users/{self.other_emp.pk}/")
+            self.assertEqual(detail.status_code, 200, detail.data)
+            self.assertIn("email_verified", detail.data)
+            self.assertIn("date_joined", detail.data)
+            self.assertIn("role", detail.data)
+            self._assert_no_fields(detail.data, self.SECRET_FIELDS)
+
+    def test_self_profile_endpoint_still_returns_full_profile(self):
+        auth(self.c, self.emp)
+        res = self.c.get("/api/accounts/me/")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["employee_id"], self.emp.employee_id)
+        self.assertIn("receive_ticket_emails", res.data)
+        self.assertIn("email_verified", res.data)
+        blob = str(res.data).lower()
+        for marker in ("password", "last_login", "user_permissions",
+                       "is_superuser"):
+            self.assertNotIn(marker, blob)

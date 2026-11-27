@@ -33,8 +33,11 @@ _VERIFICATION_REQUEST_COOLDOWN_SECONDS = 60
 _CHANGE_PASSWORD_COOLDOWN_SECONDS = 60
 
 
-def _reset_cooldown_key(email):
-    return f"password_reset:{email.lower().strip()}"
+def _reset_cooldown_key(email, action="request"):
+    # Request and confirmation are separate actions: sharing one key made a
+    # freshly requested reset link unusable because the request itself armed
+    # the confirmation cooldown.
+    return f"password_reset_{action}:{email.lower().strip()}"
 
 
 @api_view(["POST"])
@@ -80,7 +83,7 @@ def password_reset_confirm(request):
     # One successful reset per cooldown: prevents automated token-reuse
     # attempts on a freshly reset account.
     if account_action_cooldown(
-        _reset_cooldown_key(user.email),
+        _reset_cooldown_key(user.email, action="confirm"),
         _PASSWORD_RESET_CONFIRM_COOLDOWN_SECONDS,
     ):
         return Response({"detail": "Invalid or expired link."}, status=400)

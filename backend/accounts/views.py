@@ -12,7 +12,7 @@ from django.db import transaction
 from django.db.models import Count, Q
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from common.permissions import IsActiveAuthenticated
@@ -21,20 +21,49 @@ from rest_framework.response import Response
 from accounts.models import Department, User
 from accounts.serializers import (
     BulkEmployeeRowSerializer, DepartmentSerializer, UserCreateSerializer,
-    UserSerializer,
+    UserDirectorySerializer, UserSerializer,
 )
 from common.audit import log_action
 from common.import_stream import (
     batches, count_uploaded_rows, iter_uploaded_rows,
 )
-from common.permissions import IsITStaff, IsSystemAdmin, is_system_admin
+from common.permissions import IsITStaff, IsSystemAdmin, is_it_staff, is_system_admin
 from tickets.serializers import validate_attachment_file
 
 
+#: Role privilege order. Used to stop non-admins from managing accounts at or
+#: above their own level (e.g. an IT Manager changing a System Admin's email
+#: and then using the password-reset flow to take the account over).
+_ROLE_RANK = {
+    "employee": 1,
+    "it_support": 2,
+    "it_manager": 3,
+    "system_admin": 4,
+}
+
+
 def _is_privileged(user):
-    return bool(user and user.is_authenticated and (
-        getattr(user, "role", "") in ("system_admin", "it_manager",
-                                      "it_support") or user.is_superuser))
+    return is_it_staff(user)
+
+
+def _role_rank(user):
+    if getattr(user, "is_superuser", False):
+        return _ROLE_RANK["system_admin"]
+    return _ROLE_RANK.get(getattr(user, "role", ""), 0)
+
+
+def _can_manage_user(actor, target):
+    """True when ``actor`` may modify ``target``.
+
+    System admins (and superusers) may manage anyone. Every other IT-staff
+    member may only manage accounts strictly below their own role, so peers
+    and higher-privileged accounts are out of reach.
+    """
+    if not _is_privileged(actor) or target is None:
+        return False
+    if is_system_admin(actor):
+        return True
+    return _role_rank(actor) > _role_rank(target)
 
 
 @api_view(["GET", "PATCH"])
@@ -408,6 +437,9 @@ class UserViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         if self.action == "create":
             return UserCreateSerializer
+        if (self.action in ("list", "retrieve", "metadata")
+                and not is_it_staff(self.request.user)):
+            return UserDirectorySerializer
         return UserSerializer
 
     def get_permissions(self):
@@ -421,8 +453,8 @@ class UserViewSet(viewsets.ModelViewSet):
         if self.action in staff_actions:
             return [IsITStaff()]
         if self.action in ("list", "retrieve"):
-            # Authenticated users can reach these endpoints; queryset/object
-            # scoping and any object-level checks limit what they can see.
+            # Active users may read their own entry; staff get the full
+            # directory. The queryset/serializer split enforces that boundary.
             return [IsActiveAuthenticated()]
         return super().get_permissions()
 
@@ -430,6 +462,13 @@ class UserViewSet(viewsets.ModelViewSet):
         qs = User.objects.select_related("home_department").all()
         if not is_system_admin(self.request.user):
             qs = qs.filter(is_deleted=False)
+        if not is_it_staff(self.request.user):
+            # Ordinary employees have no workflow that needs a global
+            # directory: assignment/coordinator pickers are staff-only and
+            # self-service uses /me/. Scope the queryset before any filters so
+            # q/department/role cannot bypass object-level access, and direct
+            # IDs for other accounts resolve to 404 rather than leaking data.
+            qs = qs.filter(pk=getattr(self.request.user, "pk", None))
         q = self.request.query_params.get("q")
         if q:
             qs = qs.filter(
@@ -461,7 +500,9 @@ class UserViewSet(viewsets.ModelViewSet):
         role = serializer.validated_data.get("role", "employee")
         user = self.request.user
         if not is_system_admin(user):
-            if role in ("system_admin", "it_manager"):
+            # Equal-or-higher roles are downgraded. IT Support can only
+            # create employees; IT Manager can create Support/Employee.
+            if _ROLE_RANK.get(role, 0) >= _role_rank(user):
                 serializer.validated_data["role"] = "employee"
         obj = serializer.save()
         log_action(actor=user, action="create", instance=obj,
@@ -477,6 +518,9 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer.validated_data.pop("role", None)
         serializer.validated_data.pop("can_create_tickets", None)
         obj = self.get_object()
+        if not _can_manage_user(self.request.user, obj):
+            raise PermissionDenied(
+                "You cannot modify an account at or above your role.")
         wants_inactive = (
             "is_active" in serializer.validated_data
             and serializer.validated_data.get("is_active") is False)
@@ -491,6 +535,11 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         obj = self.get_object()
+        if not _can_manage_user(request.user, obj):
+            return Response(
+                {"detail": "You cannot delete an account at or above your "
+                           "role."},
+                status=status.HTTP_403_FORBIDDEN)
         refs = {"tickets": obj.tickets_requested.count(),
                 "assignments": obj.assignments_received.count()}
         if any(refs.values()):
@@ -620,6 +669,11 @@ class UserViewSet(viewsets.ModelViewSet):
         if not _is_privileged(request.user):
             return Response({"detail": "Forbidden."}, status=403)
         obj = self.get_object()
+        if not _can_manage_user(request.user, obj):
+            return Response(
+                {"detail": "You cannot deactivate an account at or above your "
+                           "role."},
+                status=status.HTTP_403_FORBIDDEN)
         # An employee holding open asset assignments cannot be deactivated
         # without leaving invalid assignments behind.
         open_assignments = obj.assignments_received.filter(
@@ -645,6 +699,11 @@ class UserViewSet(viewsets.ModelViewSet):
         if not _is_privileged(request.user):
             return Response({"detail": "Forbidden."}, status=403)
         obj = self.get_object()
+        if not _can_manage_user(request.user, obj):
+            return Response(
+                {"detail": "You cannot reactivate an account at or above "
+                           "your role."},
+                status=status.HTTP_403_FORBIDDEN)
         obj.is_active = True
         obj.save(update_fields=["is_active"])
         log_action(actor=request.user, action="reactivate", instance=obj)
@@ -669,6 +728,12 @@ class UserViewSet(viewsets.ModelViewSet):
             request.user.is_authenticated and request.user.pk == obj.pk)
         if not (is_self or _is_privileged(request.user)):
             return Response({"detail": "Forbidden."}, status=403)
+        if (request.method != "GET" and not is_self
+                and not _can_manage_user(request.user, obj)):
+            return Response(
+                {"detail": "You cannot modify an account at or above your "
+                           "role."},
+                status=status.HTTP_403_FORBIDDEN)
 
         if request.method == "GET":
             if not obj.photo or not getattr(obj.photo, "name", ""):
@@ -846,6 +911,11 @@ class UserViewSet(viewsets.ModelViewSet):
                     if not obj:
                         skipped.append({**raw, "reason": "not found"})
                         continue
+                    if not _can_manage_user(request.user, obj):
+                        skipped.append({
+                            "employee_id": obj.employee_id,
+                            "reason": "insufficient privilege"})
+                        continue
                     changes = {k: v for k, v in raw.items() if k in allowed}
                     if "home_department" in changes:
                         code = changes.pop("home_department")
@@ -869,16 +939,20 @@ class UserViewSet(viewsets.ModelViewSet):
         ids, activate = request.data.get("ids", []), request.data.get(
             "activate", True)
         if request.data.get("preview", True) in (True, "true", "1", 1):
-            qs = User.objects.filter(id__in=ids)
+            qs = list(User.objects.filter(id__in=ids))
+            allowed = [u for u in qs
+                       if _can_manage_user(request.user, u)]
+            forbidden = [u.employee_id for u in qs if u not in allowed]
             blocked = [
-                u.employee_id for u in qs
+                u.employee_id for u in allowed
                 if not activate and u.assignments_received.filter(
                     returned_at__isnull=True).exists()
             ]
             return Response({
-                "preview": [u.employee_id for u in qs],
-                "affected": qs.count(),
-                "blocked": blocked})
+                "preview": [u.employee_id for u in allowed],
+                "affected": len(allowed),
+                "blocked": blocked,
+                "forbidden": forbidden})
         if not request.data.get("confirm"):
             return Response({"detail": "Confirmation required."}, status=400)
         ok, failed, skipped = [], [], []
@@ -886,6 +960,11 @@ class UserViewSet(viewsets.ModelViewSet):
             try:
                 with transaction.atomic():
                     obj = User.objects.get(pk=pk)
+                    if not _can_manage_user(request.user, obj):
+                        skipped.append({
+                            "id": pk,
+                            "reason": "insufficient privilege"})
+                        continue
                     if not activate and obj.assignments_received.filter(
                             returned_at__isnull=True).exists():
                         skipped.append({
@@ -911,11 +990,15 @@ class UserViewSet(viewsets.ModelViewSet):
         ids = request.data.get("ids", [])
         objs = list(User.objects.filter(id__in=ids))
         if request.data.get("preview", True) in (True, "true", "1", 1):
-            blocked = [o.employee_id for o in objs
+            allowed = [o for o in objs
+                       if _can_manage_user(request.user, o)]
+            forbidden = [o.employee_id for o in objs if o not in allowed]
+            blocked = [o.employee_id for o in allowed
                        if o.tickets_requested.count() or
                        o.assignments_received.count()]
-            return Response({"preview": [o.employee_id for o in objs],
-                             "affected": len(objs), "blocked": blocked,
+            return Response({"preview": [o.employee_id for o in allowed],
+                             "affected": len(allowed), "blocked": blocked,
+                             "forbidden": forbidden,
                              "note": "soft delete only; history rows block"})
         if not request.data.get("confirm"):
             return Response({"detail": "Confirmation required."}, status=400)
@@ -923,6 +1006,11 @@ class UserViewSet(viewsets.ModelViewSet):
         for obj in objs:
             try:
                 with transaction.atomic():
+                    if not _can_manage_user(request.user, obj):
+                        skipped.append({
+                            "id": obj.pk,
+                            "reason": "insufficient privilege"})
+                        continue
                     if (obj.tickets_requested.count() or
                             obj.assignments_received.count()):
                         skipped.append({"id": obj.pk,

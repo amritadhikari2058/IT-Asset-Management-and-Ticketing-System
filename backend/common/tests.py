@@ -1348,6 +1348,68 @@ class ExportDatasetTests(TestCase):
         blob = res.content.decode("utf-8")
         self.assertIn("HIDDEN-2", blob)
 
+    def test_ticket_category_export_filtered_csv_and_xlsx(self):
+        from tickets.models import TicketCategory
+        TicketCategory.objects.create(name="CAT-KEEP", description="keep me")
+        TicketCategory.objects.create(name="CAT-DROP", description="drop me")
+        for fmt in ("csv", "xlsx"):
+            res = self.c.get(
+                f"/api/common/exports/ticket_categories/?format={fmt}"
+                "&scope=filtered&q=CAT-KEEP")
+            self.assertEqual(res.status_code, 200, fmt)
+            if fmt == "csv":
+                body = res.content.decode("utf-8")
+                self.assertIn("CAT-KEEP", body)
+                self.assertNotIn("CAT-DROP", body)
+            else:
+                from io import BytesIO
+                from openpyxl import load_workbook
+                wb = load_workbook(BytesIO(res.content), read_only=True)
+                values = [
+                    str(cell)
+                    for row in wb.active.iter_rows(values_only=True)
+                    for cell in row if cell is not None
+                ]
+                text = "\n".join(values)
+                self.assertIn("CAT-KEEP", text)
+                self.assertNotIn("CAT-DROP", text)
+
+    def test_asset_category_export_filtered_csv_xlsx_and_active_filter(self):
+        from assets.models import AssetCategory
+        AssetCategory.objects.create(name="ACAT-KEEP", description="keep me")
+        AssetCategory.objects.create(name="ACAT-DROP", description="drop me")
+        AssetCategory.objects.create(
+            name="ACAT-OLD", description="retired", is_active=False)
+        for fmt in ("csv", "xlsx"):
+            res = self.c.get(
+                f"/api/common/exports/asset_categories/?format={fmt}"
+                "&scope=filtered&q=ACAT-KEEP")
+            self.assertEqual(res.status_code, 200, fmt)
+            if fmt == "csv":
+                body = res.content.decode("utf-8")
+                self.assertIn("ACAT-KEEP", body)
+                self.assertNotIn("ACAT-DROP", body)
+            else:
+                from io import BytesIO
+                from openpyxl import load_workbook
+                wb = load_workbook(BytesIO(res.content), read_only=True)
+                values = [
+                    str(cell)
+                    for row in wb.active.iter_rows(values_only=True)
+                    for cell in row if cell is not None
+                ]
+                text = "\n".join(values)
+                self.assertIn("ACAT-KEEP", text)
+                self.assertNotIn("ACAT-DROP", text)
+
+        res = self.c.get(
+            "/api/common/exports/asset_categories/?format=csv"
+            "&scope=filtered&is_active=false")
+        self.assertEqual(res.status_code, 200)
+        body = res.content.decode("utf-8")
+        self.assertIn("ACAT-OLD", body)
+        self.assertNotIn("ACAT-KEEP", body)
+
     def test_filtered_asset_export_date_filter(self):
         from assets.models import Asset, AssetCategory
         cat = AssetCategory.objects.create(name="DateFiltered")
@@ -1771,6 +1833,139 @@ class TicketNotificationTransactionTests(TestCase):
         _notify_user(self.mgr, None, "t", "b", self.ticket)
         self.assertEqual(Notification.objects.count(), 0)
 
+
+class ExportDatasetSecurityTests(TestCase):
+    """Regression tests for export auth, role, and queryset scoping."""
+
+    def setUp(self):
+        from accounts.models import Department
+        from assets.models import AssetCategory
+        cache.clear()
+        self.dep, self.admin, self.mgr, self.emp = make_users()
+        self.other_dep = Department.objects.create(name="Other", code="OTHR")
+        self.other_emp = User.objects.create_user(
+            username="oe@x", email="oe@x", employee_id="OE1",
+            password="pw12345678", role="employee",
+            home_department=self.other_dep)
+        self.c = APIClient()
+        self.tcat = TicketCategory.objects.create(name="Network")
+        self.acat = AssetCategory.objects.create(name="Laptop")
+
+    def _ticket(self, **kwargs):
+        defaults = {
+            "title": "t", "description": "d", "category": self.tcat,
+            "requester": self.emp, "department": self.dep,
+        }
+        defaults.update(kwargs)
+        return Ticket.objects.create(**defaults)
+
+    def test_unauthenticated_export_rejected(self):
+        res = self.c.get("/api/common/exports/tickets/?format=csv")
+        self.assertEqual(res.status_code, 401)
+
+    def test_inactive_user_export_rejected(self):
+        self.mgr.is_active = False
+        self.mgr.save(update_fields=["is_active"])
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/exports/employees/?format=csv")
+        self.assertIn(res.status_code, (401, 403))
+
+    def test_employee_forbidden_on_it_staff_datasets(self):
+        auth(self.c, self.emp)
+        for dataset in ["employees", "departments", "assignments",
+                        "ticket_history", "maintenance", "disposals",
+                        "department_report"]:
+            res = self.c.get(f"/api/common/exports/{dataset}/?format=csv")
+            self.assertEqual(res.status_code, 403, dataset)
+
+    def test_it_staff_can_export_it_staff_datasets_csv_and_xlsx(self):
+        auth(self.c, self.mgr)
+        for fmt in ["csv", "xlsx"]:
+            res = self.c.get(f"/api/common/exports/employees/?format={fmt}")
+            self.assertEqual(res.status_code, 200, fmt)
+            self.assertIn("attachment", res["Content-Disposition"])
+
+    def test_ticket_export_scoped_to_employee_visible_tickets(self):
+        own = self._ticket(title="own-ticket", requester=self.emp,
+                           department=self.dep)
+        home = self._ticket(title="home-dept-ticket", requester=self.other_emp,
+                            department=self.dep)
+        hidden = self._ticket(title="hidden-ticket", requester=self.other_emp,
+                              department=self.other_dep)
+        auth(self.c, self.emp)
+        for fmt in ["csv", "xlsx"]:
+            res = self.c.get(
+                f"/api/common/exports/tickets/?format={fmt}&scope=all")
+            self.assertEqual(res.status_code, 200, fmt)
+            if fmt == "csv":
+                body = res.content.decode("utf-8")
+                self.assertIn("own-ticket", body)
+                self.assertIn("home-dept-ticket", body)
+                self.assertNotIn("hidden-ticket", body)
+            else:
+                from io import BytesIO
+                from openpyxl import load_workbook
+                wb = load_workbook(BytesIO(res.content), read_only=True)
+                ws = wb.active
+                values = [str(c) for row in ws.iter_rows(values_only=True) for c in row if c is not None]
+                text = "\n".join(values)
+                self.assertIn("own-ticket", text)
+                self.assertIn("home-dept-ticket", text)
+                self.assertNotIn("hidden-ticket", text)
+
+    def test_ticket_export_filtered_scope_still_scoped(self):
+        self._ticket(title="visible-q", requester=self.emp, department=self.dep)
+        self._ticket(title="hidden-q", requester=self.other_emp,
+                     department=self.other_dep)
+        auth(self.c, self.emp)
+        res = self.c.get(
+            "/api/common/exports/tickets/?format=csv&scope=filtered&q=q")
+        self.assertEqual(res.status_code, 200)
+        body = res.content.decode("utf-8")
+        self.assertIn("visible-q", body)
+        self.assertNotIn("hidden-q", body)
+
+    def test_it_staff_ticket_export_sees_all(self):
+        self._ticket(title="dept-ticket", requester=self.other_emp,
+                     department=self.other_dep)
+        auth(self.c, self.mgr)
+        res = self.c.get("/api/common/exports/tickets/?format=csv&scope=all")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("dept-ticket", res.content.decode("utf-8"))
+
+    def test_superuser_can_access_it_staff_export(self):
+        superuser = User.objects.create_superuser(
+            username="root@x", email="root@x", employee_id="ROOT1",
+            password="pw12345678", home_department=self.dep)
+        auth(self.c, superuser)
+        res = self.c.get("/api/common/exports/employees/?format=csv")
+        self.assertEqual(res.status_code, 200)
+
+    def test_employee_asset_export_csv_and_xlsx_scoped(self):
+        from assets.models import Asset
+        visible = Asset.objects.create(
+            asset_tag="VIS-EXP", name="visible", category=self.acat,
+            department=self.dep)
+        hidden = Asset.objects.create(
+            asset_tag="HID-EXP", name="hidden", category=self.acat,
+            department=self.other_dep)
+        auth(self.c, self.emp)
+        for fmt in ["csv", "xlsx"]:
+            res = self.c.get(f"/api/common/exports/assets/?format={fmt}")
+            self.assertEqual(res.status_code, 200, fmt)
+            if fmt == "csv":
+                body = res.content.decode("utf-8")
+                self.assertIn("VIS-EXP", body)
+                self.assertNotIn("HID-EXP", body)
+            else:
+                from io import BytesIO
+                from openpyxl import load_workbook
+                wb = load_workbook(BytesIO(res.content), read_only=True)
+                ws = wb.active
+                values = [str(c) for row in ws.iter_rows(values_only=True) for c in row if c is not None]
+                text = "\n".join(values)
+                self.assertIn("VIS-EXP", text)
+                self.assertNotIn("HID-EXP", text)
 class TicketNotificationTransactionTests(TestCase):
     """Regression coverage for common.notification_delivery._notify_user.
 

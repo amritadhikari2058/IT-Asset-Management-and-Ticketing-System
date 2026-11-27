@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Badge, LoadingRows, PageHeader, Panel, PanelPad } from '../../components';
+import { Evidence } from '../../components/problem-management/evidence';
+import { RCA } from '../../components/problem-management/rca';
+import { GovernedTransitions } from '../../components/problem-management/governed-transitions';
 import {
-  fiveWhys, getRCA, linkedAssets, linkedCIs, linkedKBs, linkedProducts,
-  linkedServices, linkedTickets, listEvidence, listExceptions, listTasks,
+  linkedAssets, linkedCIs, linkedKBs, linkedProducts,
+  linkedServices, linkedTickets, listExceptions, listTasks,
   listValidations, listWorkarounds, problemDetail, problemHistory, problemReadiness,
-  rootCauseFactors, createKbLink, deleteKbLink,
+  createKbLink, deleteKbLink,
 } from '../../services/problem-management';
 
 function Section({ title, state, children }) {
@@ -41,7 +44,6 @@ export function ProblemDetail({ problemId: problemIdProp }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [sections, setSections] = useState({});
-  const [rca, setRca] = useState(null);
   const [kbForm, setKbForm] = useState({
     article: '', relation_type: 'reference', relevance: 'medium', note: '',
   });
@@ -67,12 +69,9 @@ export function ProblemDetail({ problemId: problemIdProp }) {
     let active = true;
     const loaders = [
       ['tasks', () => listTasks(problemId)],
-      ['evidence', () => listEvidence(problemId)],
       ['validations', () => listValidations(problemId)],
       ['exceptions', () => listExceptions(problemId)],
       ['workarounds', () => listWorkarounds(problemId)],
-      ['whys', () => fiveWhys(problemId)],
-      ['factors', () => rootCauseFactors(problemId)],
       ['history', () => problemHistory(problemId)],
       ['readiness', () => problemReadiness(problemId)],
       ['tickets', () => linkedTickets(problemId)],
@@ -91,15 +90,6 @@ export function ProblemDetail({ problemId: problemIdProp }) {
     return () => { active = false; };
   }, [problemId]);
 
-  useEffect(() => {
-    const rootCauseId = problem?.root_cause_analysis;
-    if (!rootCauseId) { setRca(null); return () => {}; } // eslint-disable-line react/set-state-in-effect
-    let active = true;
-    getRCA(rootCauseId)
-      .then((data) => { if (active) setRca(data?.data ?? data); })
-      .catch(() => { if (active) setRca(null); });
-    return () => { active = false; };
-  }, [problem?.root_cause_analysis]);
 
   const handleAddKbLink = async (e) => {
     e.preventDefault();
@@ -155,37 +145,23 @@ export function ProblemDetail({ problemId: problemIdProp }) {
         {problem.description && <p>{problem.description}</p>}
       </Section>
 
+      <GovernedTransitions problemId={problemId} problem={problem} />
+
       <Section title="Tasks" state={sections.tasks}>
         {listOf(sections.tasks?.data).length === 0
           ? <p className="muted">No tasks.</p>
           : listOf(sections.tasks?.data).map((t) => <p key={t.id}>{t.title} — {t.status}</p>)}
       </Section>
 
-      <Section title="Evidence" state={sections.evidence}>
-        {listOf(sections.evidence?.data).length === 0
-          ? <p className="muted">No evidence.</p>
-          : listOf(sections.evidence?.data).map((e) => (
-            <p key={e.id}>{e.original_filename}{e.archived ? ' (Archived)' : ''}</p>
-          ))}
-      </Section>
+      <Evidence problemId={problemId} />
 
-      <Section title="RCA Workflow">
-        {rca
-          ? <p>{rca.title} — {rca.status}</p>
-          : <p className="muted">No root-cause analysis linked.</p>}
-      </Section>
-
-      <Section title="Five Whys" state={sections.whys}>
-        {listOf(sections.whys?.data).length === 0
-          ? <p className="muted">No Five Whys recorded.</p>
-          : listOf(sections.whys?.data).map((w) => <p key={w.id}>{w.question_number}. {w.question_text}</p>)}
-      </Section>
-
-      <Section title="Root-Cause Factors" state={sections.factors}>
-        {listOf(sections.factors?.data).length === 0
-          ? <p className="muted">No factors recorded.</p>
-          : listOf(sections.factors?.data).map((f) => <p key={f.id}>{f.category}: {f.factor}</p>)}
-      </Section>
+      <section>
+        <h3>RCA Workflow</h3>
+        <RCA
+          rcaId={problem.root_cause_analysis ?? undefined}
+          problemId={problemId}
+        />
+      </section>
 
       <Section title="Timeline">
         {(problem.timeline_events ?? []).length === 0
@@ -324,3 +300,5 @@ export function ProblemDetail({ problemId: problemIdProp }) {
     </div>
   );
 }
+
+

@@ -27,7 +27,7 @@ vi.mock('../../shared/changes-utils', () => ({
 
 vi.mock('../../api', () => ({
   default: {
-    get: vi.fn(),
+    get: (...args) => mockFetchPage(...args).then((data) => ({ data })),
     post: (...a) => mockPost(...a),
     patch: (...a) => mockPatch(...a),
   },

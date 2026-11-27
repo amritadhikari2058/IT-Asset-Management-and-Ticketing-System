@@ -7,6 +7,7 @@ action-level guards. Frontend hiding is UX only; backend enforces.
 |---|---|---|---|---|
 | Login (JWT), view own profile | yes | yes | yes | yes |
 | Change own `receive_ticket_emails` (`PATCH me/`) | yes | yes | yes | yes |
+| Read user list/detail (`GET users/`, `users/<id>/`) | full directory | full directory | full directory | own entry only (reduced fields) |
 | Change own password (current password required) | yes | yes | yes | yes |
 | Reset another employee's password (admin-only) | yes | no | no | no |
 | Create ticket (for themselves; dept select, reason if cross-dept) | yes | yes | yes | if `can_create_tickets` |

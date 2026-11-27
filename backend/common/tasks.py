@@ -14,14 +14,17 @@ import uuid
 from datetime import timedelta
 
 from celery import shared_task
+from rest_framework.exceptions import PermissionDenied
 
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import F, Q
 from django.utils import timezone
 
 from common import inbound
 from common.models import (BackgroundTaskRun, DataRetentionExecution,
                            DataRetentionPolicy, EmailProcessing)
+from common.report_security import validate_scheduled_report_owner
 from common.retention_service import execute_retention, preview_retention
 
 logger = logging.getLogger(__name__)
@@ -408,20 +411,11 @@ def run_scheduled_reports(self):
         token = uuid.uuid4().hex
         try:
             saved_report = sr.saved_report
-        except Exception:
-            saved_report = None
-        if saved_report is None or getattr(saved_report, "is_deleted", False):
+            report_owner = validate_scheduled_report_owner(saved_report)
+        except (PermissionDenied, ObjectDoesNotExist) as exc:
             logger.warning(
-                "Scheduled report %s skipped: saved report missing or deleted",
-                sr.pk)
-            _advance_next_run(sr)
-            results["failed"] += 1
-            continue
-        report_owner = getattr(saved_report, "user", None)
-        if report_owner is None or not getattr(report_owner, "is_active", True):
-            logger.warning(
-                "Scheduled report %s skipped: report owner missing or inactive",
-                sr.pk)
+                "Scheduled report %s skipped: %s", sr.pk,
+                getattr(exc, "detail", exc))
             _advance_next_run(sr)
             results["failed"] += 1
             continue
@@ -485,26 +479,41 @@ def run_scheduled_reports(self):
         # Render and deliver outside the row lock, renewing the lease so a
         # long-running report is never mistaken for an abandoned execution.
         try:
+            from common.models import SavedReport
             from tickets.views import category_report, sla_report
             from rest_framework.test import APIRequestFactory
             from common.email import send_scheduled_report_email
 
             with _ScheduledReportLeaseKeeper(run.pk, token) as keeper:
+                # Re-read ownership at execution time: a report can be
+                # reassigned or an owner can be deactivated between the due
+                # scan and rendering. Direct report calls bypass DRF's normal
+                # request dispatch, so authorization must be explicit here.
+                fresh_saved = SavedReport.objects.select_related("user").get(
+                    pk=sr.saved_report_id)
+                report_owner = validate_scheduled_report_owner(fresh_saved)
                 factory = APIRequestFactory()
                 req = factory.get("/api/tickets/reports/by-category/",
-                                  data=sr.saved_report.filters or {})
-                # Attach the user so permission-aware reports work.
-                req.user = sr.saved_report.user
+                                  data=fresh_saved.filters or {})
+                req.user = report_owner
 
-                if sr.saved_report.report_type == "ticket_category":
+                if fresh_saved.report_type == "ticket_category":
                     resp = category_report(req)
-                elif sr.saved_report.report_type == "ticket_sla":
+                elif fresh_saved.report_type == "ticket_sla":
                     resp = sla_report(req)
                 else:
                     raise ValueError(
-                        f"Unknown report type: {sr.saved_report.report_type}")
+                        f"Unknown report type: {fresh_saved.report_type}")
 
-                payload = resp.data if hasattr(resp, "data") else resp
+                # A permission-denied/error Response is still a Response; never
+                # render its body as a successful report attachment.
+                resp_status = getattr(resp, "status_code", None)
+                if resp_status != 200:
+                    raise PermissionDenied(
+                        f"Report endpoint returned status {resp_status}.")
+                payload = getattr(resp, "data", None)
+                if payload is None:
+                    raise ValueError("Report endpoint returned no data.")
                 fmt = sr.format or "csv"
                 content = _render_report(payload, fmt)
                 filename = (
