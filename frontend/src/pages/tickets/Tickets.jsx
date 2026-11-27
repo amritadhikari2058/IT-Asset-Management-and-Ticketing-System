@@ -341,6 +341,11 @@ export function TicketDetail({ id }) {
   const [noteInternal, setNoteInternal] = useState(false);
   const [noteBusy, setNoteBusy] = useState(false);
   const [noteError, setNoteError] = useState('');
+  const [cannedResponses, setCannedResponses] = useState([]);
+  const [cannedResponseId, setCannedResponseId] = useState('');
+  const [cannedVisibility, setCannedVisibility] = useState('internal_note');
+  const [cannedBusy, setCannedBusy] = useState(false);
+  const [cannedError, setCannedError] = useState('');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [attachments, setAttachments] = useState([]);
@@ -404,6 +409,32 @@ export function TicketDetail({ id }) {
   };
   useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
 
+  useEffect(() => {
+    if (!isStaff) {
+      setCannedResponses([]);
+      return;
+    }
+
+    let active = true;
+    api.get('/tickets/canned-responses/')
+      .then((response) => {
+        if (active) {
+          const data = response.data;
+          const items = Array.isArray(data?.results)
+            ? data.results
+            : Array.isArray(data)
+              ? data
+              : [];
+          setCannedResponses(items);
+        }
+      })
+      .catch(() => {
+        if (active) setCannedResponses([]);
+      });
+
+    return () => { active = false; };
+  }, [isStaff]);
+
   const addNote = async (ev) => {
     ev.preventDefault();
     if (noteBusy || !noteBody.trim()) return;
@@ -420,6 +451,30 @@ export function TicketDetail({ id }) {
       setNoteError(parseApiError(e).global || 'Could not add note.');
     } finally {
       setNoteBusy(false);
+    }
+  };
+
+  const applyCannedResponse = async () => {
+    if (!isStaff || cannedBusy || !cannedResponseId) return;
+
+    setCannedBusy(true);
+    setCannedError('');
+
+    try {
+      await api.post(`/tickets/${id}/apply_canned_response/`, {
+        canned_response_id: Number(cannedResponseId),
+        visibility: cannedVisibility,
+      });
+
+      const response = await api.get(`/tickets/${id}/notes/`);
+      setNotes(response.data.results ?? response.data ?? []);
+      setCannedResponseId('');
+    } catch (e) {
+      setCannedError(
+        parseApiError(e).global || 'Could not apply the canned response.'
+      );
+    } finally {
+      setCannedBusy(false);
     }
   };
 
@@ -639,6 +694,78 @@ export function TicketDetail({ id }) {
             ))}
           </ul>
         )}
+        {isStaff && (
+          <div className="note-form">
+            <label className="field">
+              Saved response
+              <select
+                className="input"
+                value={cannedResponseId}
+                onChange={(e) => {
+                  const selected = cannedResponses.find(
+                    (item) => String(item.id) === e.target.value
+                  );
+                  setCannedResponseId(e.target.value);
+                  setCannedVisibility(
+                    selected?.visibility === 'public_reply'
+                      ? 'public_reply'
+                      : 'internal_note'
+                  );
+                  setCannedError('');
+                }}
+                disabled={cannedBusy || cannedResponses.length === 0}
+                aria-label="Saved response"
+              >
+                <option value="">Choose a saved response...</option>
+                {cannedResponses.map((response) => (
+                  <option key={response.id} value={response.id}>
+                    {response.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {cannedResponseId && (
+              <label className="field">
+                Apply as
+                <select
+                  className="input"
+                  value={cannedVisibility}
+                  onChange={(e) => setCannedVisibility(e.target.value)}
+                  disabled={cannedBusy}
+                  aria-label="Saved response visibility"
+                >
+                  {cannedResponses.find(
+                    (item) => String(item.id) === cannedResponseId
+                  )?.visibility !== 'internal_note' && (
+                    <option value="public_reply">Public reply</option>
+                  )}
+                  {cannedResponses.find(
+                    (item) => String(item.id) === cannedResponseId
+                  )?.visibility !== 'public_reply' && (
+                    <option value="internal_note">Internal note</option>
+                  )}
+                </select>
+              </label>
+            )}
+
+            {cannedError && (
+              <div className="field-error" role="alert">{cannedError}</div>
+            )}
+
+            <div className="row-end">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={applyCannedResponse}
+                disabled={cannedBusy || !cannedResponseId}
+              >
+                {cannedBusy ? 'Applying...' : 'Apply saved response'}
+              </button>
+            </div>
+          </div>
+        )}
+
         <form onSubmit={addNote} className="note-form">
           <textarea className="input" rows={3} value={noteBody} onChange={(e) => setNoteBody(e.target.value)} placeholder="Add an update…" disabled={noteBusy} aria-label="Note body" />
           {isStaff && user?.role !== 'employee' && (

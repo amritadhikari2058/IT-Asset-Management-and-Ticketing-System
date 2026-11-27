@@ -1,109 +1,359 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import api from '../../api';
 import { useAuth } from '../../auth';
-import { Badge, Button, Input, Select, Alert, DataTable, EmptyState, PageHeader } from '../../components';
+import {
+  Badge,
+  Button,
+  Input,
+  Select,
+  Alert,
+  DataTable,
+  EmptyState,
+  PageHeader,
+} from '../../components';
 import { parseApiError } from '../../api-utils';
 
-/** Canned Responses Management Page
- * Route: #/tickets/canned-responses
- */
+const EMPTY_FORM = {
+  title: '',
+  code: '',
+  body: '',
+  visibility: 'internal_note',
+  category: '',
+  is_shared: false,
+};
+
 export function CannedResponsesPage() {
-  useAuth();
+  const { isEmployee, isManagerOrAdmin } = useAuth();
+
   const [responses, setResponses] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [, setError] = useState('');
-  const [filterCategory, setFilterCategory] = useState('');
-  const [filterVisibility, setFilterVisibility] = useState('');
-  const [pageSize] = useState(20);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({ ...EMPTY_FORM });
 
   const fetchResponses = async () => {
     setLoading(true);
     setError('');
+
     try {
-      let url = '/api/canned-responses/';
-      if (filterCategory) url += '?category=' + filterCategory;
-      if (filterVisibility) url += (url.includes('?') ? '&' : '') + 'visibility=' + filterVisibility;
-      if (searchQuery) url += (url.includes('?') ? '&' : '') + 'q=' + searchQuery;
-      url += '&page=' + page + '&page_size=' + pageSize;
-      const r = await api.get(url);
-      setResponses(r.data.results ?? r.data ?? []);
+      const response = await api.get('/tickets/canned-responses/');
+      setResponses(response.data.results ?? response.data ?? []);
     } catch (e) {
-      setError(parseApiError(e).global || 'Failed to load canned responses.');
+      setError(
+        parseApiError(e).global || 'Failed to load canned responses.'
+      );
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchResponses(); // eslint-disable-line react/set-state-in-effect
-  }, [filterCategory, filterVisibility, searchQuery, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
+    fetchResponses();
+  }, []);
+
+  const updateField = (field, value) => {
+    setForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+  };
+
+  const resetForm = () => {
+    setForm({ ...EMPTY_FORM });
+    setEditingId(null);
+    setCreating(false);
+    setError('');
+  };
+
+  const startCreate = () => {
+    setForm({ ...EMPTY_FORM });
+    setEditingId(null);
+    setError('');
+    setCreating(true);
+  };
+
+  const startEdit = (response) => {
+    setForm({
+      title: response.title || '',
+      code: response.code || '',
+      body: response.body || '',
+      visibility: response.visibility || 'internal_note',
+      category: response.category || '',
+      is_shared: !!response.is_shared,
+    });
+
+    setEditingId(response.id);
+    setCreating(true);
+    setError('');
+  };
+
+  const saveResponse = async () => {
+    if (!form.title.trim() || !form.body.trim()) {
+      setError('Title and response body are required.');
+      return;
+    }
+
+    const payload = {
+      title: form.title.trim(),
+      code: form.code.trim(),
+      body: form.body.trim(),
+      visibility: form.visibility,
+      category: form.category.trim(),
+      is_shared: isManagerOrAdmin ? form.is_shared : false,
+    };
+
+    setSaving(true);
+    setError('');
+
+    try {
+      if (editingId !== null) {
+        await api.put(
+          `/tickets/canned-responses/${editingId}/`,
+          payload
+        );
+      } else {
+        await api.post('/tickets/canned-responses/', payload);
+      }
+
+      resetForm();
+      await fetchResponses();
+    } catch (e) {
+      setError(
+        parseApiError(e).global || 'Failed to save canned response.'
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteResponse = async (response) => {
+    const confirmed = window.confirm(
+      `Delete canned response "${response.title}"?`
+    );
+
+    if (!confirmed) return;
+
+    setError('');
+
+    try {
+      await api.delete(
+        `/tickets/canned-responses/${response.id}/`
+      );
+
+      await fetchResponses();
+    } catch (e) {
+      setError(
+        parseApiError(e).global || 'Failed to delete canned response.'
+      );
+    }
+  };
 
   if (isEmployee) {
-    return <div className="py-4"><Alert variant="danger">Access denied. Employees cannot manage canned responses.</Alert></div>;
+    return (
+      <div className="py-4">
+        <Alert variant="danger">
+          Access denied. Employees cannot manage canned responses.
+        </Alert>
+      </div>
+    );
   }
 
   return (
     <div className="p-4">
-      <PageHeader title="Canned Responses" subtitle="Manage shared and personal canned responses" />
-      <div className="mb-4">
-        <Select label="Category" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)}>
-          <option value="">All categories</option>
-          <option value="general">General</option>
-          <option value="technical">Technical</option>
-          <option value="hardware">Hardware</option>
-        </Select>
-        <Select label="Visibility" value={filterVisibility} onChange={(e) => setFilterVisibility(e.target.value)}>
-          <option value="">All</option>
-          <option value="internal">Internal</option>
-          <option value="public">Public</option>
-        </Select>
-        <Input placeholder="Search..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
-      </div>
+      <PageHeader
+        title="Canned Responses"
+        subtitle="Manage shared and personal canned responses"
+      />
 
-      {creating ? (
-        <div className="mb-4">
-          <PageHeader title="Create Canned Response" subtitle="Creating new canned response" />
-          <textarea className="input" rows={4} placeholder="Enter canned response text..." />
-          <div className="mb-2">
-            <Select label="Visibility">
-              <option value="internal">Internal</option>
-              <option value="public">Public</option>
-            </Select>
-          </div>
-          <Button onClick={() => setCreating(false)}>Cancel</Button>
-          <Button variant="primary" onClick={() => setCreating(false)}>Save</Button>
+      {error && (
+        <div className="mb-3">
+          <Alert variant="danger">{error}</Alert>
         </div>
-      ) : (
-        <div>
-          {loading ? (
-            <p className="page-loading">Loading canned responses...</p>
-          ) : responses.length === 0 ? (
-            <EmptyState icon="💬" title="No Responses" text="No canned responses found." />
-          ) : (
-            <DataTable
-              items={responses}
-              pageSize={pageSize}
-              columns={[
-                { key: 'name', label: 'Name', render: (r) => <strong>{r.name}</strong> },
-                { key: 'visibility', label: 'Visibility', render: (r) => <Badge kind="status" value={r.visibility} /> },
-                { key: 'usage_count', label: 'Uses', render: (r) => r.usage_count ?? 0 },
-                { key: 'actions', label: 'Actions', render: () => (
-                  <div className="row-gap">
-                    <Button variant="secondary" size="small">Edit</Button>
-                    <Button variant="danger" size="small">Delete</Button>
-                  </div>
-                ) }
-              ]}
-            />
-          )}
+      )}
+
+      {!creating && (
+        <div className="mb-4">
+          <Button variant="primary" onClick={startCreate}>
+            Create Canned Response
+          </Button>
         </div>
       )}
 
       {creating && (
-        <div className="mt-4">
-          <Button onClick={() => setCreating(false)}>Cancel creating</Button>
+        <div className="mb-4">
+          <PageHeader
+            title={editingId !== null ? 'Edit Canned Response' : 'Create Canned Response'}
+            subtitle="Enter the response details below"
+          />
+
+          <div className="row g-3">
+            <Input
+              label="Title"
+              value={form.title}
+              onChange={(e) => updateField('title', e.target.value)}
+              placeholder="e.g. Password Reset Instructions"
+              maxLength={200}
+              required
+            />
+
+            <Input
+              label="Code (optional)"
+              value={form.code}
+              onChange={(e) => updateField('code', e.target.value)}
+              placeholder="e.g. PASSWORD-RESET"
+              maxLength={60}
+            />
+
+            <Input
+              label="Category"
+              value={form.category}
+              onChange={(e) => updateField('category', e.target.value)}
+              placeholder="e.g. hardware, software, general"
+              maxLength={100}
+            />
+
+            <Select
+              label="Visibility"
+              value={form.visibility}
+              onChange={(e) => updateField('visibility', e.target.value)}
+            >
+              <option value="internal_note">Internal Note</option>
+              <option value="public_reply">Public Reply</option>
+              <option value="both">Both</option>
+            </Select>
+
+            <label className="field">
+              <span>Response Body</span>
+              <textarea
+                className="input"
+                rows={5}
+                value={form.body}
+                onChange={(e) => updateField('body', e.target.value)}
+                placeholder="Enter the canned response text..."
+                required
+              />
+            </label>
+
+            {isManagerOrAdmin && (
+              <label className="field">
+                <span>
+                  <input
+                    type="checkbox"
+                    checked={form.is_shared}
+                    onChange={(e) =>
+                      updateField('is_shared', e.target.checked)
+                    }
+                  />
+                  {' '}Make this response shared with IT staff
+                </span>
+              </label>
+            )}
+          </div>
+
+          <div className="row-gap mt-3">
+            <Button
+              variant="secondary"
+              onClick={resetForm}
+              disabled={saving}
+            >
+              Cancel
+            </Button>
+
+            <Button
+              variant="primary"
+              onClick={saveResponse}
+              disabled={saving}
+            >
+              {saving
+                ? 'Saving...'
+                : editingId !== null
+                  ? 'Update Response'
+                  : 'Save Response'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {!creating && (
+        <div>
+          {loading ? (
+            <p className="page-loading">Loading canned responses...</p>
+          ) : responses.length === 0 ? (
+            <EmptyState
+              icon="💬"
+              title="No Responses"
+              text="No canned responses found. Create your first response to get started."
+            />
+          ) : (
+            <DataTable
+              items={responses}
+              columns={[
+                {
+                  key: 'title',
+                  label: 'Title',
+                  render: (response) => (
+                    <strong>{response.title}</strong>
+                  ),
+                },
+                {
+                  key: 'code',
+                  label: 'Code',
+                  render: (response) => response.code || '-',
+                },
+                {
+                  key: 'visibility',
+                  label: 'Visibility',
+                  render: (response) => (
+                    <Badge
+                      kind="status"
+                      value={response.visibility}
+                    />
+                  ),
+                },
+                {
+                  key: 'category',
+                  label: 'Category',
+                  render: (response) => response.category || '-',
+                },
+                {
+                  key: 'is_shared',
+                  label: 'Sharing',
+                  render: (response) =>
+                    response.is_shared ? 'Shared' : 'Personal',
+                },
+                {
+                  key: 'usage_count',
+                  label: 'Uses',
+                  render: (response) => response.usage_count ?? 0,
+                },
+                {
+                  key: 'actions',
+                  label: 'Actions',
+                  render: (response) => (
+                    <div className="row-gap">
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        onClick={() => startEdit(response)}
+                      >
+                        Edit
+                      </Button>
+
+                      <Button
+                        variant="danger"
+                        size="small"
+                        onClick={() => deleteResponse(response)}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          )}
         </div>
       )}
     </div>

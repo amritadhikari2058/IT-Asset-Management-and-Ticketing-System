@@ -61,6 +61,16 @@ export const getRCA = async (id) => {
   const response = await api.get(`/root-cause-analyses/${id}/`);
   return response.data;
 };
+export const problemRCA = async (problemId) => {
+  const response = await api.get(`/problems/${problemId}/root-cause-analysis/`);
+  return response.data;
+};
+export const listRCAs = async (problemId, page = 1) => {
+  const params = { problem: problemId };
+  if (Number.isInteger(page) && page > 1) params.page = page;
+  const response = await api.get('/root-cause-analyses/', { params });
+  return response.data;
+};
 export const editRCA = async (id, data, expectedVersion) => {
   const response = await api.patch(`/root-cause-analyses/${id}/`, {
     ...data,
@@ -206,6 +216,13 @@ export const listActions = async (problemId, params = {}) => {
 };
 export const createAction = async (problemId, data) => {
   const response = await api.post(`/problems/${problemId}/actions/`, data);
+  return response.data;
+};
+export const editAction = async (id, data, expectedVersion) => {
+  const response = await api.patch(`/actions/${id}/`, {
+    ...data,
+    expected_record_version: expectedVersion,
+  });
   return response.data;
 };
 

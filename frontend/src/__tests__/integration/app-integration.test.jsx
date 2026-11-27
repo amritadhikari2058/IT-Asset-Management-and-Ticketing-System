@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 
-// ── Mock useAuth ──────────────────────────────────────────────────────────
+// â”€â”€ Mock useAuth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const { mockAuth } = vi.hoisted(() => ({
   mockAuth: vi.fn(),
 }));
@@ -11,7 +11,7 @@ vi.mock('../../auth', () => ({
   AuthProvider: ({ children }) => children,
 }));
 
-// ── Mock every feature component imported by App.jsx ─────────────────────
+// â”€â”€ Mock every feature component imported by App.jsx â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 vi.mock('../../pages', () => ({
   Assets: () => <div data-testid="mock-Assets">Assets</div>,
   Categories: () => <div data-testid="mock-Categories">Categories</div>,
@@ -155,7 +155,7 @@ vi.mock('../../pages/lifecycle/Lifecycle', () => ({
   LifecycleDetail: () => <div data-testid="mock-LifecycleDetail">LifecycleDetail</div>,
 }));
 vi.mock('../../pages/procurement', () => ({
-  default: () => <div data-testid="mock-ProcurementRouter">ProcurementRouter</div>,
+  ProcurementRouter: () => <div data-testid="mock-ProcurementRouter">ProcurementRouter</div>,
 }));
 vi.mock('./licensing', () => ({
   default: () => <div data-testid="mock-LicensingRouter">LicensingRouter</div>,
@@ -186,59 +186,63 @@ import App from '../../App';
 
 function authCaps(role = 'system_admin', isActive = true) {
   const isStaff = ['system_admin', 'it_manager', 'it_support'].includes(role);
+  const isEmployee = role === 'employee';
   const isAdmin = role === 'system_admin';
-  const canUseMonitoring = !!isStaff && isActive;
-  const canUseProblemManagement = !!isStaff && isActive;
+  const isManagerOrAdmin = isAdmin || role === 'it_manager';
+
+  const canUseMonitoring = isStaff && isActive;
+  const canUseProblemManagement = isStaff && isActive;
+
   return {
     access: true,
     logout: vi.fn(),
-    user: { employee_id: 'EMP001', role },
+    user: { employee_id: 'EMP001', role, is_active: isActive },
     profileLoading: false,
     role,
-    isSystemAdmin: role === 'system_admin',
+    isSystemAdmin: isAdmin,
     isITManager: role === 'it_manager',
     isITSupport: role === 'it_support',
+    isEmployee,
     isAdmin,
     isStaff,
-    canManageScheduledReports: role === 'system_admin',
-    canViewVendors: role !== 'employee',
+
+    canManageScheduledReports: isManagerOrAdmin,
+    canViewVendors: isStaff,
+    canManageVendors: isManagerOrAdmin,
     canViewProcurement: isStaff,
-    canViewProcurementReports: role === 'system_admin' || role === 'it_manager',
-    canManageUsers: role === 'system_admin' || role === 'it_manager',
-    canManageServiceCatalogue: role === 'system_admin',
+    canViewProcurementReports: isManagerOrAdmin,
+
+    canAccessRecycleBin: isAdmin,
+    canAccessAudit: isAdmin,
+    canManageUsers: isAdmin,
+
+    canManageServiceCatalogue: isManagerOrAdmin,
+    canApproveServiceRequests: isManagerOrAdmin,
+    canConfigureWorkflow: isManagerOrAdmin,
+    canApproveDisposals: isManagerOrAdmin,
+    canManageInventory: isManagerOrAdmin,
+
+    canViewLifecycle: isStaff || isEmployee,
+    canCreateLifecycleCase: isStaff,
+
+    canViewLicensing: isStaff || isEmployee,
+    canManageSoftwareProducts: isManagerOrAdmin,
+    canManageLicenseAgreements: isManagerOrAdmin,
+    canManageLicenseAllocations: isStaff,
+    canManageLicenseInstallations: isStaff,
+    canManageLicenseRenewals: isStaff,
+    canViewLicenseReports: isManagerOrAdmin,
+    canViewMySoftware: isStaff || isEmployee,
+
     canUseMonitoring,
     canUseProblemManagement,
   };
 }
 
 function renderApp(role = 'system_admin', isActive = true) {
-  const isStaff = ['system_admin', 'it_manager', 'it_support'].includes(role);
-  const isAdmin = role === 'system_admin';
-  const canUseMonitoring = !!isStaff && isActive;
-  const canUseProblemManagement = !!isStaff && isActive;
-  mockAuth.mockReturnValue({
-    access: true,
-    logout: vi.fn(),
-    user: { employee_id: 'EMP001', role },
-    profileLoading: false,
-    role,
-    isSystemAdmin: role === 'system_admin',
-    isITManager: role === 'it_manager',
-    isITSupport: role === 'it_support',
-    isAdmin,
-    isStaff,
-    canManageScheduledReports: role === 'system_admin',
-    canViewVendors: role !== 'employee',
-    canViewProcurement: isStaff,
-    canViewProcurementReports: role === 'system_admin' || role === 'it_manager',
-    canManageUsers: role === 'system_admin' || role === 'it_manager',
-    canManageServiceCatalogue: role === 'system_admin',
-    canUseMonitoring,
-    canUseProblemManagement,
-  });
+  mockAuth.mockReturnValue(authCaps(role, isActive));
   return render(<App />);
 }
-
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -246,23 +250,27 @@ afterEach(() => {
 
 describe('Application sidebar navigation', () => {
   describe('Group ordering', () => {
-    it('renders groups in the intended order', () => {
+    it('renders all ten groups in the intended order', () => {
       renderApp('system_admin');
+
       const sections = Array.from(
         document.querySelectorAll('.sidenav-section-title')
       ).map((el) => (el.textContent || '').trim());
-      expect(sections[0]).toBe('Overview');
-      expect(sections[1]).toBe('Change Management');
-      expect(sections[2]).toBe('Service Operations');
-      expect(sections[3]).toBe('Asset Operations');
-      expect(sections[4]).toBe('Inventory');
-      expect(sections[5]).toBe('Reports');
-      expect(sections[6]).toBe('Procurement');
-      expect(sections[7]).toBe('Administration');
-      expect(sections).toHaveLength(8);
+
+      expect(sections).toEqual([
+        'Overview',
+        'Change Management',
+        'Service Operations',
+        'Asset Operations',
+        'Inventory',
+        'Software & Licensing',
+        'Lifecycle Management',
+        'Reports',
+        'Procurement',
+        'Administration',
+      ]);
     });
   });
-
   describe('Concise module labels', () => {
     it('shows concise labels without long legacy names', () => {
       renderApp('system_admin');
@@ -274,6 +282,8 @@ describe('Application sidebar navigation', () => {
       expect(dashboardTexts).toContain('Dashboard'); // Overview
       expect(dashboardTexts).toContain('Dashboard'); // Change Management (separate link)
       expect(linkTexts).toContain('Tickets');
+      expect(linkTexts).toContain('Canned Responses');
+      expect(linkTexts).toContain('Ticket Templates');
       expect(linkTexts).toContain('Monitoring');
       expect(linkTexts).toContain('Problems');
       expect(linkTexts).toContain('Change Management');
@@ -302,20 +312,59 @@ describe('Application sidebar navigation', () => {
       expect(linkTexts).toContain('Outages');
     });
 
-    it('does not show long legacy labels', () => {
+    it('shows restored module links and excludes unimplemented destinations', () => {
       renderApp('system_admin');
-      expect(screen.queryByText('Ticket Queues')).toBeNull();
-      expect(screen.queryByText('Operations')).toBeNull();
-      expect(screen.queryByText('Lifecycle')).toBeNull();
-      expect(screen.queryByText('Workflow')).toBeNull();
-      expect(screen.queryByText('Disposals')).toBeNull();
-      expect(screen.queryByText('Software Dashboard')).toBeNull();
-      expect(screen.queryByText('Vendors')).toBeNull();
+
+      const expectedLinks = [
+        'Ticket Queues',
+        'Ticket Operations',
+        'Workflow',
+        'Approvals',
+        'Knowledge Base',
+        'Knowledge Base Review Queue',
+        'Disposals',
+        'Vendors',
+        'Software Dashboard',
+        'Software Products',
+        'License Agreements',
+        'License Allocations',
+        'License Installations',
+        'License Renewals',
+        'License Compliance',
+        'License Calendar',
+        'License Utilization',
+        'My Software',
+        'Lifecycle Dashboard',
+        'Onboarding',
+        'Offboarding',
+        'Transfers',
+        'New Lifecycle Case',
+        'SLA Reports',
+        'Department Reports',
+        'Saved Reports',
+        'Scheduled Reports',
+        'Purchase Requests',
+        'Purchase Orders',
+        'Goods Receipts',
+        'Procurement Reports',
+        'Privacy',
+        'Retention',
+        'Backup & Recovery',
+      ];
+
+      expectedLinks.forEach((label) => {
+        expect(screen.getByRole('link', { name: label })).toBeTruthy();
+      });
+
       expect(screen.queryByText('Employees')).toBeNull();
+      expect(screen.queryByText('Saved Ticket Views')).toBeNull();
+      expect(screen.queryByText('Ticket Satisfaction Survey')).toBeNull();
+      expect(screen.queryByText('My Work')).toBeNull();
+      expect(screen.queryByText('Asset Lifecycle')).toBeNull();
     });
   });
 
-  describe('Role visibility — System Admin', () => {
+  describe('Role visibility â€” System Admin', () => {
     it('shows operational and administrative groups', () => {
       renderApp('system_admin');
       expect(screen.getAllByRole('link', { name: 'Dashboard' })).toHaveLength(2); // Overview + Change Management (Procurement Financial Dashboard also contains 'Dashboard' text but its href is different)
@@ -335,7 +384,7 @@ describe('Application sidebar navigation', () => {
     });
   });
 
-  describe('Role visibility — IT Manager', () => {
+  describe('Role visibility â€” IT Manager', () => {
     it('shows operational modules and permitted governance modules', () => {
       renderApp('it_manager');
       expect(screen.getAllByRole('link', { name: 'Dashboard' })).toHaveLength(2); // Overview + Change Management (Procurement Financial Dashboard also contains 'Dashboard' text but its href is different)
@@ -347,7 +396,7 @@ describe('Application sidebar navigation', () => {
       expect(screen.getByRole('link', { name: 'Assets' })).toBeTruthy();
       expect(screen.getByRole('link', { name: 'CMDB' })).toBeTruthy();
       expect(screen.getByRole('link', { name: 'Procurement' })).toBeTruthy();
-      // IT Manager is not system_admin → isAdmin false → no Administration
+      // IT Manager is not system_admin â†’ isAdmin false â†’ no Administration
       expect(screen.queryByRole('link', { name: 'Users' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'Categories' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'Departments' })).toBeNull();
@@ -356,7 +405,7 @@ describe('Application sidebar navigation', () => {
     });
   });
 
-  describe('Role visibility — IT Support', () => {
+  describe('Role visibility â€” IT Support', () => {
     it('shows day-to-day support modules without unauthorized administration', () => {
       renderApp('it_support');
       expect(screen.getAllByRole('link', { name: 'Dashboard' })).toHaveLength(2); // Overview + Change Management (only top-level Dashboard is staff-only; Change Management Dashboard is visible to staff)
@@ -367,7 +416,7 @@ describe('Application sidebar navigation', () => {
       expect(screen.getByRole('link', { name: 'Services' })).toBeTruthy();
       expect(screen.getByRole('link', { name: 'Assets' })).toBeTruthy();
       expect(screen.getByRole('link', { name: 'CMDB' })).toBeTruthy();
-      // Administration is isAdmin only → not visible to IT Support
+      // Administration is isAdmin only â†’ not visible to IT Support
       expect(screen.queryByRole('link', { name: 'Users' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'Categories' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'Departments' })).toBeNull();
@@ -376,20 +425,20 @@ describe('Application sidebar navigation', () => {
     });
   });
 
-  describe('Role visibility — Employee', () => {
+  describe('Role visibility â€” Employee', () => {
     it('shows only employee-facing destinations', () => {
       renderApp('employee');
-      expect(screen.getByRole('link', { name: 'Dashboard' })).toBeTruthy();
+      expect(screen.queryByRole('link', { name: 'Dashboard' })).toBeNull();
       expect(screen.getByRole('link', { name: 'Tickets' })).toBeTruthy();
       expect(screen.getByRole('link', { name: 'Services' })).toBeTruthy();
-      // Employee is not staff → no Monitoring, Problems, Changes, Assets, CMDB, Procurement
+      // Employee is not staff â†’ no Monitoring, Problems, Changes, Assets, CMDB, Procurement
       expect(screen.queryByRole('link', { name: 'Monitoring' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'Problems' })).toBeNull();
-      expect(screen.queryByRole('link', { name: 'Changes' })).toBeNull();
+      expect(screen.queryByRole('link', { name: 'Change Management' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'Assets' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'CMDB' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'Procurement' })).toBeNull();
-      // Employee is not admin → no Administration
+      // Employee is not admin â†’ no Administration
       expect(screen.queryByRole('link', { name: 'Users' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'Categories' })).toBeNull();
       expect(screen.queryByRole('link', { name: 'Departments' })).toBeNull();
@@ -398,7 +447,7 @@ describe('Application sidebar navigation', () => {
     });
   });
 
-  describe('Access control — inactive and unknown roles', () => {
+  describe('Access control â€” inactive and unknown roles', () => {
     it('inactive user loses monitoring/problem capabilities', () => {
       const auth = authCaps('system_admin', false);
       expect(auth.isStaff).toBe(true);
@@ -448,6 +497,50 @@ describe('Application sidebar navigation', () => {
         window.location.hash = '#/';
       }
     });
+    it('activates Stock items instead of Inventory on the items route', () => {
+      window.location.hash = '#/inventory/items';
+      try {
+        renderApp('system_admin');
+
+        const inventory = screen.getByRole('link', { name: 'Inventory' });
+        const stockItems = screen.getByRole('link', { name: 'Stock items' });
+
+        expect(inventory.getAttribute('aria-current')).toBeNull();
+        expect(stockItems.getAttribute('aria-current')).toBe('page');
+      } finally {
+        window.location.hash = '#/';
+      }
+    });
+
+    it('keeps Stock items active on a nested item detail route', () => {
+      window.location.hash = '#/inventory/items/15';
+      try {
+        renderApp('system_admin');
+
+        const inventory = screen.getByRole('link', { name: 'Inventory' });
+        const stockItems = screen.getByRole('link', { name: 'Stock items' });
+
+        expect(inventory.getAttribute('aria-current')).toBeNull();
+        expect(stockItems.getAttribute('aria-current')).toBe('page');
+      } finally {
+        window.location.hash = '#/';
+      }
+    });
+
+    it('activates Purchase Orders instead of Procurement on its route', () => {
+      window.location.hash = '#/procurement/orders';
+      try {
+        renderApp('system_admin');
+
+        const procurement = screen.getByRole('link', { name: 'Procurement' });
+        const purchaseOrders = screen.getByRole('link', { name: 'Purchase Orders' });
+
+        expect(procurement.getAttribute('aria-current')).toBeNull();
+        expect(purchaseOrders.getAttribute('aria-current')).toBe('page');
+      } finally {
+        window.location.hash = '#/';
+      }
+    });
   });
 
   describe('Route availability', () => {
@@ -485,9 +578,10 @@ describe('Application sidebar navigation', () => {
       renderApp('system_admin');
       expect(screen.queryByText('Asset Lifecycle')).toBeNull();
     });
-    it('does not render Workflow', () => {
+    it('renders Workflow for staff', () => {
       renderApp('system_admin');
-      expect(screen.queryByText('Workflow')).toBeNull();
+      expect(screen.getByRole('link', { name: 'Workflow' })).toBeTruthy();
+      expect(screen.getByRole('link', { name: 'Workflow' }).getAttribute('href')).toBe('#/workflow');
     });
     it('does not render Profile in Administration section', () => {
       renderApp('system_admin');
@@ -563,7 +657,7 @@ describe('Application sidebar navigation', () => {
       const overviewHeader = getSectionHeader('Overview');
       const svcHeader = getSectionHeader('Service Operations');
       // Both start collapsed
-      fireEvent.click(overviewHeader); // Overview → expanded
+      fireEvent.click(overviewHeader); // Overview â†’ expanded
       fireEvent.click(svcHeader); // Service Operations -> expanded
       expect(overviewHeader.getAttribute('aria-expanded')).toBe('true');
       expect(svcHeader.getAttribute('aria-expanded')).toBe('true');

@@ -99,7 +99,8 @@ const resolves = (url) => url.replace(/^\/api/, '').split('?')[0];
 
 const FRONTEND_PATHS = [
   '/problems/', '/problems/1/', '/problems/1/readiness/', '/problems/1/timeline/',
-  '/problems/1/five-whys/', '/problems/1/root-cause-factors/', '/problems/1/evidence/',
+  '/problems/1/root-cause-analysis/', '/problems/1/five-whys/',
+  '/problems/1/root-cause-factors/', '/problems/1/evidence/',
   '/problems/1/actions/', '/problems/1/workarounds/', '/problems/1/validations/',
   '/problems/1/exceptions/', '/problems/1/linked-tickets/', '/problems/1/linked-cis/',
   '/problems/1/linked-assets/', '/problems/1/linked-services/', '/problems/1/linked-products/',
@@ -128,6 +129,14 @@ describe('RCA contract', () => {
     expect(await call(services.createRCA, { problem: 1, title: 'x' }))
       .toMatchObject({ method: 'post', url: '/root-cause-analyses/' });
     expect(await call(services.getRCA, 2)).toMatchObject({ method: 'get', url: '/root-cause-analyses/2/' });
+    expect(await call(services.problemRCA, 1))
+      .toMatchObject({ method: 'get', url: '/problems/1/root-cause-analysis/' });
+  });
+
+  test('problem-scoped RCA options send the problem filter', async () => {
+    const sent = await call(services.listRCAs, 1);
+    expect(sent).toMatchObject({ method: 'get', url: '/root-cause-analyses/' });
+    expect(sent.body).toEqual({ params: { problem: 1 } });
   });
 
   test('update sends the loaded version and no unsupported fields', async () => {
@@ -214,6 +223,21 @@ describe('Action lifecycle', () => {
     expect(created.url).toBe('/problems/1/actions/');
     expect(created.body).not.toHaveProperty('validation_status');
     expect(created.body).not.toHaveProperty('completed_by');
+  });
+
+  test('RCA links use PATCH with a version and accept null to clear', async () => {
+    const linked = await call(services.editAction, 4, { root_cause_analysis: 2 }, 3);
+    expect(linked).toMatchObject({ method: 'patch', url: '/actions/4/' });
+    expect(linked.body).toEqual({
+      root_cause_analysis: 2,
+      expected_record_version: 3,
+    });
+
+    const cleared = await call(services.editAction, 4, { root_cause_analysis: null }, 4);
+    expect(cleared.body).toEqual({
+      root_cause_analysis: null,
+      expected_record_version: 4,
+    });
   });
 
   test.each([

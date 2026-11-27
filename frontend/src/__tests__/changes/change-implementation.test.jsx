@@ -135,6 +135,38 @@ describe('ChangeImplementation workflow', () => {
     expect(screen.queryByRole('button', { name: 'Create Implementation Record' })).toBeNull();
   });
 
+  it.each([
+    ['Complete', 'in_progress'],
+    ['Fail Implementation', 'in_progress'],
+    ['Complete', 'validation'],
+    ['Fail Implementation', 'validation'],
+  ])('exposes %s from %s', async (label, status) => {
+    await renderImplementation({ status });
+
+    expect(screen.getByRole('button', { name: label })).toBeTruthy();
+  });
+
+  it.each([
+    'draft', 'submitted', 'approved', 'scheduled', 'on_hold',
+    'failed', 'rolled_back', 'completed', 'pir_required', 'closed', 'cancelled',
+  ])('does not expose Complete or Fail from %s', async (status) => {
+    await renderImplementation({ status });
+
+    expect(screen.queryByRole('button', { name: 'Complete' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Fail Implementation' })).toBeNull();
+  });
+
+  it.each(['it_support', 'employee'])(
+    'hides Complete and Fail from %s in validation',
+    async (role) => {
+      await renderImplementation({ role, status: 'validation' });
+
+      expect(screen.queryByRole('button', { name: 'Complete' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Fail Implementation' })).toBeNull();
+      expect(screen.queryByLabelText('Failure reason')).toBeNull();
+    },
+  );
+
   it('starts implementation with an empty body and refreshes the change', async () => {
     const store = await renderImplementation();
 
@@ -267,6 +299,81 @@ describe('ChangeImplementation workflow', () => {
     });
   });
 
+  it('sends completion payload and refreshes from validation', async () => {
+    const store = await renderImplementation({ status: 'validation' });
+    mockPost.mockImplementationOnce(async (url) => {
+      if (url === '/changes/7/complete/') store.change.status = 'completed';
+      return { data: {} };
+    });
+
+    fireEvent.change(screen.getByLabelText('Completion notes'), {
+      target: { value: 'Validation complete' },
+    });
+    fireEvent.click(screen.getByLabelText('Validation passed'));
+    fireEvent.click(screen.getByRole('button', { name: 'Complete' }));
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/changes/7/complete/', {
+        validation_passed: false,
+        implementation_notes: 'Validation complete',
+      });
+    });
+    expect(await screen.findByText('Complete recorded.')).toBeTruthy();
+    expect(await screen.findByText('Completed')).toBeTruthy();
+    expect(mockGet).toHaveBeenCalledTimes(6);
+  });
+
+  it('sends failure reason and refreshes from validation', async () => {
+    await renderImplementation({ status: 'validation' });
+
+    fireEvent.change(screen.getByLabelText('Failure reason'), {
+      target: { value: 'Validation found a defect' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Fail Implementation' }));
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/changes/7/fail/', {
+        failure_reason: 'Validation found a defect',
+      });
+    });
+    expect(await screen.findByText('Fail Implementation recorded.')).toBeTruthy();
+    expect(mockGet).toHaveBeenCalledTimes(6);
+  });
+
+  it('requires completion notes and failure reason from validation', async () => {
+    await renderImplementation({ status: 'validation' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete' }));
+    expect(await screen.findByText(
+      'Implementation notes are required to complete an implementation.',
+    )).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fail Implementation' }));
+    expect(await screen.findByText('A failure reason is required.')).toBeTruthy();
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it('shows API validation errors from validation without reporting success', async () => {
+    await renderImplementation({ status: 'validation' });
+    mockPost.mockRejectedValueOnce({
+      response: {
+        status: 400,
+        data: { detail: 'Validation has failed; cannot complete this change.' },
+      },
+    });
+
+    fireEvent.change(screen.getByLabelText('Completion notes'), {
+      target: { value: 'Retry notes' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Complete' }));
+
+    expect(await screen.findByText(
+      'Validation has failed; cannot complete this change.',
+    )).toBeTruthy();
+    expect(screen.queryByText('Complete recorded.')).toBeNull();
+    expect(mockGet).toHaveBeenCalledTimes(3);
+  });
+
   it.each([
     ['failed', 'Start Rollback', '/changes/7/start_rollback/'],
     ['rolled_back', 'Complete Rollback', '/changes/7/complete_rollback/'],
@@ -278,8 +385,8 @@ describe('ChangeImplementation workflow', () => {
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith(endpoint, {}));
   });
 
-  it('does not expose completion for a status rejected by the backend', async () => {
-    await renderImplementation({ status: 'validation' });
+  it('does not expose actions for a status rejected by the backend', async () => {
+    await renderImplementation({ status: 'completed' });
 
     expect(screen.queryByRole('button', { name: 'Complete' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Fail Implementation' })).toBeNull();

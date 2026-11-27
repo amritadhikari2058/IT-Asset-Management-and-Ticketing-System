@@ -70,7 +70,8 @@ import { DirtyProvider, DirtyBlocker } from './dirty-form';
 
 const NAV = [
   { section: 'Overview' },
-  { hash: '#/dashboard', label: 'Dashboard' },
+  { hash: '#/dashboard', label: 'Dashboard', staffOnly: true },
+
   { section: 'Change Management' },
   { hash: '#/changes', label: 'Change Management', staffOnly: true },
   { hash: '#/changes/new', label: 'New Change', staffOnly: true },
@@ -82,18 +83,54 @@ const NAV = [
   { hash: '#/scheduling-exceptions', label: 'Scheduling Exceptions', staffOnly: true },
   { hash: '#/change-review-meetings', label: 'Review Meetings', staffOnly: true },
   { hash: '#/outages', label: 'Outages', staffOnly: true },
+
   { section: 'Service Operations' },
   { hash: '#/tickets', label: 'Tickets' },
+  { hash: '#/tickets/queues', label: 'Ticket Queues', staffOnly: true },
+  { hash: '#/tickets/operations', label: 'Ticket Operations', staffOnly: true },
+  { hash: '#/tickets/canned-responses', label: 'Canned Responses', staffOnly: true },
+  { hash: '#/tickets/templates', label: 'Ticket Templates', staffOnly: true },
   { hash: '#/tickets/bulk-imports', label: 'Import Operations', staffOnly: true },
   { hash: '#/monitoring', label: 'Monitoring', cap: 'canUseMonitoring' },
   { hash: '#/problem-management', label: 'Problems', cap: 'canUseProblemManagement' },
+  { hash: '#/workflow', label: 'Workflow', staffOnly: true },
+  { hash: '#/approvals', label: 'Approvals', staffOnly: true },
+  { hash: '#/kb', label: 'Knowledge Base' },
+  { hash: '#/kb/pending', label: 'Knowledge Base Review Queue', staffOnly: true },
+  { hash: '#/services', label: 'Services' },
+  { hash: '#/service-requests', label: 'Service Requests' },
+
   { section: 'Asset Operations' },
   { hash: '#/assets', label: 'Assets', staffOnly: true },
   { hash: '#/assets/reports', label: 'Asset Reports', staffOnly: true },
   { hash: '#/cmdb', label: 'CMDB', staffOnly: true },
+  { hash: '#/maintenance', label: 'Maintenance', staffOnly: true },
+  { hash: '#/disposals', label: 'Disposals', staffOnly: true },
+  { hash: '#/vendors', label: 'Vendors', cap: 'canViewVendors' },
+
   { section: 'Inventory' },
-  { hash: '#/inventory', label: 'Inventory', staffOnly: true },
-  { hash: '#/inventory/items', label: 'Stock items', staffOnly: true },
+  { hash: '#/inventory', label: 'Inventory' },
+  { hash: '#/inventory/items', label: 'Stock items' },
+
+  { section: 'Software & Licensing' },
+  { hash: '#/software', label: 'Software Dashboard', staffOnly: true },
+  { hash: '#/software/products', label: 'Software Products', cap: 'canViewLicensing' },
+  { hash: '#/licenses', label: 'License Agreements', cap: 'canViewLicensing' },
+  { hash: '#/license-allocations', label: 'License Allocations', staffOnly: true },
+  { hash: '#/license-installations', label: 'License Installations', cap: 'canViewLicensing' },
+  { hash: '#/license-renewals', label: 'License Renewals', cap: 'canViewLicensing' },
+  { hash: '#/license-compliance', label: 'License Compliance', staffOnly: true },
+  { hash: '#/license-calendar', label: 'License Calendar', staffOnly: true },
+  { hash: '#/license-utilization', label: 'License Utilization', staffOnly: true },
+  { hash: '#/my-software', label: 'My Software', cap: 'canViewMySoftware' },
+
+  { section: 'Lifecycle Management' },
+  { hash: '#/lifecycle', label: 'Lifecycle Dashboard', cap: 'canViewLifecycle' },
+  { hash: '#/lifecycle/onboarding', label: 'Onboarding', cap: 'canViewLifecycle' },
+  { hash: '#/lifecycle/offboarding', label: 'Offboarding', cap: 'canViewLifecycle' },
+  { hash: '#/lifecycle/transfers', label: 'Transfers', cap: 'canViewLifecycle' },
+  { hash: '#/lifecycle/new', label: 'New Lifecycle Case', cap: 'canCreateLifecycleCase' },
+
   { section: 'Reports' },
   { hash: '#/reports/coverage', label: 'Coverage', staffOnly: true },
   { hash: '#/reports/verification_age', label: 'Verification Age', staffOnly: true },
@@ -105,24 +142,36 @@ const NAV = [
   { hash: '#/reports/asset_sync', label: 'Asset Sync', staffOnly: true },
   { hash: '#/reports/software_sync', label: 'Software Sync', staffOnly: true },
   { hash: '#/verification', label: 'Verification Queue', staffOnly: true },
+  { hash: '#/reports/sla', label: 'SLA Reports', staffOnly: true },
+  { hash: '#/reports/departments', label: 'Department Reports', staffOnly: true },
+  { hash: '#/reports/saved', label: 'Saved Reports' },
+  { hash: '#/reports/schedules', label: 'Scheduled Reports', cap: 'canManageScheduledReports' },
+
   { section: 'Procurement' },
-  { hash: '#/procurement', label: 'Procurement', staffOnly: true },
-  { hash: '#/procurement/invoices', label: 'Supplier Invoices', staffOnly: true },
-  { hash: '#/procurement/exceptions', label: 'Invoice Exceptions', staffOnly: true },
-  { hash: '#/procurement/returns', label: 'Vendor Returns', staffOnly: true },
-  { hash: '#/procurement/credit-notes', label: 'Vendor Credit Notes', staffOnly: true },
-  { hash: '#/procurement/financial-dashboard', label: 'Procurement Financial Dashboard', cap: 'canViewProcurementReports' },
+  { hash: '#/procurement', label: 'Procurement', cap: 'canViewProcurement' },
+  { hash: '#/procurement/requests', label: 'Purchase Requests', cap: 'canViewProcurement' },
+  { hash: '#/procurement/orders', label: 'Purchase Orders', cap: 'canViewProcurement' },
+  { hash: '#/procurement/receipts', label: 'Goods Receipts', cap: 'canViewProcurement' },
+  { hash: '#/procurement/invoices', label: 'Supplier Invoices', cap: 'canViewProcurement' },
+  { hash: '#/procurement/exceptions', label: 'Invoice Exceptions', cap: 'canViewProcurement' },
+  { hash: '#/procurement/returns', label: 'Vendor Returns', cap: 'canViewProcurement' },
+  { hash: '#/procurement/credit-notes', label: 'Vendor Credit Notes', cap: 'canViewProcurement' },
+  { hash: '#/procurement/assets', label: 'Procurement Assets', cap: 'canViewProcurement' },
+  { hash: '#/procurement/reports', label: 'Procurement Reports', cap: 'canViewProcurementReports' },
+  { hash: '#/procurement/financial-dashboard', label: 'Financial Dashboard', cap: 'canViewProcurementReports' },
   { hash: '#/procurement/vendor-performance', label: 'Vendor Performance', cap: 'canViewProcurementReports' },
-  { hash: '#/services', label: 'Services' },
-  { hash: '#/service-requests', label: 'Service requests' },
+
   { section: 'Administration' },
   { hash: '#/users', label: 'Users', cap: 'isAdmin' },
   { hash: '#/categories', label: 'Categories', cap: 'isAdmin' },
   { hash: '#/departments', label: 'Departments', cap: 'isAdmin' },
   { hash: '#/sla-config', label: 'SLA', cap: 'isAdmin' },
   { hash: '#/notifications', label: 'Notifications', badge: true, cap: 'isAdmin' },
-  { hash: '#/audit', label: 'Audit Log', cap: 'isAdmin' },
+  { hash: '#/audit', label: 'Audit Log', cap: 'canAccessAudit' },
   { hash: '#/recycle', label: 'Recycle Bin', cap: 'canAccessRecycleBin' },
+  { hash: '#/privacy', label: 'Privacy', cap: 'isAdmin' },
+  { hash: '#/retention', label: 'Retention', cap: 'isAdmin' },
+  { hash: '#/backup', label: 'Backup & Recovery', staffOnly: true },
 ];
 
 /** Drop staff-only entries, capability-gated entries, and any section left
@@ -510,20 +559,115 @@ function matchRoute(hash, auth) {
 }
 
 function isActive(hash, h) {
-  return h === hash || (h !== '#/tickets' && hash.startsWith(h + '/'));
-}
+  const matches = h === hash || (h !== '#/tickets' && hash.startsWith(h + '/'));
+  if (!matches) return false;
 
+  const hasMoreSpecificMatch = NAV.some((item) => {
+    if (!item.hash || item.hash === h || item.hash.length <= h.length) {
+      return false;
+    }
+
+    const isChildDestination = item.hash.startsWith(h + '/');
+    const childMatches = item.hash === hash || hash.startsWith(item.hash + '/');
+
+    return isChildDestination && childMatches;
+  });
+
+  return !hasMoreSpecificMatch;
+}
 function Shell() {
-  const { access, logout, user, profileLoading, isAdmin, isStaff, canManageScheduledReports, canViewVendors, canViewProcurement, canViewProcurementReports, canAccessRecycleBin } = useAuth();
+  const {
+    access,
+    logout,
+    user,
+    profileLoading,
+    isAdmin,
+    isStaff,
+    canManageScheduledReports,
+    canViewVendors,
+    canManageVendors,
+    canViewProcurement,
+    canViewProcurementReports,
+    canAccessRecycleBin,
+    canAccessAudit,
+    canManageUsers,
+    canManageServiceCatalogue,
+    canApproveServiceRequests,
+    canConfigureWorkflow,
+    canApproveDisposals,
+    canManageInventory,
+    canViewLifecycle,
+    canCreateLifecycleCase,
+    canViewLicensing,
+    canManageSoftwareProducts,
+    canManageLicenseAgreements,
+    canManageLicenseAllocations,
+    canManageLicenseInstallations,
+    canManageLicenseRenewals,
+    canViewLicenseReports,
+    canViewMySoftware,
+  } = useAuth();
+
   const canUseMonitoring = !!isStaff && user?.is_active !== false;
   const canUseProblemManagement = !!isStaff && user?.is_active !== false;
+
   const caps = useMemo(() => ({
-    isStaff, isAdmin, canManageScheduledReports, canViewVendors,
-    canViewProcurement, canViewProcurementReports, canUseMonitoring,
-    canUseProblemManagement, canAccessRecycleBin,
-  }), [isStaff, isAdmin, canManageScheduledReports, canViewVendors,
-    canViewProcurement, canViewProcurementReports, canUseMonitoring,
-    canUseProblemManagement, canAccessRecycleBin]);
+    isStaff,
+    isAdmin,
+    canManageScheduledReports,
+    canViewVendors,
+    canManageVendors,
+    canViewProcurement,
+    canViewProcurementReports,
+    canAccessRecycleBin,
+    canAccessAudit,
+    canManageUsers,
+    canManageServiceCatalogue,
+    canApproveServiceRequests,
+    canConfigureWorkflow,
+    canApproveDisposals,
+    canManageInventory,
+    canViewLifecycle,
+    canCreateLifecycleCase,
+    canViewLicensing,
+    canManageSoftwareProducts,
+    canManageLicenseAgreements,
+    canManageLicenseAllocations,
+    canManageLicenseInstallations,
+    canManageLicenseRenewals,
+    canViewLicenseReports,
+    canViewMySoftware,
+    canUseMonitoring,
+    canUseProblemManagement,
+  }), [
+    isStaff,
+    isAdmin,
+    canManageScheduledReports,
+    canViewVendors,
+    canManageVendors,
+    canViewProcurement,
+    canViewProcurementReports,
+    canAccessRecycleBin,
+    canAccessAudit,
+    canManageUsers,
+    canManageServiceCatalogue,
+    canApproveServiceRequests,
+    canConfigureWorkflow,
+    canApproveDisposals,
+    canManageInventory,
+    canViewLifecycle,
+    canCreateLifecycleCase,
+    canViewLicensing,
+    canManageSoftwareProducts,
+    canManageLicenseAgreements,
+    canManageLicenseAllocations,
+    canManageLicenseInstallations,
+    canManageLicenseRenewals,
+    canViewLicenseReports,
+    canViewMySoftware,
+    canUseMonitoring,
+    canUseProblemManagement,
+  ]);
   const routerLocation = useLocation();
   // HashRouter reports the default root as pathname '/'. Keep the historical
   // default (Tickets) so the rendered page and the highlighted nav item agree.
@@ -691,3 +835,4 @@ export default function App() {
     </HashRouter>
   );
 }
+

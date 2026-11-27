@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { Actions } from '../../components/problem-management/actions';
 import { Workarounds } from '../../components/problem-management/workarounds';
@@ -14,7 +14,9 @@ vi.mock('../../services/problem-management', () => ({
   cancelAction: vi.fn(),
   completeAction: vi.fn(),
   createAction: vi.fn(),
+  editAction: vi.fn(),
   listActions: vi.fn(),
+  listRCAs: vi.fn(),
   markActionIneffective: vi.fn(),
   startAction: vi.fn(),
   validateAction: vi.fn(),
@@ -62,6 +64,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   auth.current = { isStaff: true, isManagerOrAdmin: true, user: { username: 'manager' } };
   services.listActions.mockResolvedValue({ results: [] });
+  services.listRCAs.mockResolvedValue({ results: [] });
   services.listWorkarounds.mockResolvedValue({ results: [] });
   services.listValidations.mockResolvedValue({ results: [] });
   services.listExceptions.mockResolvedValue({ results: [] });
@@ -74,7 +77,10 @@ beforeEach(() => {
 });
 
 describe('Actions workflow', () => {
-  const PLANNED = { id: 1, title: 'Replace disk', action_type: 'corrective', status: 'planned' };
+  const PLANNED = {
+    id: 1, title: 'Replace disk', action_type: 'corrective', status: 'planned',
+    version: 1,
+  };
 
   test('drives the lifecycle through dedicated transitions', async () => {
     services.listActions.mockResolvedValue({ results: [PLANNED] });
@@ -91,6 +97,173 @@ describe('Actions workflow', () => {
     renderWith(<Actions problemId="1" />);
     fireEvent.click(await screen.findByText('Start'));
     expect(await screen.findByText(/changed on the server/)).toBeTruthy();
+  });
+
+  test('loads RCA options for the current problem and creates an action with one', async () => {
+    services.listRCAs.mockResolvedValue({
+      results: [{ id: 5, title: 'Disk failure', status: 'approved' }],
+    });
+
+    renderWith(<Actions problemId="1" />);
+
+    const rcaSelect = await screen.findByLabelText('Root cause analysis');
+    expect(services.listRCAs).toHaveBeenCalledWith('1');
+    expect(within(rcaSelect).getByRole('option', { name: 'Disk failure (approved)' }))
+      .toBeTruthy();
+    expect(within(rcaSelect).queryByRole('option', { name: /Other problem/ })).toBeNull();
+
+    fireEvent.change(rcaSelect, { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText(/Action title/), {
+      target: { value: 'Replace disk' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Action' }));
+
+    await waitFor(() => {
+      expect(services.createAction).toHaveBeenCalledWith('1', expect.objectContaining({
+        title: 'Replace disk',
+        root_cause_analysis: 5,
+      }));
+    });
+    await waitFor(() => expect(services.listActions).toHaveBeenCalledTimes(2));
+  });
+
+  test('displays the linked RCA title and status in the action row', async () => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, root_cause_analysis: 5 }],
+    });
+    services.listRCAs.mockResolvedValue({
+      results: [{ id: 5, title: 'Disk failure', status: 'approved' }],
+    });
+
+    renderWith(<Actions problemId="1" />);
+
+    expect(await screen.findByText('Disk failure')).toBeTruthy();
+    expect(screen.getByText('Approved')).toBeTruthy();
+    expect(screen.getByLabelText('RCA for action 1').value).toBe('5');
+  });
+
+  test('associates an existing action with an RCA and refreshes', async () => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, root_cause_analysis: null }],
+    });
+    services.listRCAs.mockResolvedValue({
+      results: [{ id: 5, title: 'Disk failure', status: 'approved' }],
+    });
+    services.editAction.mockResolvedValue({ ...PLANNED, root_cause_analysis: 5 });
+
+    renderWith(<Actions problemId="1" />);
+
+    fireEvent.change(await screen.findByLabelText('RCA for action 1'), {
+      target: { value: '5' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save RCA' }));
+
+    await waitFor(() => {
+      expect(services.editAction).toHaveBeenCalledWith(1, {
+        root_cause_analysis: 5,
+      }, 1);
+    });
+    expect(await screen.findByText('RCA link updated.')).toBeTruthy();
+    await waitFor(() => expect(services.listActions).toHaveBeenCalledTimes(2));
+  });
+
+  test('clears an RCA link with null and refreshes', async () => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, root_cause_analysis: 5 }],
+    });
+    services.listRCAs.mockResolvedValue({
+      results: [{ id: 5, title: 'Disk failure', status: 'approved' }],
+    });
+    services.editAction.mockResolvedValue({ ...PLANNED, root_cause_analysis: null });
+
+    renderWith(<Actions problemId="1" />);
+
+    fireEvent.change(await screen.findByLabelText('RCA for action 1'), {
+      target: { value: '' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save RCA' }));
+
+    await waitFor(() => {
+      expect(services.editAction).toHaveBeenCalledWith(1, {
+        root_cause_analysis: null,
+      }, 1);
+    });
+    await waitFor(() => expect(services.listActions).toHaveBeenCalledTimes(2));
+  });
+
+  test('hides RCA mutation controls from unauthorized users', async () => {
+    auth.current = { isStaff: false, isManagerOrAdmin: false, user: { username: 'viewer' } };
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, root_cause_analysis: 5 }],
+    });
+    services.listRCAs.mockResolvedValue({
+      results: [{ id: 5, title: 'Disk failure', status: 'approved' }],
+    });
+
+    renderWith(<Actions problemId="1" />);
+
+    expect(await screen.findByText('Disk failure')).toBeTruthy();
+    expect(screen.queryByLabelText('RCA for action 1')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save RCA' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create Action' })).toBeNull();
+    expect(screen.queryByLabelText('Root cause analysis')).toBeNull();
+  });
+
+  test('shows backend RCA-link validation errors without refreshing', async () => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, root_cause_analysis: null }],
+    });
+    services.listRCAs.mockResolvedValue({
+      results: [{ id: 5, title: 'Disk failure', status: 'approved' }],
+    });
+    services.editAction.mockRejectedValueOnce({
+      response: {
+        status: 400,
+        data: { root_cause_analysis: ['RCA belongs to a different problem.'] },
+      },
+    });
+
+    renderWith(<Actions problemId="1" />);
+
+    fireEvent.change(await screen.findByLabelText('RCA for action 1'), {
+      target: { value: '5' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save RCA' }));
+
+    expect(await screen.findByText('RCA belongs to a different problem.')).toBeTruthy();
+    expect(screen.queryByText('RCA link updated.')).toBeNull();
+    expect(services.listActions).toHaveBeenCalledTimes(1);
+  });
+
+  test('prevents duplicate RCA-link updates while the request is in flight', async () => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, root_cause_analysis: null }],
+    });
+    services.listRCAs.mockResolvedValue({
+      results: [{ id: 5, title: 'Disk failure', status: 'approved' }],
+    });
+    let resolveEdit;
+    services.editAction.mockImplementation(() => new Promise((resolve) => {
+      resolveEdit = resolve;
+    }));
+
+    renderWith(<Actions problemId="1" />);
+
+    fireEvent.change(await screen.findByLabelText('RCA for action 1'), {
+      target: { value: '5' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save RCA' }));
+
+    expect(services.editAction).toHaveBeenCalledTimes(1);
+    const save = screen.getByRole('button', { name: 'Save RCA' });
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(services.editAction).toHaveBeenCalledTimes(1);
+
+    resolveEdit({ ...PLANNED, root_cause_analysis: 5 });
+
+    expect(await screen.findByText('RCA link updated.')).toBeTruthy();
+    await waitFor(() => expect(services.listActions).toHaveBeenCalledTimes(2));
   });
 });
 

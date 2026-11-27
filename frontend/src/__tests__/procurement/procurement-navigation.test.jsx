@@ -68,7 +68,7 @@ const NAV_ITEMS = [
   'Invoice Exceptions',
   'Vendor Returns',
   'Vendor Credit Notes',
-  'Procurement Financial Dashboard',
+  'Financial Dashboard',
   'Vendor Performance',
 ];
 
@@ -76,12 +76,14 @@ describe('Procurement navigation visibility', () => {
   it('System Admin sees all six P3 entries', () => {
     mockAuth.mockReturnValue(makeAuth('system_admin'));
     render(<App />);
+    screen.getByRole('button', { name: /Procurement/ }).click();
     for (const label of NAV_ITEMS) expect(screen.getByText(label)).toBeTruthy();
   });
 
   it('IT Manager sees all six P3 entries', () => {
     mockAuth.mockReturnValue(makeAuth('it_manager'));
     render(<App />);
+    screen.getByRole('button', { name: /Procurement/ }).click();
     for (const label of NAV_ITEMS) expect(screen.getByText(label)).toBeTruthy();
   });
 
@@ -91,7 +93,7 @@ describe('Procurement navigation visibility', () => {
     for (const label of ['Supplier Invoices', 'Invoice Exceptions', 'Vendor Returns', 'Vendor Credit Notes']) {
       expect(screen.getByText(label)).toBeTruthy();
     }
-    expect(screen.queryByText('Procurement Financial Dashboard')).toBeNull();
+    expect(screen.queryByText('Financial Dashboard')).toBeNull();
     expect(screen.queryByText('Vendor Performance')).toBeNull();
   });
 

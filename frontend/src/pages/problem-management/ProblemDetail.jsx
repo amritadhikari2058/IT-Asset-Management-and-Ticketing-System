@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Badge, LoadingRows, PageHeader, Panel, PanelPad } from '../../components';
+import { Badge, Button, Field, Input, LoadingRows, PageHeader, Panel, PanelPad, Select, Textarea } from '../../components';
 import { Evidence } from '../../components/problem-management/evidence';
 import { RCA } from '../../components/problem-management/rca';
+import { Actions } from '../../components/problem-management/actions';
 import { GovernedTransitions } from '../../components/problem-management/governed-transitions';
+import { useAuth } from '../../auth';
 import {
   linkedAssets, linkedCIs, linkedKBs, linkedProducts,
   linkedServices, linkedTickets, listExceptions, listTasks,
-  listValidations, listWorkarounds, problemDetail, problemHistory, problemReadiness,
-  createKbLink, deleteKbLink,
+  listValidations, listWorkarounds, problemDetail, problemHistory, problemReadiness, createKbLink, deleteKbLink,
+  updateProblem,
 } from '../../services/problem-management';
 
 function Section({ title, state, children }) {
@@ -40,6 +42,7 @@ const PROBLEM_ROWS = [
 export function ProblemDetail({ problemId: problemIdProp }) {
   const params = useParams();
   const problemId = problemIdProp ?? params.id;
+  const { user, isStaff, isManagerOrAdmin, isSupportOrAbove } = useAuth();
   const [problem, setProblem] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -50,13 +53,62 @@ export function ProblemDetail({ problemId: problemIdProp }) {
   const [kbAdding, setKbAdding] = useState(false);
   const [kbRemoving, setKbRemoving] = useState(new Set());
   const [kbMessage, setKbMessage] = useState('');
+  const [editingProblemFields, setEditingProblemFields] = useState(false);
+  const [savingProblemFields, setSavingProblemFields] = useState(false);
+  const problemSaveLock = useRef(false);
+  const [problemFieldsError, setProblemFieldsError] = useState('');
+  const [problemFields, setProblemFields] = useState({
+    title: problem?.title ?? '',
+    description: problem?.description ?? '',
+    priority: problem?.priority ?? '',
+    severity: problem?.severity ?? '',
+    impact: problem?.impact ?? '',
+    urgency: problem?.urgency ?? '',
+    criticality: problem?.criticality ?? '',
+    owner: problem?.owner_username ?? '',
+    problem_manager: problem?.problem_manager_username ?? '',
+    assigned_group: problem?.assigned_group ?? '',
+    department: problem?.department_name ?? '',
+    service: problem?.service_name ?? '',
+    category: problem?.category_name ?? '',
+    subcategory: problem?.subcategory ?? '',
+    environment: problem?.environment ?? '',
+    detection_method: problem?.detection_method ?? '',
+    target_resolution_date: problem?.target_resolution_date ? problem.target_resolution_date.slice(0, 10) : '',
+    next_review_at: problem?.next_review_at ? problem.next_review_at.slice(0, 10) : '',
+  });
 
   useEffect(() => {
     let active = true;
-    setLoading(true); // eslint-disable-line react/set-state-in-effect
-    setError(''); // eslint-disable-line react/set-state-in-effect
+    setLoading(true);
     problemDetail(problemId)
-      .then((data) => { if (active) setProblem(data?.data ?? data); })
+      .then((data) => {
+        if (active) {
+          const p = data?.data ?? data;
+          setProblem(p);
+          // Initialize form with current problem values
+          setProblemFields({
+            title: p.title ?? '',
+            description: p.description ?? '',
+            priority: p.priority ?? '',
+            severity: p.severity ?? '',
+            impact: p.impact ?? '',
+            urgency: p.urgency ?? '',
+            criticality: p.criticality ?? '',
+            owner: p.owner?.toString() ?? '',
+            problem_manager: p.problem_manager?.toString() ?? '',
+            assigned_group: p.assigned_group ?? '',
+            department: p.department ?? '',
+            service: p.service?.toString() ?? '',
+            category: p.category?.toString() ?? '',
+            subcategory: p.subcategory ?? '',
+            environment: p.environment ?? '',
+            detection_method: p.detection_method ?? '',
+            target_resolution_date: p.target_resolution_date ? p.target_resolution_date.slice(0, 10) : '',
+            next_review_at: p.next_review_at ? p.next_review_at.slice(0, 10) : '',
+          });
+        }
+      })
       .catch(() => { if (active) setError('Could not load problem detail.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -90,40 +142,129 @@ export function ProblemDetail({ problemId: problemIdProp }) {
     return () => { active = false; };
   }, [problemId]);
 
+  const handleProblemFieldsChange = useCallback((e) => {
+    const { name, value } = e.target;
+    setProblemFields((prev) => ({ ...prev, [name]: value }));
+  }, []);
 
-  const handleAddKbLink = async (e) => {
-    e.preventDefault();
-    if (!problemId) return;
-    setKbAdding(true);
-    setKbMessage('');
-    try {
-      await createKbLink({ problem: Number(problemId), ...kbForm });
-      setKbForm({ article: '', relation_type: 'reference', relevance: 'medium', note: '' });
-      setKbMessage('Article linked.');
-      const data = await linkedKBs(problemId);
-      setSections((s) => ({ ...s, kbs: { ok: true, data } }));
-    } catch (err) {
-      setKbMessage(err?.message || 'Failed to link article.');
-    } finally {
-      setKbAdding(false);
-    }
-  };
+  const handleEditProblemFields = useCallback(() => {
+    if (!isStaff) return;
 
-  const handleRemoveKbLink = async (linkId) => {
-    if (!problemId) return;
-    setKbRemoving((s) => new Set([...s, linkId]));
-    setKbMessage('');
+    setProblemFields({
+      title: problem?.title ?? '',
+      description: problem?.description ?? '',
+      priority: problem?.priority ?? '',
+      severity: problem?.severity ?? '',
+      impact: problem?.impact ?? '',
+      urgency: problem?.urgency ?? '',
+      criticality: problem?.criticality ?? '',
+      owner: problem?.owner?.toString() ?? '',
+      problem_manager: problem?.problem_manager?.toString() ?? '',
+      assigned_group: problem?.assigned_group?.toString() ?? '',
+      department: problem?.department?.toString() ?? '',
+      service: problem?.service?.toString() ?? '',
+      category: problem?.category?.toString() ?? '',
+      subcategory: problem?.subcategory ?? '',
+      environment: problem?.environment ?? '',
+      detection_method: problem?.detection_method ?? '',
+      target_resolution_date: problem?.target_resolution_date
+        ? problem.target_resolution_date.slice(0, 10) : '',
+      next_review_at: problem?.next_review_at
+        ? problem.next_review_at.slice(0, 10) : '',
+    });
+    setProblemFieldsError('');
+    setEditingProblemFields(true);
+  }, [isStaff, problem]);
+
+  const handleCancelProblemFields = useCallback(() => {
+    setProblemFields({
+      title: problem?.title ?? '',
+      description: problem?.description ?? '',
+      priority: problem?.priority ?? '',
+      severity: problem?.severity ?? '',
+      impact: problem?.impact ?? '',
+      urgency: problem?.urgency ?? '',
+      criticality: problem?.criticality ?? '',
+      owner: problem?.owner?.toString() ?? '',
+      problem_manager: problem?.problem_manager?.toString() ?? '',
+      assigned_group: problem?.assigned_group?.toString() ?? '',
+      department: problem?.department?.toString() ?? '',
+      service: problem?.service?.toString() ?? '',
+      category: problem?.category?.toString() ?? '',
+      subcategory: problem?.subcategory ?? '',
+      environment: problem?.environment ?? '',
+      detection_method: problem?.detection_method ?? '',
+      target_resolution_date: problem?.target_resolution_date
+        ? problem.target_resolution_date.slice(0, 10) : '',
+      next_review_at: problem?.next_review_at
+        ? problem.next_review_at.slice(0, 10) : '',
+    });
+    setProblemFieldsError('');
+    setEditingProblemFields(false);
+  }, [problem]);
+
+  const handleSaveProblemFields = useCallback(async () => {
+    if (!isStaff || problemSaveLock.current) return;
+
+    problemSaveLock.current = true;
+    setSavingProblemFields(true);
+    setProblemFieldsError('');
+
     try {
-      await deleteKbLink(linkId);
-      const data = await linkedKBs(problemId);
-      setSections((s) => ({ ...s, kbs: { ok: true, data } }));
-      setKbMessage('Link removed.');
-    } catch (err) {
-      setKbMessage(err?.message || 'Failed to remove link.');
+      const updatePayload = {
+        title: problemFields.title,
+        description: problemFields.description,
+        priority: problemFields.priority,
+        severity: problemFields.severity,
+        impact: problemFields.impact,
+        urgency: problemFields.urgency,
+        criticality: problemFields.criticality,
+        subcategory: problemFields.subcategory,
+        environment: problemFields.environment,
+        detection_method: problemFields.detection_method,
+        ...(isManagerOrAdmin ? {
+          target_resolution_date: problemFields.target_resolution_date || null,
+          next_review_at: problemFields.next_review_at || null,
+        } : {}),
+      };
+
+      await updateProblem(problemId, updatePayload, problem?.record_version);
+      setProblem((current) => ({ ...current, ...updatePayload }));
+      setEditingProblemFields(false);
+
+      try {
+        const data = await problemDetail(problemId);
+        setProblem(data?.data ?? data);
+      } catch {
+        // The update succeeded; retain the locally updated record.
+      }
+    } catch (e) {
+      const status = e.response?.status;
+
+      if (status === 409) {
+        try {
+          const data = await problemDetail(problemId);
+          setProblem(data?.data ?? data);
+        } catch {
+          // Keep the user's entered values if refresh fails.
+        }
+        setProblemFieldsError(
+          'The problem record changed while you were editing. Review the latest record and try again.'
+        );
+      } else if (status === 400) {
+        setProblemFieldsError(
+          'Could not save problem fields. Please check the submitted values.'
+        );
+      } else if (status === 403) {
+        setProblemFieldsError('You do not have permission to edit problem fields.');
+      } else {
+        setProblemFieldsError('Failed to save problem fields. Please try again.');
+      }
     } finally {
-      setKbRemoving((s) => { const n = new Set(s); n.delete(linkId); return n; });
+      problemSaveLock.current = false;
+      setSavingProblemFields(false);
     }
-  };
+  }, [isStaff, isManagerOrAdmin, problemId, problemFields, problem?.record_version]);
 
   if (loading) return <LoadingRows n={6} />;
   if (error) return <div className="error-summary" role="alert">{error}</div>;
@@ -137,14 +278,199 @@ export function ProblemDetail({ problemId: problemIdProp }) {
       <PageHeader title={problem.problem_number} sub={problem.title} />
 
       <Section title="Overview">
-        {PROBLEM_ROWS.map(([key, label]) => (
-          <p key={key}>{label}: {key === 'status' || key === 'priority'
-            ? <Badge kind="status-warning" value={problem[key]} />
-            : (problem[key] || '—')}</p>
-        ))}
-        {problem.description && <p>{problem.description}</p>}
-      </Section>
+        {editingProblemFields ? (
+          <>
+            <h3>Edit Problem Fields</h3>
 
+            {problemFieldsError && (
+              <div className="error-summary" role="alert">
+                {problemFieldsError}
+              </div>
+            )}
+
+            <form
+              className="form"
+              aria-label="Edit problem fields"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSaveProblemFields();
+              }}
+            >
+              <Field label="Title" required>
+                <Input
+                  name="title"
+                  value={problemFields.title}
+                  onChange={handleProblemFieldsChange}
+                  required
+                  disabled={savingProblemFields}
+                />
+              </Field>
+
+              <Field label="Description">
+                <Textarea
+                  name="description"
+                  value={problemFields.description}
+                  onChange={handleProblemFieldsChange}
+                  rows={3}
+                  disabled={savingProblemFields}
+                />
+              </Field>
+
+              <Field label="Priority">
+                <Select
+                  name="priority"
+                  value={problemFields.priority}
+                  onChange={handleProblemFieldsChange}
+                  disabled={savingProblemFields}
+                >
+                  <option value="">—</option>
+                  <option value="p1">P1 — Critical</option>
+                  <option value="p2">P2 — High</option>
+                  <option value="p3">P3 — Medium</option>
+                  <option value="p4">P4 — Low</option>
+                </Select>
+              </Field>
+
+              <Field label="Severity">
+                <Select
+                  name="severity"
+                  value={problemFields.severity}
+                  onChange={handleProblemFieldsChange}
+                  disabled={savingProblemFields}
+                >
+                  <option value="">—</option>
+                  <option value="minor">Minor</option>
+                  <option value="major">Major</option>
+                  <option value="critical">Critical</option>
+                </Select>
+              </Field>
+
+              <Field label="Impact">
+                <Textarea
+                  name="impact"
+                  value={problemFields.impact}
+                  onChange={handleProblemFieldsChange}
+                  rows={3}
+                  disabled={savingProblemFields}
+                />
+              </Field>
+
+              <Field label="Urgency">
+                <Select
+                  name="urgency"
+                  value={problemFields.urgency}
+                  onChange={handleProblemFieldsChange}
+                  disabled={savingProblemFields}
+                >
+                  <option value="">—</option>
+                  <option value="urgent">Urgent</option>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                </Select>
+              </Field>
+
+              <Field label="Criticality">
+                <Select
+                  name="criticality"
+                  value={problemFields.criticality}
+                  onChange={handleProblemFieldsChange}
+                  disabled={savingProblemFields}
+                >
+                  <option value="">—</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </Select>
+              </Field>
+
+              <Field label="Subcategory">
+                <Input
+                  name="subcategory"
+                  value={problemFields.subcategory}
+                  onChange={handleProblemFieldsChange}
+                  disabled={savingProblemFields}
+                />
+              </Field>
+
+              <Field label="Environment">
+                <Input
+                  name="environment"
+                  value={problemFields.environment}
+                  onChange={handleProblemFieldsChange}
+                  disabled={savingProblemFields}
+                />
+              </Field>
+
+              <Field label="Detection Method">
+                <Input
+                  name="detection_method"
+                  value={problemFields.detection_method}
+                  onChange={handleProblemFieldsChange}
+                  disabled={savingProblemFields}
+                />
+              </Field>
+
+              {isManagerOrAdmin && (
+                <>
+                  <Field label="Target Resolution Date">
+                    <Input
+                      type="date"
+                      name="target_resolution_date"
+                      value={problemFields.target_resolution_date}
+                      onChange={handleProblemFieldsChange}
+                      disabled={savingProblemFields}
+                    />
+                  </Field>
+
+                  <Field label="Next Review Date">
+                    <Input
+                      type="date"
+                      name="next_review_at"
+                      value={problemFields.next_review_at}
+                      onChange={handleProblemFieldsChange}
+                      disabled={savingProblemFields}
+                    />
+                  </Field>
+                </>
+              )}
+
+              <div className="row-gap">
+                <Button type="submit" disabled={savingProblemFields}>
+                  {savingProblemFields ? 'Saving...' : 'Save changes'}
+                </Button>
+
+                <Button
+                  type="button"
+                  onClick={handleCancelProblemFields}
+                  disabled={savingProblemFields}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          </>
+        ) : (
+          <>
+            {PROBLEM_ROWS.map(([key, label]) => (
+              <p key={key}>
+                {label}: {key === 'status' || key === 'priority'
+                  ? <Badge kind="status-warning" value={problem[key]} />
+                  : (problem[key] || '—')}
+              </p>
+            ))}
+            {problem.description && <p>{problem.description}</p>}
+          </>
+        )}
+
+        {isStaff && !editingProblemFields && (
+          <div style={{ marginTop: '0.5rem' }}>
+            <Button onClick={handleEditProblemFields}>
+              Edit problem fields
+            </Button>
+          </div>
+        )}
+      </Section>
       <GovernedTransitions problemId={problemId} problem={problem} />
 
       <Section title="Tasks" state={sections.tasks}>
@@ -160,6 +486,7 @@ export function ProblemDetail({ problemId: problemIdProp }) {
         <RCA
           rcaId={problem.root_cause_analysis ?? undefined}
           problemId={problemId}
+          problemTitle={problem.title}
         />
       </section>
 
@@ -169,9 +496,7 @@ export function ProblemDetail({ problemId: problemIdProp }) {
           : problem.timeline_events.map((e) => <p key={e.id}>{e.title}</p>)}
       </Section>
 
-      <Section title="Actions">
-        <p className="muted">Corrective and preventive actions are tracked as tasks above.</p>
-      </Section>
+      <Actions problemId={problemId} />
 
       <Section title="Workarounds" state={sections.workarounds}>
         {listOf(sections.workarounds?.data).length === 0
@@ -183,23 +508,25 @@ export function ProblemDetail({ problemId: problemIdProp }) {
         {listOf(sections.validations?.data).length === 0
           ? <p className="muted">No validations.</p>
           : listOf(sections.validations?.data).map((v) => (
-            <p key={v.id}>{v.title} — {v.status}</p>
-          ))}
+              <p key={v.id}>{v.title} — {v.status}</p>
+            ))}
       </Section>
 
       <Section title="Exceptions" state={sections.exceptions}>
         {listOf(sections.exceptions?.data).length === 0
           ? <p className="muted">No exceptions.</p>
-          : listOf(sections.exceptions?.data).map((e) => <p key={e.id}>{e.title} — {e.exception_type}</p>)}
+          : listOf(sections.exceptions?.data).map((e) => (
+              <p key={e.id}>{e.title} — {e.exception_type}</p>
+            ))}
       </Section>
 
       <Section title="Readiness State" state={sections.readiness}>
         <p>Ready for resolution: {readiness?.ready_for_resolution ? 'Yes' : 'No'}</p>
         <p>Ready for closure: {readiness?.ready_for_closure ? 'Yes' : 'No'}</p>
         <p>Blockers: {(readiness?.blockers ?? []).join(', ') || 'None'}</p>
-        <p>Warnings: {(readiness?.warnings ?? []).join(', ') || 'None'}</p>
-        <p>Open blocking tasks: {counts.open_blocking_tasks ?? 0}</p>
+        {readiness?.warnings?.length && <p>Warnings: {readiness.warnings.join(', ') || 'None'}</p>}
         <p>Open required actions: {counts.open_required_actions ?? 0}</p>
+        <p>Open blocking tasks: {counts.open_blocking_tasks ?? 0}</p>
         <p>Failed validations: {counts.failed_validations ?? 0}</p>
         <p>Open critical tickets: {counts.open_critical_tickets ?? 0}</p>
         <p>Active exceptions: {counts.active_exceptions ?? 0}</p>
@@ -209,8 +536,8 @@ export function ProblemDetail({ problemId: problemIdProp }) {
         {listOf(sections.history?.data).length === 0
           ? <p className="muted">No history events.</p>
           : listOf(sections.history?.data).map((h) => (
-            <p key={h.id}>{h.event_type}: {h.previous_status || '—'} → {h.new_status || '—'}</p>
-          ))}
+              <p key={h.id}>{h.event_type}: {h.previous_status || '—'} → {h.new_status || '—'}</p>
+            ))}
       </Section>
 
       <Section title="Linked Records">
@@ -223,82 +550,9 @@ export function ProblemDetail({ problemId: problemIdProp }) {
         <p className="muted">Linked Changes are not supported by the backend.</p>
       </Section>
 
-      <Section title="Linked Knowledge-Base Articles">
-        <form onSubmit={handleAddKbLink} className="kb-add-form">
-          <label htmlFor="kb-article">Article (ID or slug)</label>
-          <input
-            id="kb-article"
-            value={kbForm.article}
-            onChange={(e) => setKbForm((f) => ({ ...f, article: e.target.value }))}
-            placeholder="e.g. vpn-reset"
-            disabled={kbAdding}
-          />
-          <label htmlFor="kb-relation">Relation</label>
-          <select
-            id="kb-relation"
-            value={kbForm.relation_type}
-            onChange={(e) => setKbForm((f) => ({ ...f, relation_type: e.target.value }))}
-            disabled={kbAdding}
-          >
-            <option value="reference">Reference</option>
-            <option value="workaround_source">Workaround Source</option>
-            <option value="root_cause_reference">Root-Cause Reference</option>
-            <option value="known_error_reference">Known-Error Reference</option>
-            <option value="procedure">Procedure</option>
-            <option value="other">Other</option>
-          </select>
-          <label htmlFor="kb-relevance">Relevance</label>
-          <select
-            id="kb-relevance"
-            value={kbForm.relevance}
-            onChange={(e) => setKbForm((f) => ({ ...f, relevance: e.target.value }))}
-            disabled={kbAdding}
-          >
-            <option value="confirmed">Confirmed</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-            <option value="candidate">Candidate</option>
-          </select>
-          <label htmlFor="kb-note">Note</label>
-          <input
-            id="kb-note"
-            value={kbForm.note}
-            onChange={(e) => setKbForm((f) => ({ ...f, note: e.target.value }))}
-            disabled={kbAdding}
-          />
-          <button type="submit" disabled={kbAdding || !kbForm.article}>
-            {kbAdding ? 'Linking…' : 'Link article'}
-          </button>
-        </form>
-        {kbMessage && <p className={kbMessage.startsWith('Failed') ? 'error' : 'success'}>{kbMessage}</p>}
-        {sections.kbs?.ok === false
-          ? <p className="muted">Unable to load linked articles.</p>
-          : listOf(sections.kbs?.data).length === 0
-            ? <p className="muted">No KB articles linked.</p>
-            : listOf(sections.kbs?.data).map((a) => (
-                <div key={a.id} className="kb-link-row">
-                  <span>{a.article_title || a.article}</span>
-                  <Badge kind="status-warning" value={a.article_status} />
-                  <span>{a.relation_type}</span>
-                  <span>{a.relevance}</span>
-                  {a.note && <span>{a.note}</span>}
-                  <button
-                    onClick={() => handleRemoveKbLink(a.id)}
-                    disabled={kbRemoving.has(a.id)}
-                    className="btn-small btn-danger"
-                  >
-                    {kbRemoving.has(a.id) ? 'Removing…' : 'Remove'}
-                  </button>
-                </div>
-              ))}
-      </Section>
-
       <Section title="Permissions">
         <p>Problem management actions follow your role permissions.</p>
       </Section>
     </div>
   );
 }
-
-

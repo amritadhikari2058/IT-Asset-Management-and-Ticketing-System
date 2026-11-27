@@ -144,5 +144,23 @@ describe('Change Permissions - Utilities', () => {
     it('unknown role fails closed', () => {
       expect(ChangeUtils.actionAvailability(undefined, 'draft', 'view')).toBe(false);
     });
+
+    it('Manager starts rollback only from failed', () => {
+      expect(ChangeUtils.actionAvailability('it_manager', 'failed', 'start_rollback')).toBe(true);
+      expect(ChangeUtils.actionAvailability('it_manager', 'in_progress', 'start_rollback')).toBe(false);
+      expect(ChangeUtils.actionAvailability('it_manager', 'validation', 'start_rollback')).toBe(false);
+    });
+
+    it('Manager completes rollback only from rolled_back', () => {
+      expect(ChangeUtils.actionAvailability('it_manager', 'rolled_back', 'complete_rollback')).toBe(true);
+      expect(ChangeUtils.actionAvailability('it_manager', 'in_progress', 'complete_rollback')).toBe(false);
+      expect(ChangeUtils.actionAvailability('it_manager', 'validation', 'complete_rollback')).toBe(false);
+      expect(ChangeUtils.actionAvailability('it_manager', 'failed', 'complete_rollback')).toBe(false);
+    });
+
+    it('IT Support has no rollback actions', () => {
+      expect(ChangeUtils.actionAvailability('it_support', 'failed', 'start_rollback')).toBe(false);
+      expect(ChangeUtils.actionAvailability('it_support', 'rolled_back', 'complete_rollback')).toBe(false);
+    });
   });
 });

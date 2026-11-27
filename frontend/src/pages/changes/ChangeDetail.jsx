@@ -22,6 +22,7 @@ const DISPATCHABLE_ACTIONS = new Set([
   'complete',
   'fail',
   'start_rollback',
+  'complete_rollback',
   'request_pir',
   'close',
   'hold',
@@ -57,6 +58,7 @@ const ACTION_BODY_BUILDERS = {
     return { failure_reason: reason };
   },
   start_rollback: () => ({}),
+  complete_rollback: () => ({}),
   request_pir: () => ({}),
   close: () => {
     const summary = window.prompt('Closure summary (optional):');
@@ -168,9 +170,6 @@ export function ChangeDetail({ match }) {
       if (actionAvailability(role, status, 'fail')) {
         addAction('Fail Implementation', 'fail', 'danger');
       }
-      if (actionAvailability(role, status, 'start_rollback')) {
-        addAction('Start Rollback', 'start_rollback', 'warning');
-      }
       if (actionAvailability(role, status, 'hold')) {
         addAction('Put on Hold', 'hold', 'warning');
       }
@@ -212,6 +211,9 @@ export function ChangeDetail({ match }) {
     
     // Rolled Back actions
     if (status === 'rolled_back') {
+      if (actionAvailability(role, status, 'complete_rollback')) {
+        addAction('Complete Rollback', 'complete_rollback', 'primary');
+      }
       if (actionAvailability(role, status, 'close')) {
         addAction('Close Change', 'close', 'success');
       }

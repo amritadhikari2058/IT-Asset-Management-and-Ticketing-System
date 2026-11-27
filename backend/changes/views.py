@@ -117,6 +117,7 @@ from changes.services import (
     start_rollback,
     complete_rollback,
     request_pir,
+    complete_pir,
     close_change,
     cancel_change,
     create_stakeholder,
@@ -135,6 +136,7 @@ from changes.permissions import (
     _can_approve,
 )
 from changes.conflicts import detect_conflicts, upsert_conflicts, resolve_conflicts_for_change
+from common.permissions import IsActiveAuthenticated
 
 
 def _user_department(user):
@@ -148,6 +150,13 @@ def _scope_queryset(user, qs):
         return qs
     # Employee: own changes only.
     return qs.filter(requester=user)
+
+
+def _scope_change_related_queryset(user, qs):
+    """Scope child records through the requester on their parent change."""
+    if _is_staff(user) or getattr(user, "is_superuser", False):
+        return qs
+    return qs.filter(change__requester=user)
 
 
 def _require_staff(user):
@@ -174,7 +183,7 @@ VALID_TRANSITIONS = {
     "pending_approval": {"approved", "rejected", "submitted", "cancelled"},
     "approved": {"scheduled", "on_hold", "cancelled"},
     "scheduled": {"in_progress", "on_hold", "approved", "cancelled"},
-    "in_progress": {"validation", "failed", "rolled_back", "on_hold"},
+    "in_progress": {"validation", "failed", "on_hold"},
     "validation": {"completed", "failed", "in_progress", "on_hold"},
     "completed": {"pir_required", "closed"},
     "pir_required": {"closed"},
@@ -1164,12 +1173,10 @@ class ChangeImplementationViewSet(viewsets.ModelViewSet):
         qs = ChangeImplementation.objects.select_related(
             "change", "started_by", "completed_by", "rollback_completed_by"
         )
-        return _scope_queryset(self.request.user, qs)
+        return _scope_change_related_queryset(self.request.user, qs)
 
     def get_permissions(self):
-        if self.action in ("list", "retrieve"):
-            return [permissions.IsAuthenticated()]
-        return [permissions.IsAuthenticated()]
+        return [IsActiveAuthenticated()]
 
 
 class PostImplementationReviewViewSet(viewsets.ModelViewSet):
@@ -1178,12 +1185,29 @@ class PostImplementationReviewViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = PostImplementationReview.objects.select_related("change", "reviewer", "reviewed_by")
-        return _scope_queryset(self.request.user, qs)
+        user = self.request.user
+        if not getattr(user, "is_active", False):
+            return qs.none()
+        qs = _scope_change_related_queryset(user, qs)
+
+        change_id = self.request.query_params.get("change")
+        if change_id:
+            try:
+                qs = qs.filter(change_id=int(change_id))
+            except (TypeError, ValueError):
+                return qs.none()
+        return qs
 
     def get_permissions(self):
-        if self.action in ("list", "retrieve"):
-            return [permissions.IsAuthenticated()]
-        return [permissions.IsAuthenticated()]
+        if self.action == "complete":
+            return [IsActiveAuthenticated(), IsChangeManagerOrAdmin()]
+        return [IsActiveAuthenticated()]
+
+    @action(detail=True, methods=["post"])
+    def complete(self, request, pk=None):
+        pir = self.get_object()
+        pir = complete_pir(pir, request.user)
+        return Response(self.get_serializer(pir).data)
 
 
 # ---------------------------------------------------------------------------

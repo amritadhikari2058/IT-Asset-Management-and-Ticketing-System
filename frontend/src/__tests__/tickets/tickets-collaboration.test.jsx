@@ -69,6 +69,116 @@ describe('TicketDetail comments and notes', () => {
   });
 });
 
+describe('TicketDetail canned responses', () => {
+  it('applies a saved response and refreshes the notes', async () => {
+    staff();
+
+    const savedNote = {
+      id: 91,
+      body: 'Please restart the printer and try again.',
+      is_internal: true,
+      author_email: 'support@example.com',
+      created_at: '2024-01-02T10:00:00Z',
+    };
+    let notesRequests = 0;
+
+    mockGet.mockImplementation(async (url) => {
+      if (url === '/tickets/canned-responses/') {
+        return {
+          data: [{
+            id: 15,
+            title: 'Printer troubleshooting',
+            visibility: 'both',
+          }],
+        };
+      }
+
+      if (url === '/tickets/7/notes/') {
+        notesRequests += 1;
+        return { data: notesRequests > 1 ? [savedNote] : [] };
+      }
+
+      return detailRoute(url);
+    });
+
+    render(<TicketDetail id='7' />);
+
+    await screen.findByRole('heading', { name: /Printer down/ });
+    await screen.findByRole('option', { name: 'Printer troubleshooting' });
+
+    fireEvent.change(screen.getByLabelText('Saved response'), {
+      target: { value: '15' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply saved response' }));
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith(
+        '/tickets/7/apply_canned_response/',
+        {
+          canned_response_id: 15,
+          visibility: 'internal_note',
+        }
+      );
+    });
+
+    expect(await screen.findByText(savedNote.body)).toBeTruthy();
+    expect(notesRequests).toBe(2);
+  });
+
+  it('does not expose or request canned responses for employees', async () => {
+    employee();
+
+    render(<TicketDetail id='7' />);
+
+    await screen.findByRole('heading', { name: /Printer down/ });
+
+    expect(screen.queryByLabelText('Saved response')).toBeNull();
+    expect(
+      mockGet.mock.calls.some(([url]) => url === '/tickets/canned-responses/')
+    ).toBe(false);
+  });
+
+  it('shows an error when applying a saved response fails', async () => {
+    staff();
+
+    mockGet.mockImplementation(async (url) => {
+      if (url === '/tickets/canned-responses/') {
+        return {
+          data: [{
+            id: 16,
+            title: 'Internal troubleshooting',
+            visibility: 'internal_note',
+          }],
+        };
+      }
+      return detailRoute(url);
+    });
+
+    mockPost.mockRejectedValueOnce({
+      response: {
+        status: 403,
+        data: { detail: 'You do not own this canned response.' },
+      },
+    });
+
+    render(<TicketDetail id='7' />);
+
+    await screen.findByRole('heading', { name: /Printer down/ });
+
+    fireEvent.change(await screen.findByLabelText('Saved response'), {
+      target: { value: '16' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply saved response' }));
+
+    const errorAlert = await screen.findByRole('alert');
+    expect(errorAlert.textContent).toContain('You do not own this canned response.');
+
+    expect(screen.queryByText('Applying...')).toBeNull();
+  });
+});
+
 describe('TicketDetail attachments', () => {
   it('lists attachments', async () => {
     staff();

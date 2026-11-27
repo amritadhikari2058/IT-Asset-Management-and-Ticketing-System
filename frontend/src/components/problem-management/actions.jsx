@@ -3,8 +3,8 @@ import { useParams } from 'react-router-dom';
 import { useAuth } from '../../auth';
 import { Badge, Button, DataTable, Field, Input, LoadingRows, Option, PageHeader, Panel, PanelPad, Select } from '../../components';
 import {
-  approveAction, cancelAction, completeAction, createAction, listActions,
-  markActionIneffective, startAction, validateAction,
+  approveAction, cancelAction, completeAction, createAction, editAction,
+  listActions, listRCAs, markActionIneffective, startAction, validateAction,
 } from '../../services/problem-management';
 
 const ACTION_TYPES = [
@@ -15,7 +15,11 @@ const ACTION_TYPES = [
   ['exception', 'Exception'],
 ];
 
-const EMPTY = { title: '', description: '', action_type: 'corrective', due_at: '' };
+const EMPTY = {
+  title: '', description: '', action_type: 'corrective', due_at: '',
+  root_cause_analysis: '',
+};
+const LOCKED_ACTION_STATUSES = ['verified', 'closed'];
 
 export function Actions({ problemId: problemIdProp }) {
   const params = useParams();
@@ -28,17 +32,32 @@ export function Actions({ problemId: problemIdProp }) {
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const [rcas, setRcas] = useState([]);
+  const [rcasLoading, setRcasLoading] = useState(true);
+  const [rcaError, setRcaError] = useState('');
+  const [rcaDrafts, setRcaDrafts] = useState({});
+  const rcaById = new Map(rcas.map((rca) => [Number(rca.id), rca]));
 
   const load = useCallback(async () => {
     setLoading(true);
+    setRcasLoading(true);
     setError('');
+    setRcaError('');
     try {
       const data = await listActions(problemId);
       setRows(Array.isArray(data) ? data : data?.results ?? []);
     } catch {
       setError('Could not load actions.');
+    }
+    try {
+      const data = await listRCAs(problemId);
+      setRcas(Array.isArray(data) ? data : data?.results ?? []);
+    } catch {
+      setRcas([]);
+      setRcaError('Could not load RCA options.');
     } finally {
       setLoading(false);
+      setRcasLoading(false);
     }
   }, [problemId]);
 
@@ -55,6 +74,9 @@ export function Actions({ problemId: problemIdProp }) {
         description: form.description.trim(),
         action_type: form.action_type,
         due_at: form.due_at || null,
+        root_cause_analysis: form.root_cause_analysis
+          ? Number(form.root_cause_analysis)
+          : null,
       });
       setForm(EMPTY);
       await load();
@@ -86,9 +108,91 @@ export function Actions({ problemId: problemIdProp }) {
     }
   };
 
+  const linkedRcaValue = (action) => (
+    action.root_cause_analysis != null ? String(action.root_cause_analysis) : ''
+  );
+
+  const saveRca = async (action) => {
+    if (busyId) return;
+    const current = linkedRcaValue(action);
+    const next = rcaDrafts[action.id] ?? current;
+    if (next === current) return;
+    setBusyId(action.id);
+    setError('');
+    setNotice('');
+    try {
+      await editAction(action.id, {
+        root_cause_analysis: next ? Number(next) : null,
+      }, action.version);
+      setRcaDrafts((prev) => {
+        const copy = { ...prev };
+        delete copy[action.id];
+        return copy;
+      });
+      setNotice('RCA link updated.');
+      await load();
+    } catch (e) {
+      const data = e?.response?.data;
+      setError(
+        data?.root_cause_analysis?.[0]
+        || data?.detail
+        || 'Could not update the RCA link.',
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const columns = [
     { key: 'title', label: 'Action' },
     { key: 'action_type', label: 'Type', render: (r) => (r.action_type || '—').replace(/_/g, ' ') },
+    {
+      key: 'root_cause_analysis',
+      label: 'RCA',
+      render: (r) => {
+        const linked = rcaById.get(Number(r.root_cause_analysis));
+        const current = linkedRcaValue(r);
+        const draft = rcaDrafts[r.id] ?? current;
+        const locked = LOCKED_ACTION_STATUSES.includes(r.status);
+        return (
+          <div>
+            {r.root_cause_analysis != null ? (
+              <div className="row-gap">
+                <span>{linked?.title ?? `RCA #${r.root_cause_analysis}`}</span>
+                {linked?.status && <Badge kind="status-warning" value={linked.status} />}
+              </div>
+            ) : <span className="muted">—</span>}
+            {isStaff && !locked && (
+              <div className="row-gap">
+                <Select
+                  aria-label={`RCA for action ${r.id}`}
+                  value={draft}
+                  disabled={rcasLoading || busyId === r.id}
+                  onChange={(e) => setRcaDrafts((prev) => ({
+                    ...prev,
+                    [r.id]: e.target.value,
+                  }))}
+                >
+                  <Option value="">No RCA</Option>
+                  {rcas.map((rca) => (
+                    <Option key={rca.id} value={String(rca.id)}>
+                      {rca.title} ({rca.status})
+                    </Option>
+                  ))}
+                </Select>
+                <Button
+                  size="small"
+                  disabled={rcasLoading || busyId === r.id || draft === current}
+                  onClick={() => saveRca(r)}
+                >
+                  Save RCA
+                </Button>
+              </div>
+            )}
+          </div>
+        );
+      },
+    },
     { key: 'status', label: 'Status', render: (r) => <Badge kind="status-warning" value={r.status} /> },
     { key: 'due_at', label: 'Due', render: (r) => (r.due_at ? new Date(r.due_at).toLocaleDateString() : '—') },
     {
@@ -123,6 +227,7 @@ export function Actions({ problemId: problemIdProp }) {
     <div>
       <PageHeader title="Actions" sub="Corrective and preventive work" />
       {error && <div className="error-summary" role="alert">{error}</div>}
+      {rcaError && <div className="error-summary" role="alert">{rcaError}</div>}
       {notice && <div className="success-summary" role="status">{notice}</div>}
       {loading ? <LoadingRows n={3} /> : (
         <Panel>
@@ -145,6 +250,23 @@ export function Actions({ problemId: problemIdProp }) {
               <Field label="Type">
                 <Select value={form.action_type} onChange={(e) => setForm({ ...form, action_type: e.target.value })}>
                   {ACTION_TYPES.map(([value, label]) => <Option key={value} value={value}>{label}</Option>)}
+                </Select>
+              </Field>
+              <Field
+                label="Root cause analysis"
+                hint={rcasLoading ? 'Loading RCA options…' : undefined}
+              >
+                <Select
+                  value={form.root_cause_analysis}
+                  disabled={rcasLoading || saving}
+                  onChange={(e) => setForm({ ...form, root_cause_analysis: e.target.value })}
+                >
+                  <Option value="">No RCA</Option>
+                  {rcas.map((rca) => (
+                    <Option key={rca.id} value={String(rca.id)}>
+                      {rca.title} ({rca.status})
+                    </Option>
+                  ))}
                 </Select>
               </Field>
               <Field label="Due date">

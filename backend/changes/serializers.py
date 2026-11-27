@@ -55,9 +55,6 @@ class ChangeRequestSerializer(serializers.ModelSerializer):
     current_approver_email = serializers.CharField(
         source="current_approver.email", read_only=True, allow_null=True
     )
-    fulfilment_ticket_id = serializers.IntegerField(
-        source="fulfilment_ticket_id", read_only=True, allow_null=True
-    )
 
     class Meta:
         model = ChangeRequest
@@ -475,7 +472,7 @@ class PostImplementationReviewSerializer(serializers.ModelSerializer):
     class Meta:
         model = PostImplementationReview
         fields = [
-            "id", "change", "reviewer", "reviewer_email",
+            "id", "change", "status", "reviewer", "reviewer_email",
             "scheduled_for", "completed_at", "outcome",
             "objectives_met", "validation_successful",
             "unexpected_impact", "downtime_within_estimate",
@@ -483,7 +480,9 @@ class PostImplementationReviewSerializer(serializers.ModelSerializer):
             "follow_up_actions", "knowledge_article", "reviewed_by",
             "reviewed_by_email", "created_at", "updated_at", "version",
         ]
-        read_only_fields = ["id", "reviewer", "created_at", "updated_at", "version"]
+        read_only_fields = [
+            "id", "status", "reviewer", "created_at", "updated_at", "version"
+        ]
 
 
 class ChangeTicketLinkSerializer(serializers.ModelSerializer):

@@ -20,6 +20,7 @@ vi.mock('../../auth', () => ({
 }));
 
 import { ChangeDetail } from '../../pages/changes/ChangeDetail';
+import { ChangeUtils } from '../../shared/changes-utils';
 
 function makeAuth(role) {
   const staffRoles = ['system_admin', 'it_manager', 'it_support'];
@@ -190,7 +191,8 @@ describe('ChangeDetail workflow actions', () => {
     ['scheduled', 'Put on Hold', 'hold', {}],
     ['in_progress', 'Begin Validation', 'begin_validation', {}],
     ['in_progress', 'Fail Implementation', 'fail', { failure_reason: 'reason' }],
-    ['in_progress', 'Start Rollback', 'start_rollback', {}],
+    ['failed', 'Start Rollback', 'start_rollback', {}],
+    ['rolled_back', 'Complete Rollback', 'complete_rollback', {}],
     ['validation', 'Complete', 'complete', { implementation_notes: 'reason' }],
     ['completed', 'Request PIR', 'request_pir', {}],
     ['pir_required', 'Close Change', 'close', { closure_summary: 'reason' }],
@@ -203,6 +205,28 @@ describe('ChangeDetail workflow actions', () => {
     await waitFor(() => {
       expect(mockPost).toHaveBeenCalledWith(`/changes/7/${actionKey}/`, body);
     });
+  });
+
+  it('renders manager rollback actions only where actionAvailability allows them', async () => {
+    const cases = [
+      ['in_progress', 'start_rollback', 'Start Rollback', false],
+      ['failed', 'start_rollback', 'Start Rollback', true],
+      ['in_progress', 'complete_rollback', 'Complete Rollback', false],
+      ['validation', 'complete_rollback', 'Complete Rollback', false],
+      ['rolled_back', 'complete_rollback', 'Complete Rollback', true],
+    ];
+
+    for (const [status, action, label, expected] of cases) {
+      cleanup();
+      mockGet.mockReset();
+      mockPost.mockReset();
+      mockAuth.mockReset();
+
+      await renderDetail({ status, role: 'it_manager' });
+
+      expect(ChangeUtils.actionAvailability('it_manager', status, action)).toBe(expected);
+      expect(screen.queryByRole('button', { name: label }) !== null).toBe(expected);
+    }
   });
 
   it('does not send a request when an action confirmation is declined', async () => {

@@ -158,7 +158,7 @@ p { margin: 0 0 var(--sp-2); }
 }
 .brand-name { color: var(--heading-text); font-weight: 700; font-size: var(--font-body-lg); line-height: 1.2; }
 .brand-name small { display: block; font-weight: 400; font-size: var(--font-xs); color: var(--muted-text); }
-.sidenav { padding: var(--sp-2) var(--sp-2); display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
+.sidenav { flex: 1 1 auto; min-height: 0; padding: var(--sp-2) var(--sp-2); display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
 .sidenav-section {
   font-size: var(--font-xs); font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--muted-text); padding: var(--sp-3) var(--sp-2) var(--sp-1);

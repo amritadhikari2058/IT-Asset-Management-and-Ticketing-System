@@ -718,10 +718,25 @@ def start_implementation(change, user):
         return change
 
 
+def _latest_validation_outcome(change):
+    """Return the latest recorded validation outcome event for a change."""
+    event = (
+        ChangeHistory.objects.filter(
+            change=change,
+            event_type__in=("validation_started", "validation_passed", "validation_failed"),
+        )
+        .order_by("-id")
+        .first()
+    )
+    return event.event_type if event else None
+
+
 def complete_implementation(change, user, validation_passed=True, notes=""):
     """Complete an implementation.
 
-    Requires validation to pass unless validation is not applicable.
+    Completion is allowed from ``in_progress`` (legacy direct path) or from
+    ``validation`` after ``begin_validation``. A recorded failed validation
+    must be cleared by starting a fresh validation attempt before completion.
     """
     if not notes:
         raise ValidationError(
@@ -730,8 +745,13 @@ def complete_implementation(change, user, validation_passed=True, notes=""):
 
     with transaction.atomic():
         locked_change = ChangeRequest.objects.select_for_update().get(pk=change.pk)
-        if locked_change.status != "in_progress":
-            raise ValidationError("Only in-progress changes can be completed.")
+        if locked_change.status not in ("in_progress", "validation"):
+            raise ValidationError(
+                "Only in-progress or validating changes can be completed."
+            )
+
+        if _latest_validation_outcome(locked_change) == "validation_failed":
+            raise ValidationError("Validation has failed; cannot complete this change.")
 
         if validation_passed is False:
             locked_change.status = "validation"
@@ -745,6 +765,13 @@ def complete_implementation(change, user, validation_passed=True, notes=""):
                 detail="Implementation validation failed.",
             )
         else:
+            if locked_change.status == "validation":
+                ChangeHistory.objects.create(
+                    change=locked_change,
+                    actor=user,
+                    event_type="validation_passed",
+                    detail="Validation passed.",
+                )
             locked_change.status = "completed"
             locked_change.actual_end = timezone.now()
             locked_change.implementation_notes = notes
@@ -775,7 +802,7 @@ def complete_implementation(change, user, validation_passed=True, notes=""):
 
 
 def fail_implementation(change, user, failure_reason):
-    """Mark an implementation as failed."""
+    """Mark an in-progress or validating implementation as failed."""
     if not failure_reason:
         raise ValidationError(
             "A failure reason is required to mark an implementation as failed."
@@ -783,8 +810,10 @@ def fail_implementation(change, user, failure_reason):
 
     with transaction.atomic():
         locked_change = ChangeRequest.objects.select_for_update().get(pk=change.pk)
-        if locked_change.status != "in_progress":
-            raise ValidationError("Only in-progress changes can fail.")
+        if locked_change.status not in ("in_progress", "validation"):
+            raise ValidationError(
+                "Only in-progress or validating changes can fail."
+            )
 
         locked_change.status = "failed"
         locked_change.failure_reason = failure_reason
@@ -907,19 +936,75 @@ def request_pir(change, user):
     return change
 
 
+def complete_pir(pir, user):
+    """Complete a post-implementation review.
+
+    Completion is a controlled lifecycle transition: callers cannot write
+    ``status`` through the general PIR serializer. A review must have a valid
+    recorded outcome and must not already be completed or waived.
+    """
+    with transaction.atomic():
+        locked_pir = PostImplementationReview.objects.select_for_update().get(pk=pir.pk)
+        if locked_pir.status == "completed":
+            raise ValidationError("This PIR has already been completed.")
+        if locked_pir.status == "waived":
+            raise ValidationError("A waived PIR cannot be completed.")
+        if locked_pir.status not in ("pending", "scheduled", "in_progress"):
+            raise ValidationError("Only an active PIR can be completed.")
+
+        valid_outcomes = dict(PostImplementationReview.PIR_OUTCOME_CHOICES)
+        if not locked_pir.outcome:
+            raise ValidationError("A review outcome is required to complete a PIR.")
+        if locked_pir.outcome not in valid_outcomes:
+            raise ValidationError("Invalid review outcome.")
+
+        locked_pir.status = "completed"
+        locked_pir.completed_at = timezone.now()
+        locked_pir.reviewed_by = user
+        locked_pir.save(
+            update_fields=["status", "completed_at", "reviewed_by", "updated_at"]
+        )
+
+        ChangeHistory.objects.create(
+            change=locked_pir.change,
+            actor=user,
+            event_type="pir_completed",
+            detail=f"Post-implementation review completed by {user.employee_id}.",
+        )
+        log_action(
+            actor=user,
+            action="update",
+            instance=locked_pir,
+            reason="PIR completed",
+            details={
+                "change_number": locked_pir.change.change_number,
+                "outcome": locked_pir.outcome,
+            },
+        )
+
+    pir.status = locked_pir.status
+    pir.completed_at = locked_pir.completed_at
+    pir.reviewed_by = locked_pir.reviewed_by
+    pir.reviewed_by_id = locked_pir.reviewed_by_id
+    pir.version = locked_pir.version
+    pir.updated_at = locked_pir.updated_at
+    return pir
+
+
 def close_change(change, user, closure_summary):
     """Close a change.
 
-    Requires completed/failed/rolled_back status and (where mandatory) a
-    completed PIR.
+    Requires completed/pir_required/failed/rolled_back status and (where
+    mandatory) a completed PIR.
     """
-    if change.status not in ("completed", "failed", "rolled_back"):
+    if change.status not in ("completed", "pir_required", "failed", "rolled_back"):
         raise ValidationError("Only terminal changes can be closed.")
 
-    # Mandatory PIR for high/critical/failed/rolled-back.
-    mandatory = change.risk_level in ("high", "critical") or change.status in (
-        "failed", "rolled_back"
-    )
+    # A requested PIR is mandatory once requested, as are PIRs for
+    # high/critical-risk, failed and rolled-back changes.
+    mandatory = change.status == "pir_required" or change.risk_level in (
+        "high", "critical"
+    ) or change.status in ("failed", "rolled_back")
     if mandatory:
         try:
             pir = change.pir

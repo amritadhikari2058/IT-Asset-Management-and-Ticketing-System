@@ -54,11 +54,11 @@ const ACTIONS = {
   },
   complete: {
     label: 'Complete',
-    statuses: ['in_progress'],
+    statuses: ['in_progress', 'validation'],
   },
   fail: {
     label: 'Fail Implementation',
-    statuses: ['in_progress'],
+    statuses: ['in_progress', 'validation'],
   },
   start_rollback: {
     label: 'Start Rollback',
