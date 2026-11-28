@@ -9,7 +9,7 @@ registered in urls.py.
 from django.test import TestCase
 from django.contrib.auth import get_user_model
 from django.utils import timezone
-from rest_framework.test import APIRequestFactory
+from rest_framework.test import APIRequestFactory, APIClient
 from rest_framework import status
 
 from monitoring.models import MonitoringSource
@@ -526,3 +526,112 @@ class SourceWriteSerializerEdgeCaseTestCase(TestCase):
         self.assertFalse(update_serializer.is_valid())
         errors_str = str(update_serializer.errors)
         self.assertNotIn(plaintext, errors_str)
+
+
+class MonitoringSourceRouteAuthorizationTestCase(TestCase):
+    """Verify source authorization through routed, session-authenticated APIs."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.source = MonitoringSource.objects.create(
+            name="Authorization Test Source",
+            code="authorization-test-source",
+            source_type=MonitoringSource.SourceType.GENERIC_WEBHOOK,
+            authentication_type=MonitoringSource.AuthenticationType.HMAC_SHA256,
+            secret_hash="a" * 64,
+            status=MonitoringSource.Status.ACTIVE,
+            is_active=True,
+        )
+        self.list_url = "/api/monitoring/sources/"
+        self.detail_url = f"{self.list_url}{self.source.pk}/"
+
+    def login_as(self, role, is_active=True, is_deleted=False):
+        user = make_user(
+            role=role,
+            is_active=is_active,
+            email_suffix=f"{role}.source-route.test",
+        )
+        if is_deleted:
+            user.is_deleted = True
+            user.save(update_fields=["is_deleted"])
+        self.client.force_login(user)
+        return user
+
+    def test_non_admin_roles_are_denied_all_source_operations(self):
+        operations = [
+            ("get", self.list_url, None),
+            ("get", self.detail_url, None),
+            ("post", self.list_url, dict(VALID_PAYLOAD, code="unauthorized-new-source")),
+            ("patch", self.detail_url, {"description": "Unauthorized update"}),
+            ("post", f"{self.detail_url}rotate-secret/", {}),
+            ("post", f"{self.detail_url}disable/", {}),
+            ("post", f"{self.detail_url}enable/", {}),
+            ("post", f"{self.detail_url}test/", {}),
+        ]
+
+        for role in ("it_manager", "it_support", "employee"):
+            with self.subTest(role=role):
+                self.client.logout()
+                self.login_as(role)
+
+                for method, url, data in operations:
+                    with self.subTest(method=method, url=url):
+                        if method == "get":
+                            response = self.client.get(url)
+                        else:
+                            response = getattr(self.client, method)(
+                                url, data=data, format="json"
+                            )
+                        self.assertEqual(
+                            response.status_code,
+                            403,
+                            f"{role} unexpectedly accessed {method.upper()} {url}: "
+                            f"{response.status_code} {response.data}",
+                        )
+
+    def test_active_system_admin_can_use_source_operations(self):
+        self.login_as("system_admin")
+
+        self.assertEqual(self.client.get(self.list_url).status_code, 200)
+        self.assertEqual(self.client.get(self.detail_url).status_code, 200)
+
+        response = self.client.post(
+            self.list_url,
+            data=dict(VALID_PAYLOAD, code="authorized-new-source"),
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(response.data.get("secret"))
+
+        response = self.client.patch(
+            self.detail_url,
+            data={"description": "Updated by administrator"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+        for action in ("test", "disable", "enable", "rotate-secret"):
+            response = self.client.post(
+                f"{self.detail_url}{action}/", data={}, format="json"
+            )
+            self.assertEqual(
+                response.status_code,
+                200,
+                f"{action}: {response.status_code} {response.data}",
+            )
+            if action == "rotate-secret":
+                self.assertTrue(response.data.get("secret"))
+
+    def test_inactive_system_admin_is_denied(self):
+        self.login_as("system_admin", is_active=False)
+        response = self.client.get(self.list_url)
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_soft_deleted_system_admin_is_denied(self):
+        self.login_as("system_admin", is_deleted=True)
+        response = self.client.get(self.list_url)
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_anonymous_user_is_denied(self):
+        response = self.client.get(self.list_url)
+        self.assertIn(response.status_code, (401, 403))

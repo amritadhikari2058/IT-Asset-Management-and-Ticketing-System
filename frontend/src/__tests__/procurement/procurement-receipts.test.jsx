@@ -183,6 +183,8 @@ describe('Goods receipt form', () => {
       delivery_note_number: 'DN-9',
       invoice_number: '',
       notes: '',
+    }, {
+      headers: { 'Idempotency-Key': expect.any(String) },
     }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
       '/procurement/goods-receipt-items/',
@@ -197,6 +199,72 @@ describe('Goods receipt form', () => {
     ));
   });
 
+  it('reuses the receipt idempotency key after an uncertain header network failure', async () => {
+    const input = await openReceiptForm();
+    fireEvent.change(input, { target: { value: '2' } });
+
+    mockPost.mockRejectedValueOnce(new Error('Network Error'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review and record receipt' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Record receipt' }));
+
+    expect(await screen.findByText('Request failed: Network Error')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review and record receipt' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Record receipt' }));
+
+    await waitFor(() => {
+      const headerCalls = mockPost.mock.calls.filter(
+        ([url]) => url === '/procurement/goods-receipts/',
+      );
+
+      expect(headerCalls).toHaveLength(2);
+
+      const firstKey = headerCalls[0][2]?.headers?.['Idempotency-Key'];
+      const secondKey = headerCalls[1][2]?.headers?.['Idempotency-Key'];
+
+      expect(firstKey).toEqual(expect.any(String));
+      expect(firstKey.length).toBeGreaterThan(0);
+      expect(secondKey).toBe(firstKey);
+    });
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith(
+        '/procurement/goods-receipt-items/',
+        expect.objectContaining({
+          goods_receipt: 12,
+          purchase_order_item: 21,
+        }),
+      );
+    });
+  });
+
+  it('prevents resubmission when the receipt header exists but a line booking fails', async () => {
+    const input = await openReceiptForm();
+    fireEvent.change(input, { target: { value: '2' } });
+
+    mockPost
+      .mockResolvedValueOnce({ data: { id: 12, gr_number: 'GR-2026-00012' } })
+      .mockRejectedValueOnce({ response: { status: 409, data: {} } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review and record receipt' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Record receipt' }));
+
+    expect(await screen.findByRole('heading', {
+      name: 'Receipt created — review required',
+    })).toBeTruthy();
+
+    expect(screen.getByRole('link', { name: 'View receipt' }).getAttribute('href'))
+      .toBe('#/procurement/receipts/12');
+
+    expect(screen.queryByRole('button', { name: 'Record another receipt' })).toBeNull();
+
+    expect(screen.getByRole('button', {
+      name: 'Review and record receipt',
+    }).disabled).toBe(true);
+
+    expect(mockPost).toHaveBeenCalledTimes(2);
+  });
   it('records a partial receipt with a rejected quantity and notes', async () => {
     const input = await openReceiptForm();
     fireEvent.change(input, { target: { value: '2' } });

@@ -4,6 +4,7 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from accounts.models import User
+from common.models import AuditLog
 from problem_management.models import (
     Problem, ProblemHistory, ProblemTask, ProblemTimelineEvent,
     RootCauseAnalysis, RootCauseWhy, RootCauseFactor,
@@ -286,6 +287,26 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
 
     # --- Actions ---
 
+    def action_at(self, status="planned", **fields):
+        payload = {"title": "Action"}
+        payload.update(fields)
+        action = services.create_problem_action(
+            actor=self.support, problem=self.problem, **payload)
+        if status != "planned":
+            action.status = status
+            action.save(update_fields=["status"])
+            action.refresh_from_db()
+        return action
+
+    def action_audit_count(self, action, event=None):
+        qs = AuditLog.objects.filter(
+            entity_type="problem_management.problemaction",
+            object_id=str(action.pk),
+        )
+        if event:
+            qs = qs.filter(action=event)
+        return qs.count()
+
     def test_create_problem_action(self):
         action = services.create_problem_action(
             actor=self.support, problem=self.problem, title="Action",
@@ -293,67 +314,227 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
         )
         self.assertEqual(action.problem_id, self.problem.pk)
         self.assertEqual(action.title, "Action")
+        self.assertEqual(action.status, "planned")
+        self.assertEqual(action.version, 1)
         self.assertTrue(ProblemHistory.objects.filter(
             problem=self.problem, event_type="action_created").exists())
 
     def test_approve_problem_action(self):
-        action = services.create_problem_action(
-            actor=self.support, problem=self.problem, title="Action",
-        )
+        action = self.action_at()
+        history_before = ProblemHistory.objects.filter(problem=self.problem).count()
+        audit_before = self.action_audit_count(action)
+
         approved = services.approve_problem_action(actor=self.manager, action=action)
-        self.assertEqual(approved.status, "planned")
+        self.assertEqual(approved.status, "approved")
+        approved.refresh_from_db()
+        self.assertEqual(approved.status, "approved")
+        self.assertEqual(approved.version, 2)
+
+        history = ProblemHistory.objects.get(
+            problem=self.problem, event_type="action_approved")
+        self.assertEqual(history.previous_status, "planned")
+        self.assertEqual(history.new_status, "approved")
+        self.assertIn("planned -> approved", history.detail)
+        self.assertEqual(history.changed_fields, ["status"])
+
+        audit = AuditLog.objects.get(
+            entity_type="problem_management.problemaction",
+            object_id=str(action.pk), action="problem_action_approved")
+        self.assertIn("planned -> approved", audit.reason)
+        self.assertEqual(
+            ProblemHistory.objects.filter(problem=self.problem).count(),
+            history_before + 1)
+        self.assertEqual(self.action_audit_count(action), audit_before + 1)
+
+        with self.assertRaises(ValidationError) as exc:
+            services.approve_problem_action(actor=self.manager, action=approved)
+        self.assertIn("action", exc.exception.detail)
+        self.assertEqual(
+            ProblemHistory.objects.filter(
+                problem=self.problem, event_type="action_approved").count(), 1)
+        self.assertEqual(
+            self.action_audit_count(action, "problem_action_approved"), 1)
 
     def test_start_problem_action(self):
-        action = services.create_problem_action(
-            actor=self.support, problem=self.problem, title="Action",
-        )
+        action = self.action_at()
+        services.approve_problem_action(actor=self.manager, action=action)
         started = services.start_problem_action(actor=self.support, action=action)
+        self.assertEqual(started.status, "in_progress")
+        self.assertEqual(started.version, 3)
+        started.refresh_from_db()
+        self.assertEqual(started.status, "in_progress")
+        self.assertEqual(started.version, 3)
 
     def test_complete_problem_action(self):
-        action = services.create_problem_action(
-            actor=self.support, problem=self.problem, title="Action",
-        )
+        action = self.action_at()
+        services.start_problem_action(actor=self.support, action=action)
         completed = services.complete_problem_action(actor=self.support, action=action)
         self.assertEqual(completed.status, "completed")
+        self.assertEqual(completed.version, 3)
+        self.assertIsNotNone(completed.completed_at)
+        completed.refresh_from_db()
+        self.assertEqual(completed.status, "completed")
+        self.assertEqual(completed.version, 3)
         self.assertTrue(ProblemHistory.objects.filter(
             problem=self.problem, event_type="action_completed").exists())
 
     def test_validate_problem_action(self):
-        action = services.create_problem_action(
-            actor=self.support, problem=self.problem, title="Action",
-        )
+        action = self.action_at()
+        services.start_problem_action(actor=self.support, action=action)
+        services.complete_problem_action(actor=self.support, action=action)
+        completed_at = action.completed_at
+
         validated = services.validate_problem_action(actor=self.support, action=action)
         self.assertEqual(validated.status, "verified")
+        self.assertEqual(validated.version, 4)
+        self.assertEqual(validated.verified_by_id, self.support.pk)
+        self.assertIsNotNone(validated.verified_at)
+        self.assertEqual(validated.completed_at, completed_at)
+        self.assertEqual(validated.validation_status, "")
+
+        validated.refresh_from_db()
+        self.assertEqual(validated.status, "verified")
+        self.assertEqual(validated.version, 4)
+        self.assertEqual(validated.verified_by_id, self.support.pk)
+        self.assertIsNotNone(validated.verified_at)
+        self.assertEqual(validated.completed_at, completed_at)
+
+        history = ProblemHistory.objects.get(
+            problem=self.problem, event_type="action_validated")
+        self.assertEqual(history.previous_status, "completed")
+        self.assertEqual(history.new_status, "verified")
+        self.assertEqual(
+            history.changed_fields, ["status", "verified_by", "verified_at"])
 
     def test_mark_problem_action_ineffective(self):
-        action = services.create_problem_action(
-            actor=self.support, problem=self.problem, title="Action",
-        )
-        ineffective = services.mark_problem_action_ineffective(actor=self.support, action=action)
+        action = self.action_at()
+        services.start_problem_action(actor=self.support, action=action)
+        services.complete_problem_action(actor=self.support, action=action)
+        ineffective = services.mark_problem_action_ineffective(
+            actor=self.support, action=action, reason="Not effective")
         self.assertEqual(ineffective.status, "ineffective")
+        self.assertEqual(ineffective.version, 4)
+        self.assertIsNone(ineffective.verified_by_id)
+        self.assertIsNone(ineffective.verified_at)
+        ineffective.refresh_from_db()
+        self.assertEqual(ineffective.status, "ineffective")
+        self.assertEqual(ineffective.version, 4)
 
     def test_cancel_problem_action(self):
-        action = services.create_problem_action(
-            actor=self.support, problem=self.problem, title="Action",
-        )
-        cancelled = services.cancel_problem_action(actor=self.support, action=action)
+        action = self.action_at()
+        cancelled = services.cancel_problem_action(
+            actor=self.support, action=action, reason="No longer needed")
         self.assertEqual(cancelled.status, "cancelled")
+        self.assertEqual(cancelled.version, 2)
+        self.assertIsNone(cancelled.verified_by_id)
+        self.assertIsNone(cancelled.verified_at)
+        cancelled.refresh_from_db()
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertEqual(cancelled.version, 2)
+
+    def test_validate_action_allows_advanced_version(self):
+        action = self.action_at()
+        services.start_problem_action(actor=self.support, action=action)
+        services.complete_problem_action(actor=self.support, action=action)
+        self.assertGreater(action.version, 1)
+        validated = services.validate_problem_action(actor=self.support, action=action)
+        self.assertEqual(validated.status, "verified")
+        self.assertEqual(validated.version, 4)
+
+    def test_action_invalid_source_statuses_rejected(self):
+        cases = (
+            ("in_progress", services.approve_problem_action, self.manager, "approved"),
+            ("completed", services.start_problem_action, self.support, "started"),
+            ("planned", services.complete_problem_action, self.support, "completed"),
+            ("in_progress", services.validate_problem_action, self.support, "verified"),
+            ("planned", services.mark_problem_action_ineffective,
+             self.support, "marked ineffective"),
+        )
+        for status, transition, actor, label in cases:
+            with self.subTest(status=status, transition=transition.__name__):
+                action = self.action_at(status=status)
+                version_before = action.version
+                history_before = ProblemHistory.objects.filter(problem=self.problem).count()
+                audit_before = self.action_audit_count(action)
+                with self.assertRaises(ValidationError) as exc:
+                    transition(actor=actor, action=action)
+                self.assertIn("action", exc.exception.detail)
+                action.refresh_from_db()
+                self.assertEqual(action.version, version_before)
+                self.assertEqual(
+                    ProblemHistory.objects.filter(problem=self.problem).count(),
+                    history_before)
+                self.assertEqual(self.action_audit_count(action), audit_before)
+
+    def test_action_terminal_statuses_reject_all_transitions(self):
+        transitions = (
+            ("approve", services.approve_problem_action, self.manager),
+            ("start", services.start_problem_action, self.support),
+            ("complete", services.complete_problem_action, self.support),
+            ("validate", services.validate_problem_action, self.support),
+            ("ineffective", services.mark_problem_action_ineffective, self.support),
+            ("cancel", services.cancel_problem_action, self.support),
+        )
+        for terminal in ("verified", "ineffective", "cancelled", "closed"):
+            for name, transition, actor in transitions:
+                with self.subTest(terminal=terminal, transition=name):
+                    action = self.action_at(status=terminal)
+                    version_before = action.version
+                    history_before = ProblemHistory.objects.filter(problem=self.problem).count()
+                    audit_before = self.action_audit_count(action)
+                    with self.assertRaises(ValidationError) as exc:
+                        transition(actor=actor, action=action)
+                    self.assertIn("action", exc.exception.detail)
+                    action.refresh_from_db()
+                    self.assertEqual(action.version, version_before)
+                    self.assertEqual(
+                        ProblemHistory.objects.filter(problem=self.problem).count(),
+                        history_before)
+                    self.assertEqual(self.action_audit_count(action), audit_before)
 
     def test_separation_of_duties_action_approval(self):
-        action = services.create_problem_action(
-            actor=self.support, problem=self.problem, title="Action",
-        )
+        action = self.action_at()
         with self.assertRaises(PermissionDenied):
             services.approve_problem_action(actor=self.support, action=action)
+        self.assertEqual(self.action_audit_count(action, "problem_action_approved"), 0)
 
-    def test_action_stale_version(self):
-        action = services.create_problem_action(
-            actor=self.support, problem=self.problem, title="Action",
+    def test_superuser_employee_cannot_transition_actions_via_services(self):
+        superuser = _user("employee", 91)
+        superuser.is_superuser = True
+        superuser.save(update_fields=["is_superuser"])
+        self.assertTrue(superuser.is_authenticated)
+        self.assertTrue(superuser.is_active)
+        self.assertTrue(superuser.is_superuser)
+        self.assertEqual(superuser.role, "employee")
+
+        cases = (
+            ("approve", services.approve_problem_action,
+             "Manager or System Admin role required."),
+            ("start", services.start_problem_action,
+             "Problem Management access denied."),
+            ("cancel", services.cancel_problem_action,
+             "Problem Management access denied."),
         )
-        action.version = 999
-        action.save()
-        with self.assertRaises(Exception):
-            services.validate_problem_action(actor=self.support, action=action)
+        for name, transition, expected_detail in cases:
+            with self.subTest(transition=name):
+                action = self.action_at()
+                version_before = action.version
+                history_before = ProblemHistory.objects.filter(
+                    problem=self.problem).count()
+                audit_before = self.action_audit_count(action)
+                kwargs = {"reason": "Superuser denial check"} if name == "cancel" else {}
+
+                with self.assertRaises(PermissionDenied) as caught:
+                    transition(actor=superuser, action=action, **kwargs)
+                self.assertEqual(str(caught.exception.detail), expected_detail)
+
+                action.refresh_from_db()
+                self.assertEqual(action.status, "planned")
+                self.assertEqual(action.version, version_before)
+                self.assertEqual(
+                    ProblemHistory.objects.filter(problem=self.problem).count(),
+                    history_before)
+                self.assertEqual(self.action_audit_count(action), audit_before)
 
     # --- Workarounds ---
 
@@ -405,6 +586,8 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
             validation_type="functional",
         )
         self.assertEqual(val.title, "Validation")
+        self.assertEqual(val.status, "draft")
+        self.assertEqual(val.version, 1)
         self.assertFalse(val.passed)
 
     def test_start_problem_validation(self):
@@ -412,12 +595,30 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
             actor=self.support, problem=self.problem, title="Validation",
         )
         started = services.start_problem_validation(actor=self.support, validation=val)
+        self.assertEqual(started.status, "in_progress")
+        self.assertEqual(started.version, 2)
 
     def test_pass_problem_validation(self):
         val = services.create_problem_validation(
             actor=self.support, problem=self.problem, title="Validation",
         )
         passed = services.pass_problem_validation(actor=self.support, validation=val)
+        self.assertEqual(passed.status, "verified")
+        self.assertTrue(passed.passed)
+        self.assertEqual(passed.version, 2)
+
+    def test_validation_start_then_pass(self):
+        val = services.create_problem_validation(
+            actor=self.support, problem=self.problem, title="Validation",
+        )
+        started = services.start_problem_validation(actor=self.support, validation=val)
+        self.assertEqual(started.version, 2)
+        passed = services.pass_problem_validation(actor=self.support, validation=val)
+        self.assertEqual(passed.status, "verified")
+        self.assertTrue(passed.passed)
+        self.assertEqual(passed.version, 3)
+        passed.refresh_from_db()
+        self.assertEqual(passed.version, 3)
         self.assertTrue(passed.passed)
 
     def test_fail_problem_validation(self):
@@ -425,7 +626,9 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
             actor=self.support, problem=self.problem, title="Validation",
         )
         failed = services.fail_problem_validation(actor=self.support, validation=val)
+        self.assertEqual(failed.status, "failed")
         self.assertFalse(failed.passed)
+        self.assertEqual(failed.version, 2)
 
     def test_mark_problem_validation_inconclusive(self):
         val = services.create_problem_validation(
@@ -434,6 +637,8 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
         inconclusive = services.mark_problem_validation_inconclusive(
             actor=self.support, validation=val)
         self.assertEqual(inconclusive.status, "inconclusive")
+        self.assertFalse(inconclusive.passed)
+        self.assertEqual(inconclusive.version, 2)
 
     def test_cancel_problem_validation(self):
         val = services.create_problem_validation(
@@ -441,6 +646,8 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
         )
         cancelled = services.cancel_problem_validation(actor=self.support, validation=val)
         self.assertEqual(cancelled.status, "cancelled")
+        self.assertFalse(cancelled.passed)
+        self.assertEqual(cancelled.version, 2)
 
     def test_validation_date_chronology(self):
         val1 = services.create_problem_validation(
@@ -460,15 +667,56 @@ class Gate2ServiceWorkflowTests(TransactionTestCase):
         # Different validator can pass/fail
         passed = services.pass_problem_validation(
             actor=self.manager, validation=val)
+        self.assertTrue(passed.passed)
 
-    def test_validation_stale_version(self):
+    def test_validation_start_rejects_in_progress(self):
         val = services.create_problem_validation(
             actor=self.support, problem=self.problem, title="Validation",
         )
-        val.version = 999
-        val.save()
-        with self.assertRaises(Exception):
-            services.pass_problem_validation(actor=self.support, validation=val)
+        started = services.start_problem_validation(actor=self.support, validation=val)
+        with self.assertRaises(ValidationError) as exc:
+            services.start_problem_validation(actor=self.support, validation=started)
+        self.assertIn("validation", exc.exception.detail)
+
+    def test_validation_terminal_statuses_reject_all_transitions(self):
+        transitions = (
+            services.start_problem_validation,
+            services.pass_problem_validation,
+            services.fail_problem_validation,
+            services.mark_problem_validation_inconclusive,
+            services.cancel_problem_validation,
+        )
+        enter_terminal = (
+            services.pass_problem_validation,
+            services.fail_problem_validation,
+            services.mark_problem_validation_inconclusive,
+            services.cancel_problem_validation,
+        )
+        for enter in enter_terminal:
+            val = services.create_problem_validation(
+                actor=self.support, problem=self.problem, title="Validation",
+            )
+            terminal = enter(actor=self.support, validation=val)
+            for transition in transitions:
+                with self.subTest(status=terminal.status, transition=transition.__name__):
+                    with self.assertRaises(ValidationError):
+                        transition(actor=self.support, validation=terminal)
+
+    def test_validation_inconclusive_and_cancel_clear_passed(self):
+        for transition, expected_status in (
+            (services.mark_problem_validation_inconclusive, "inconclusive"),
+            (services.cancel_problem_validation, "cancelled"),
+        ):
+            val = services.create_problem_validation(
+                actor=self.support, problem=self.problem, title="Validation",
+            )
+            val.passed = True
+            val.save(update_fields=["passed"])
+            result = transition(actor=self.support, validation=val)
+            self.assertEqual(result.status, expected_status)
+            self.assertFalse(result.passed)
+            result.refresh_from_db()
+            self.assertFalse(result.passed)
 
     # --- Exceptions ---
 

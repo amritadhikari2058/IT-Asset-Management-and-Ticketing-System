@@ -243,10 +243,10 @@ describe('Action lifecycle', () => {
   test.each([
     ['approveAction', 'approve'], ['startAction', 'start'], ['completeAction', 'complete'],
     ['validateAction', 'validate'], ['markActionIneffective', 'ineffective'], ['cancelAction', 'cancel'],
-  ])('%s posts to /actions/<id>/%s/', async (fnName, slug) => {
-    const sent = await call(services[fnName], 4);
+  ])('%s posts to /actions/<id>/%s/ with the version token', async (fnName, slug) => {
+    const sent = await call(services[fnName], 4, { expected_record_version: 7 });
     expect(sent).toMatchObject({ method: 'post', url: `/actions/4/${slug}/` });
-    expect(sent.body).toEqual({});
+    expect(sent.body).toEqual({ expected_record_version: 7 });
   });
 });
 
@@ -270,6 +270,18 @@ describe('Workaround, validation and exception transitions', () => {
   ])('%s posts to /%s/<id>/%s/', async (fnName, resource, slug) => {
     const sent = await call(services[fnName], 6);
     expect(sent).toMatchObject({ method: 'post', url: `/${resource}/6/${slug}/` });
+  });
+
+  test.each([
+    ['startValidation', 'start'],
+    ['passValidation', 'pass'],
+    ['failValidation', 'fail'],
+    ['markValidationInconclusive', 'inconclusive'],
+    ['cancelValidation', 'cancel'],
+  ])('%s carries expected_record_version', async (fnName, slug) => {
+    const sent = await call(services[fnName], 6, { expected_record_version: 4 });
+    expect(sent).toMatchObject({ method: 'post', url: `/validations/6/${slug}/` });
+    expect(sent.body).toEqual({ expected_record_version: 4 });
   });
 
   test('validation creation sends test_plan, not validation_status', async () => {

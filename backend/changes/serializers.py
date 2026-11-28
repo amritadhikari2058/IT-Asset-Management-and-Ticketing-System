@@ -46,6 +46,17 @@ except Exception:  # pragma: no cover - accounts app may shape serializers diffe
 class ChangeRequestSerializer(serializers.ModelSerializer):
     """Full change request serializer (detail)."""
 
+    stakeholders = serializers.SerializerMethodField()
+    communications = serializers.SerializerMethodField()
+
+    def get_stakeholders(self, obj):
+        queryset = obj.stakeholders.select_related("user", "department", "added_by")
+        return ChangeStakeholderSerializer(queryset, many=True).data
+
+    def get_communications(self, obj):
+        queryset = obj.communications.select_related("sent_by")
+        return ChangeCommunicationSerializer(queryset, many=True).data
+
     requester_email = serializers.CharField(source="requester.email", read_only=True)
     change_owner_email = serializers.CharField(source="change_owner.email", read_only=True)
     implementation_lead_email = serializers.CharField(
@@ -74,6 +85,7 @@ class ChangeRequestSerializer(serializers.ModelSerializer):
             "current_approver", "current_approver_email", "submitted_at",
             "approved_at", "scheduled_at", "completed_at", "closed_at",
             "cancelled_at", "version", "created_at", "updated_at",
+            "stakeholders", "communications",
         ]
         read_only_fields = [
             "id", "change_number", "requester", "change_owner",
@@ -383,18 +395,30 @@ class ChangeAttachmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChangeAttachment
         fields = [
-            "id", "task", "task_title", "document_type", "uploaded_by",
+            "id", "change", "task", "task_title", "document_type", "uploaded_by",
             "uploaded_by_email", "original_filename", "file",
             "content_type", "size", "checksum", "description", "status",
             "created_at",
         ]
         read_only_fields = [
-            "id", "uploaded_by", "size", "checksum", "created_at",
+            "id", "uploaded_by", "original_filename", "content_type",
+            "size", "checksum", "created_at",
         ]
 
     def validate_file(self, f):
         from tickets.serializers import validate_attachment_file
         return validate_attachment_file(f)
+
+    def validate(self, attrs):
+        change = attrs.get("change", getattr(self.instance, "change", None))
+        task = attrs.get("task", getattr(self.instance, "task", None))
+
+        if task and change and task.change_id != change.pk:
+            raise serializers.ValidationError({
+                "task": "The selected task does not belong to this change."
+            })
+
+        return attrs
 
 
 class ChangeStakeholderSerializer(serializers.ModelSerializer):
@@ -406,7 +430,7 @@ class ChangeStakeholderSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChangeStakeholder
         fields = [
-            "id", "user", "user_email", "department", "department_name",
+            "id", "change", "user", "user_email", "department", "department_name",
             "stakeholder_type", "notification_level", "added_by",
             "created_at", "updated_at",
         ]
@@ -421,7 +445,7 @@ class ChangeCommunicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChangeCommunication
         fields = [
-            "id", "communication_type", "audience", "subject", "message",
+            "id", "change", "communication_type", "audience", "subject", "message",
             "scheduled_for", "sent_at", "sent_by", "sent_by_email",
             "status", "failure_summary", "created_at", "updated_at",
         ]

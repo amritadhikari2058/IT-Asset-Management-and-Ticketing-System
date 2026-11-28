@@ -344,7 +344,7 @@ class SupplierInvoiceLineCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = SupplierInvoiceLine
         fields = [
-            "invoice", "purchase_order_item", "goods_receipt_item", "description",
+            "id", "invoice", "purchase_order_item", "goods_receipt_item", "description",
             "invoiced_quantity", "unit_price", "discount_amount", "tax_rate", "tax_amount",
             "freight_allocation", "other_charge_allocation",
         ]

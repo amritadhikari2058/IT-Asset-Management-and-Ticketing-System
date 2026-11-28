@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAuth } from '../../auth';
-import { Badge, Button, DataTable, Field, Input, LoadingRows, Option, PageHeader, Panel, PanelPad, Select } from '../../components';
+import {
+  Badge, Button, ConfirmDialog, DataTable, Field, Input, LoadingRows, Option,
+  PageHeader, Panel, PanelPad, Select, Textarea,
+} from '../../components';
 import {
   approveAction, cancelAction, completeAction, createAction, editAction,
   listActions, listRCAs, markActionIneffective, startAction, validateAction,
@@ -19,9 +22,47 @@ const EMPTY = {
   title: '', description: '', action_type: 'corrective', due_at: '',
   root_cause_analysis: '',
 };
-const LOCKED_ACTION_STATUSES = ['verified', 'closed'];
+const LOCKED_ACTION_STATUSES = ['verified', 'ineffective', 'cancelled', 'closed'];
+const CANCELABLE_ACTION_STATUSES = ['planned', 'approved', 'in_progress', 'completed'];
 
-export function Actions({ problemId: problemIdProp }) {
+const EMPTY_REASON = { action: null, record: null, value: '', error: '' };
+
+const REASON_SERVICES = {
+  cancel: cancelAction,
+  ineffective: markActionIneffective,
+};
+
+const REASON_CONFIG = {
+  cancel: {
+    title: 'Cancel action',
+    message: 'A reason is required to cancel this action. It will be recorded in the action history and audit log.',
+    field: 'Cancellation reason',
+    confirm: 'Confirm cancellation',
+    moveLabel: 'Cancel',
+    missing: 'A cancellation reason is required.',
+  },
+  ineffective: {
+    title: 'Mark action ineffective',
+    message: 'This action is being marked ineffective. A reason is required and will be recorded in the action history and audit log.',
+    field: 'Ineffectiveness reason',
+    confirm: 'Confirm ineffective',
+    moveLabel: 'Mark ineffective',
+    missing: 'An ineffectiveness reason is required.',
+  },
+};
+
+const formatServiceError = (error, fallback) => {
+  const data = error?.response?.data;
+  if (!data) return fallback;
+  if (typeof data === 'string') return data;
+  if (data.detail) return String(data.detail);
+  const fields = Object.entries(data)
+    .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(' ') : value}`)
+    .filter((part) => !part.endsWith(': '));
+  return fields.join(' ') || fallback;
+};
+
+export function Actions({ problemId: problemIdProp, embedded = false }) {
   const params = useParams();
   const problemId = problemIdProp ?? params.id;
   const { isStaff, isManagerOrAdmin } = useAuth();
@@ -32,10 +73,13 @@ export function Actions({ problemId: problemIdProp }) {
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const savingRef = useRef(false);
+  const busyRef = useRef(null);
   const [rcas, setRcas] = useState([]);
   const [rcasLoading, setRcasLoading] = useState(true);
   const [rcaError, setRcaError] = useState('');
   const [rcaDrafts, setRcaDrafts] = useState({});
+  const [reasonDraft, setReasonDraft] = useState(EMPTY_REASON);
   const rcaById = new Map(rcas.map((rca) => [Number(rca.id), rca]));
 
   const load = useCallback(async () => {
@@ -43,9 +87,11 @@ export function Actions({ problemId: problemIdProp }) {
     setRcasLoading(true);
     setError('');
     setRcaError('');
+    let actionRows = [];
     try {
       const data = await listActions(problemId);
-      setRows(Array.isArray(data) ? data : data?.results ?? []);
+      actionRows = Array.isArray(data) ? data : data?.results ?? [];
+      setRows(actionRows);
     } catch {
       setError('Could not load actions.');
     }
@@ -59,13 +105,15 @@ export function Actions({ problemId: problemIdProp }) {
       setLoading(false);
       setRcasLoading(false);
     }
+    return actionRows;
   }, [problemId]);
 
   useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
   const submit = async (ev) => {
     ev.preventDefault();
-    if (!form.title.trim() || saving) return;
+    if (!form.title.trim() || savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     setError('');
     try {
@@ -83,29 +131,82 @@ export function Actions({ problemId: problemIdProp }) {
     } catch (e) {
       setError(e?.response?.data?.detail || 'Could not create action.');
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
   // Every lifecycle move goes through its dedicated backend transition.
-  const move = async (action, fn, label) => {
-    if (busyId) return;
+  const move = async (action, fn, label, extra = {}, onSuccess) => {
+    if (busyRef.current != null) return false;
+    busyRef.current = action.id;
     setBusyId(action.id);
     setError('');
     setNotice('');
+    let succeeded = false;
     try {
-      await fn(action.id);
+      const updated = await fn(action.id, {
+        expected_record_version: action.version,
+        ...extra,
+      });
+      if (updated && typeof updated === 'object') {
+        setRows((prev) => prev.map((row) => (
+          row.id === action.id ? { ...row, ...updated } : row
+        )));
+      }
       setNotice(`${label} succeeded.`);
       await load();
+      succeeded = true;
     } catch (e) {
-      const status = e?.response?.status;
-      const detail = e?.response?.data?.detail;
-      setError(detail || (status === 409
-        ? 'This action changed on the server. Reload and try again.'
-        : `${label} failed.`));
+      const status = e?.response?.status ?? e?.status;
+      if (status === 409) {
+        const refreshed = await load();
+        const fresh = refreshed?.find((row) => row.id === action.id);
+        if (fresh) {
+          setReasonDraft((current) => (
+            current.action && current.record?.id === action.id
+              ? { ...current, record: fresh }
+              : current
+          ));
+        }
+        setError(
+          'This action changed on the server. The latest version has been loaded; review it and try again.',
+        );
+      } else {
+        setError(formatServiceError(e, `${label} failed.`));
+      }
     } finally {
+      busyRef.current = null;
       setBusyId(null);
     }
+    if (succeeded && onSuccess) onSuccess();
+    return succeeded;
+  };
+
+  const closeReason = () => {
+    if (busyRef.current != null) return;
+    setReasonDraft(EMPTY_REASON);
+  };
+
+  const openReason = (action, name) => {
+    if (busyRef.current != null) return;
+    setError('');
+    setNotice('');
+    setReasonDraft({ ...EMPTY_REASON, action: name, record: action });
+  };
+
+  const submitReason = (record, name) => {
+    const config = REASON_CONFIG[name];
+    const trimmed = reasonDraft.value.trim();
+    if (!trimmed) {
+      setReasonDraft((current) => ({ ...current, error: config.missing }));
+      return;
+    }
+    setReasonDraft((current) => ({ ...current, error: '' }));
+    return move(
+      record, REASON_SERVICES[name], config.moveLabel,
+      { reason: trimmed }, closeReason,
+    );
   };
 
   const linkedRcaValue = (action) => (
@@ -113,10 +214,11 @@ export function Actions({ problemId: problemIdProp }) {
   );
 
   const saveRca = async (action) => {
-    if (busyId) return;
+    if (busyRef.current != null) return;
     const current = linkedRcaValue(action);
     const next = rcaDrafts[action.id] ?? current;
     if (next === current) return;
+    busyRef.current = action.id;
     setBusyId(action.id);
     setError('');
     setNotice('');
@@ -139,6 +241,7 @@ export function Actions({ problemId: problemIdProp }) {
         || 'Could not update the RCA link.',
       );
     } finally {
+      busyRef.current = null;
       setBusyId(null);
     }
   };
@@ -194,6 +297,7 @@ export function Actions({ problemId: problemIdProp }) {
       },
     },
     { key: 'status', label: 'Status', render: (r) => <Badge kind="status-warning" value={r.status} /> },
+    { key: 'version', label: 'Version', render: (r) => (r.version ?? '—') },
     { key: 'due_at', label: 'Due', render: (r) => (r.due_at ? new Date(r.due_at).toLocaleDateString() : '—') },
     {
       key: 'actions',
@@ -213,10 +317,10 @@ export function Actions({ problemId: problemIdProp }) {
         }
         if (r.status === 'completed') {
           buttons.push(<Button key="validate" kind="ghost" size="small" disabled={disabled} onClick={() => move(r, validateAction, 'Validate')}>Validate</Button>);
-          buttons.push(<Button key="ineffective" kind="ghost" size="small" disabled={disabled} onClick={() => move(r, markActionIneffective, 'Mark ineffective')}>Ineffective</Button>);
+          buttons.push(<Button key="ineffective" kind="ghost" size="small" disabled={disabled} onClick={() => openReason(r, 'ineffective')}>Ineffective</Button>);
         }
-        if (!['verified', 'cancelled'].includes(r.status)) {
-          buttons.push(<Button key="cancel" kind="ghost" size="small" disabled={disabled} onClick={() => move(r, cancelAction, 'Cancel')}>Cancel</Button>);
+        if (CANCELABLE_ACTION_STATUSES.includes(r.status)) {
+          buttons.push(<Button key="cancel" kind="ghost" size="small" disabled={disabled} onClick={() => openReason(r, 'cancel')}>Cancel</Button>);
         }
         return buttons.length ? <div className="row-gap">{buttons}</div> : '—';
       },
@@ -225,7 +329,9 @@ export function Actions({ problemId: problemIdProp }) {
 
   return (
     <div>
-      <PageHeader title="Actions" sub="Corrective and preventive work" />
+      {embedded
+        ? <h3>Actions</h3>
+        : <PageHeader title="Actions" sub="Corrective and preventive work" />}
       {error && <div className="error-summary" role="alert">{error}</div>}
       {rcaError && <div className="error-summary" role="alert">{rcaError}</div>}
       {notice && <div className="success-summary" role="status">{notice}</div>}
@@ -279,6 +385,36 @@ export function Actions({ problemId: problemIdProp }) {
             </PanelPad>
           </Panel>
         </form>
+      )}
+
+      {reasonDraft.action && reasonDraft.record && (
+        <ConfirmDialog
+          title={REASON_CONFIG[reasonDraft.action].title}
+          message={REASON_CONFIG[reasonDraft.action].message}
+          confirmLabel={REASON_CONFIG[reasonDraft.action].confirm}
+          danger={reasonDraft.action === 'cancel'}
+          busy={busyId != null}
+          onConfirm={() => submitReason(reasonDraft.record, reasonDraft.action)}
+          onCancel={closeReason}
+        >
+          <Field
+            label={REASON_CONFIG[reasonDraft.action].field}
+            error={reasonDraft.error}
+            hint="Leading and trailing spaces are removed before submission."
+            required
+          >
+            <Textarea
+              rows={4}
+              value={reasonDraft.value}
+              onChange={(e) => setReasonDraft((current) => ({
+                ...current, value: e.target.value, error: '',
+              }))}
+              placeholder={REASON_CONFIG[reasonDraft.action].field}
+              aria-label={REASON_CONFIG[reasonDraft.action].field}
+              disabled={busyId != null}
+            />
+          </Field>
+        </ConfirmDialog>
       )}
     </div>
   );

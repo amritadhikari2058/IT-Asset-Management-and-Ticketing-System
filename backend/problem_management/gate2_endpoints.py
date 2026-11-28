@@ -35,7 +35,35 @@ RootCauseAnalysisViewSet = make_viewset(
 ActionViewSet = make_viewset(
     "ActionViewSet", ProblemAction, ProblemActionSerializer,
     services.create_problem_action, create_map={"due_at": "due_date"},
-    locked_statuses=frozenset({"verified", "closed"}),
+    locked_statuses=frozenset({
+        "verified", "ineffective", "cancelled", "closed",
+    }),
+    immutable_fields={
+        "problem": "The parent Problem cannot be changed through PATCH.",
+    },
+    protected_fields={
+        "id": "This field is server-owned.",
+        "status": "Use the dedicated lifecycle transition endpoints.",
+        "version": "Version is maintained by the server.",
+        "completed_at": "Completion metadata is maintained by the complete transition.",
+        "completed_by": "Completion metadata is maintained by the complete transition.",
+        "validation_status": "Validation metadata is maintained by the server.",
+        "verified_by": "Verification metadata is maintained by the validate transition.",
+        "verified_at": "Verification metadata is maintained by the validate transition.",
+        "verified_by_username": "Verification metadata is maintained by the validate transition.",
+        "assigned_to_username": "This derived field is read-only.",
+        "created_by": "This field is server-owned.",
+        "created_at": "This field is server-owned.",
+        "approved_by": "Approval is a dedicated lifecycle transition.",
+        "approved_at": "Approval is a dedicated lifecycle transition.",
+        "cancelled_by": "Cancellation is a dedicated lifecycle transition.",
+        "cancelled_at": "Cancellation is a dedicated lifecycle transition.",
+        "cancellation_reason": "Cancellation is a dedicated lifecycle transition.",
+        "is_deleted": "Deletion metadata is server-owned.",
+        "deleted_at": "Deletion metadata is server-owned.",
+        "deleted_by": "Deletion metadata is server-owned.",
+        "deletion_reason": "Deletion metadata is server-owned.",
+    },
 )
 WorkaroundViewSet = make_viewset(
     "WorkaroundViewSet", ProblemWorkaround, ProblemWorkaroundSerializer,

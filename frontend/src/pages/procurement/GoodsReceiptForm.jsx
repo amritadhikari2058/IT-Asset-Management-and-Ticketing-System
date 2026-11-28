@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import api from '../../api';
 import { useAuth } from '../../auth';
 import { ProcurementAttachments } from './ProcurementAttachments';
@@ -85,6 +85,8 @@ export function GoodsReceiptForm({ id, poId }) {
   const [confirming, setConfirming] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [submittedReceipt, setSubmittedReceipt] = useState(null);
+  const [receiptNeedsReview, setReceiptNeedsReview] = useState(false);
+  const idempotencyRef = useRef(null);
 
   const loadOrders = useCallback(async () => {
     try {
@@ -174,16 +176,26 @@ export function GoodsReceiptForm({ id, poId }) {
   };
 
   const post = async () => {
-    if (busy) return;
+    if (busy || receiptNeedsReview) return;
     setBusy(true);
     setGlobalError('');
     let created = null;
+
+    if (!idempotencyRef.current || idempotencyRef.current.purchaseOrderId !== orderId) {
+      const key = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `gr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      idempotencyRef.current = { purchaseOrderId: orderId, key };
+    }
+
     try {
       const grRes = await api.post('/procurement/goods-receipts/', {
         purchase_order: Number(orderId),
         delivery_note_number: meta.delivery_note_number.trim(),
         invoice_number: meta.invoice_number.trim(),
         notes: meta.notes.trim(),
+      }, {
+        headers: { 'Idempotency-Key': idempotencyRef.current.key },
       });
       created = grRes.data;
       for (const line of planned) {
@@ -209,16 +221,21 @@ export function GoodsReceiptForm({ id, poId }) {
     } catch (e) {
       const status = e?.response?.status;
       const parsed = parseFieldErrors(e);
-      if (status === 409) {
+
+      if (created) {
+        setReceiptNeedsReview(true);
+        setSubmitted(true);
+        setSubmittedReceipt(created);
+        setGlobalError(`Receipt ${created.gr_number} was created but some lines could not be booked: ${parsed.global || Object.values(parsed.fields)[0] || 'unknown error'}. Open the receipt to review it.`);
+      } else if (status === 409) {
         await loadOrder(orderId);
         setGlobalError('This order changed while you were working. Balances were reloaded — review the quantities before posting again.');
       } else if (status === 403) {
         setGlobalError('You do not have permission to perform this action.');
-      } else if (created) {
-        setGlobalError(`Receipt ${created.gr_number} was created but some lines could not be booked: ${parsed.global || Object.values(parsed.fields)[0] || 'unknown error'}. Open the receipt to review it.`);
       } else {
         setGlobalError(parsed.global || Object.values(parsed.fields)[0] || 'Could not record the goods receipt.');
       }
+
       setConfirming(false);
     } finally {
       setBusy(false);
@@ -449,16 +466,42 @@ export function GoodsReceiptForm({ id, poId }) {
 
       {submitted && submittedReceipt ? (
         <div className="panel" style={{ marginTop: 16 }}>
-          <div className="panel-head"><h3>Receipt recorded</h3></div>
+          <div className="panel-head">
+            <h3>{receiptNeedsReview ? 'Receipt created — review required' : 'Receipt recorded'}</h3>
+          </div>
           <div className="panel-pad">
             <p className="small">
-              Goods receipt <strong>{submittedReceipt.gr_number}</strong> was recorded against{' '}
-              <strong>{order?.po_number}</strong>. The receipt is now read-only.
+              {receiptNeedsReview ? (
+                <>
+                  Goods receipt <strong>{submittedReceipt.gr_number}</strong> was created against{' '}
+                  <strong>{order?.po_number}</strong>, but some lines could not be booked. Open the
+                  receipt and review the recorded lines before taking further action.
+                </>
+              ) : (
+                <>
+                  Goods receipt <strong>{submittedReceipt.gr_number}</strong> was recorded against{' '}
+                  <strong>{order?.po_number}</strong>. The receipt is now read-only.
+                </>
+              )}
             </p>
             <div className="row-gap" style={{ marginTop: 12 }}>
               <a className="btn-primary" href={`#/procurement/receipts/${submittedReceipt.id}`}>View receipt</a>
               <a className="btn-ghost" href="#/procurement/receipts">All receipts</a>
-              <button type="button" className="btn-ghost" onClick={() => { setSubmitted(false); setSubmittedReceipt(null); setGlobalError(''); }}>Record another receipt</button>
+              {!receiptNeedsReview ? (
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => {
+                    idempotencyRef.current = null;
+                    setSubmitted(false);
+                    setSubmittedReceipt(null);
+                    setReceiptNeedsReview(false);
+                    setGlobalError('');
+                  }}
+                >
+                  Record another receipt
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -470,7 +513,12 @@ export function GoodsReceiptForm({ id, poId }) {
           <Field label="Purchase order" required>
             <select
               className="input" value={orderId}
-              onChange={(e) => { setOrderId(e.target.value); loadOrder(e.target.value); }}
+              onChange={(e) => {
+                idempotencyRef.current = null;
+                setOrderId(e.target.value);
+                loadOrder(e.target.value);
+              }}
+              disabled={submitted || receiptNeedsReview}
               aria-label="Purchase order"
             >
               <option value="">Select a purchase order…</option>
@@ -579,7 +627,7 @@ export function GoodsReceiptForm({ id, poId }) {
             <button
               type="button" className="btn-primary"
               onClick={review}
-              disabled={busy || submitted || lines.length === 0 || !anyPlanned}
+              disabled={busy || submitted || receiptNeedsReview || lines.length === 0 || !anyPlanned}
             >
               Review and record receipt
             </button>

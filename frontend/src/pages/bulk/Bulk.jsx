@@ -432,6 +432,374 @@ export function EmployeeImportModal({ onClose, onImported }) {
   );
 }
 
+/** CSV-based employee updates keyed by employee_id. */
+export function EmployeeBulkUpdateModal({ onClose, onUpdated }) {
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [rows, setRows] = useState([]);
+  const [preview, setPreview] = useState(null);
+  const [report, setReport] = useState(null);
+
+  const allowed = [
+    'employee_id',
+    'email',
+    'first_name',
+    'last_name',
+    'phone',
+    'job_title',
+    'home_department',
+    'is_active',
+  ];
+
+  const pickFile = (event) => {
+    setFile(event.target.files?.[0] ?? null);
+    setRows([]);
+    setPreview(null);
+    setReport(null);
+    setError('');
+  };
+
+  const parseFile = async () => {
+    if (!file) throw new Error('Choose a CSV file first.');
+
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      throw new Error('Please select a CSV file. Excel files are not supported by this workflow.');
+    }
+
+    const text = (await file.text()).replace(/^\uFEFF/, '');
+    const parsed = parseCSV(text);
+
+    if (parsed.length < 2) {
+      throw new Error('The CSV must contain a header and at least one employee row.');
+    }
+
+    const headers = parsed[0].map((value) =>
+      String(value ?? '').trim().toLowerCase()
+    );
+
+    if (headers.some((header) => !header)) {
+      throw new Error('The CSV contains an empty column header.');
+    }
+
+    if (new Set(headers).size !== headers.length) {
+      throw new Error('The CSV contains duplicate column headers.');
+    }
+
+    if (!headers.includes('employee_id')) {
+      throw new Error('The CSV must include an employee_id column.');
+    }
+
+    const unsupported = headers.filter((header) => !allowed.includes(header));
+
+    if (unsupported.length) {
+      throw new Error(
+        `Unsupported column(s): ${unsupported.join(', ')}. Roles and ticket-creation permissions cannot be bulk-updated.`
+      );
+    }
+
+    const result = [];
+    const seen = new Set();
+
+    for (let index = 1; index < parsed.length; index += 1) {
+      const cells = parsed[index];
+
+      if (!cells.some((cell) => String(cell ?? '').trim() !== '')) {
+        continue;
+      }
+
+      if (
+        cells.length > headers.length &&
+        cells.slice(headers.length).some((cell) => String(cell ?? '').trim())
+      ) {
+        throw new Error(`CSV row ${index + 1} contains more values than the header.`);
+      }
+
+      const raw = {};
+
+      headers.forEach((header, column) => {
+        raw[header] = String(cells[column] ?? '').trim();
+      });
+
+      const employeeId = raw.employee_id;
+
+      if (!employeeId) {
+        throw new Error(`CSV row ${index + 1} is missing employee_id.`);
+      }
+
+      if (seen.has(employeeId)) {
+        throw new Error(`Duplicate employee_id "${employeeId}" in the CSV.`);
+      }
+
+      seen.add(employeeId);
+
+      const update = { employee_id: employeeId };
+
+      for (const field of allowed) {
+        if (field === 'employee_id' || raw[field] == null || raw[field] === '') continue;
+
+        if (field === 'is_active') {
+          const value = raw[field].toLowerCase();
+
+          if (value !== 'true' && value !== 'false') {
+            throw new Error(
+              `CSV row ${index + 1}: is_active must be true or false.`
+            );
+          }
+
+          update.is_active = value === 'true';
+        } else {
+          update[field] = raw[field];
+        }
+      }
+
+      if (Object.keys(update).length === 1) {
+        throw new Error(
+          `CSV row ${index + 1} has no update values besides employee_id.`
+        );
+      }
+
+      result.push(update);
+    }
+
+    if (!result.length) {
+      throw new Error('No employee update rows were found.');
+    }
+
+    return result;
+  };
+
+  const doPreview = async () => {
+    if (!file || busy) return;
+
+    setBusy(true);
+    setError('');
+    setPreview(null);
+    setReport(null);
+
+    try {
+      const parsedRows = await parseFile();
+      setRows(parsedRows);
+
+      const response = await api.post('/accounts/users/bulk_update/', {
+        rows: parsedRows,
+        preview: true,
+      });
+
+      setPreview(response.data);
+    } catch (e) {
+      setError(
+        e?.message ||
+        parseApiError(e).global ||
+        'Bulk update preview failed.'
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doConfirm = async () => {
+    if (!rows.length || !preview || busy) return;
+
+    if (!window.confirm(
+      `Submit ${rows.length} employee update row(s)? The preview checks existence only; individual updates may still be skipped or fail.`
+    )) return;
+
+    setBusy(true);
+    setError('');
+
+    try {
+      const response = await api.post('/accounts/users/bulk_update/', {
+        rows,
+        preview: false,
+        confirm: true,
+      });
+
+      const data = response.data ?? {};
+      const successful = Array.isArray(data.successful) ? data.successful : [];
+      const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+      const failed = Array.isArray(data.failed) ? data.failed : [];
+
+      setReport([
+        ...successful.map((employeeId) => ({
+          row: '',
+          key: employeeId,
+          outcome: 'successful',
+          message: '',
+        })),
+        ...skipped.map((item) => ({
+          row: '',
+          key: item.employee_id ?? '',
+          outcome: 'skipped',
+          message: item.reason ?? 'Skipped',
+        })),
+        ...failed.map((item) => ({
+          row: '',
+          key: item.employee_id ?? '',
+          outcome: 'failed',
+          message: typeof item.errors === 'string'
+            ? item.errors
+            : JSON.stringify(item.errors ?? 'Update failed'),
+        })),
+      ]);
+
+      setPreview(null);
+      onUpdated?.();
+    } catch (e) {
+      setError(
+        parseApiError(e).global || 'Bulk update could not be completed.'
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const previewRows = Array.isArray(preview?.preview)
+    ? preview.preview
+    : [];
+
+  const existingCount = previewRows.filter(
+    (item) => item.exists && !item.is_deleted
+  ).length;
+
+  const missingCount = previewRows.filter(
+    (item) => !item.exists
+  ).length;
+
+  const deletedCount = previewRows.filter(
+    (item) => item.exists && item.is_deleted
+  ).length;
+
+  return (
+    <Modal
+      title="Bulk update employees"
+      size="lg"
+      onClose={() => { if (!busy) onClose(); }}
+    >
+      <p className="muted small modal-intro">
+        Upload a CSV using employee_id to match existing accounts.
+        Blank cells are left unchanged. Department values must be department
+        codes. Only email, names, phone, job title, department and active
+        status can be updated. Roles and ticket-creation permissions are
+        never changed.
+      </p>
+
+      <div className="row-gap" style={{ marginBottom: 'var(--sp-3)' }}>
+        <button
+          type="button"
+          className="btn-ghost"
+          disabled={busy}
+          onClick={() => downloadBlob(
+            new Blob(
+              [
+                'employee_id,email,first_name,last_name,phone,job_title,home_department,is_active\nE001,,,,,,IT,true\n',
+              ],
+              { type: 'text/csv;charset=utf-8' }
+            ),
+            'employee_bulk_update_template.csv'
+          )}
+        >
+          Download CSV template
+        </button>
+
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          onChange={pickFile}
+          disabled={busy}
+          aria-label="Employee update CSV"
+        />
+      </div>
+
+      {file && (
+        <p className="muted small">Selected: {file.name}</p>
+      )}
+
+      {error && (
+        <div className="error-summary" role="alert">{error}</div>
+      )}
+
+      <div className="row-gap">
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={doPreview}
+          disabled={busy || !file}
+        >
+          {busy ? 'Working…' : 'Preview updates'}
+        </button>
+
+        {preview && (
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={doConfirm}
+            disabled={busy}
+          >
+            {busy ? 'Working…' : `Confirm ${rows.length} update(s)`}
+          </button>
+        )}
+      </div>
+
+      {preview && (
+        <div className="modal-block">
+          <b>Preview - {preview.affected ?? previewRows.length} row(s)</b>
+
+          <p className="muted small">
+            {existingCount} existing and active · {missingCount} not found ·
+            {` ${deletedCount} deleted.`}
+            {' '}This is an existence check only, not full field validation.
+            The execution result may contain skipped or failed rows.
+          </p>
+
+          <ReportTable
+            rows={previewRows.map((item) => ({
+              row: '',
+              key: item.employee_id ?? '',
+              outcome: !item.exists
+                ? 'not found'
+                : item.is_deleted
+                  ? 'deleted'
+                  : 'exists',
+              message: item.is_deleted
+                ? 'Deleted accounts cannot be updated.'
+                : '',
+            }))}
+          />
+        </div>
+      )}
+
+      {report && (
+        <div className="modal-block">
+          <b>Bulk update result</b>
+
+          <p className="muted small">
+            {report.filter((item) => item.outcome === 'successful').length}
+            {' '}successful ·
+            {' '}{report.filter((item) => item.outcome === 'skipped').length}
+            {' '}skipped ·
+            {' '}{report.filter((item) => item.outcome === 'failed').length}
+            {' '}failed.
+          </p>
+
+          <ReportTable rows={report} />
+        </div>
+      )}
+
+      <div className="row-end">
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={onClose}
+          disabled={busy}
+        >
+          Close
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 /** Bulk asset creation: template → upload → preview → confirm → report. */
 export function AssetBulkCreateModal({ onClose, onImported }) {
   const [file, setFile] = useState(null);

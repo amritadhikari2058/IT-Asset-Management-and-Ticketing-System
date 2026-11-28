@@ -1116,6 +1116,96 @@ def validate_record_references(*, problem, data):
         })
 
 
+ACTION_APPROVE_STATUSES = frozenset({'planned'})
+ACTION_START_STATUSES = frozenset({'planned', 'approved'})
+ACTION_COMPLETE_STATUSES = frozenset({'in_progress'})
+ACTION_VERIFY_STATUSES = frozenset({'completed'})
+ACTION_INEFFECTIVE_STATUSES = frozenset({'completed'})
+ACTION_CANCEL_STATUSES = frozenset({'planned', 'approved', 'in_progress', 'completed'})
+
+
+def _require_action_status(action, allowed, transition):
+    if action.status not in allowed:
+        labels = ' or '.join(sorted(allowed))
+        raise ValidationError({
+            'action': f'Only {labels} actions can be {transition}.',
+        })
+
+
+def _check_action_version(action, expected):
+    if expected is None:
+        return
+    try:
+        expected = int(expected)
+    except (TypeError, ValueError):
+        raise ValidationError({"expected_record_version": "Must be an integer."})
+    if expected != action.version:
+        raise StaleRecordError(
+            f"Stale actions version: sent {expected}, current is {action.version}.")
+
+
+def _action_reason(value, *, required, message):
+    """Trim a transition reason using the established PM reason convention."""
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ValidationError({"reason": "Reason must be a string."})
+    reason = value.strip()
+    if required and not reason:
+        raise ValidationError({"reason": message})
+    return reason
+
+
+def _transition_action(*, actor, action, expected_record_version=None,
+                       reason=None, requires_reason=False,
+                       reason_required_message="A reason is required.",
+                       allowed, transition, new_status, event_type,
+                       audit_action, detail, audit_reason, metadata=None):
+    """Apply one Action transition atomically against a freshly locked row."""
+    action_pk = getattr(action, "pk", None)
+    if action_pk is None:
+        raise ValidationError({"action": "Action must be saved before transition."})
+
+    with transaction.atomic():
+        locked = ProblemAction.objects.select_for_update().get(pk=action_pk)
+        _check_action_version(locked, expected_record_version)
+        _require_action_status(locked, allowed, transition)
+        reason = _action_reason(
+            reason, required=requires_reason, message=reason_required_message)
+
+        previous_status = locked.status
+        locked.status = new_status
+        changed_fields = ["status"]
+        for field, value in (metadata or {}).items():
+            setattr(locked, field, value)
+            changed_fields.append(field)
+
+        locked.save(update_fields=changed_fields)
+
+        transition_detail = detail(locked, previous_status)
+        if reason:
+            transition_detail = f"{transition_detail} Reason: {reason}."
+        record_history(
+            locked.problem, event_type, actor,
+            previous_status=previous_status, new_status=locked.status,
+            detail=transition_detail,
+            changed_fields=changed_fields,
+        )
+
+        audit_detail = audit_reason(locked, previous_status)
+        if reason:
+            audit_detail = f"{audit_detail}, reason={reason[:200]}"
+        log_action(
+            actor=actor, action=audit_action, instance=locked,
+            reason=audit_detail,
+            details={"reason": reason} if reason else None,
+        )
+
+        if action is not locked:
+            action.refresh_from_db()
+        return action
+
+
 def create_problem_action(*, actor, problem, title, description='', due_date=None,
                           related_task=None, **extra):
     from django.utils import timezone as dj_timezone
@@ -1160,138 +1250,128 @@ def create_problem_action(*, actor, problem, title, description='', due_date=Non
 
 def approve_problem_action(*, actor, action, **extra):
     _require_governance(actor)
-
-    if action.status not in ('planned',):
-        raise ValidationError({'action': f'Action can only be approved from planned state, got "{action.status}".'})
-
-    record_history(
-        action.problem, 'action_approved', actor,
-        detail=f'Action "{action.title}" approved.',
-        changed_fields=['status'],
+    return _transition_action(
+        actor=actor, action=action,
+        expected_record_version=extra.get("expected_record_version"),
+        reason=extra.get("reason"),
+        allowed=ACTION_APPROVE_STATUSES, transition='approved',
+        new_status='approved', event_type='action_approved',
+        audit_action='problem_action_approved',
+        detail=lambda current, previous: (
+            f'Action "{current.title}" approved: '
+            f'{previous} -> {current.status}.'
+        ),
+        audit_reason=lambda current, previous: (
+            f'action={current.pk} approved by {actor.id}: '
+            f'{previous} -> {current.status}'
+        ),
     )
-
-    from common.audit import log_action
-    log_action(
-        actor=actor, action='problem_action_approved',
-        instance=action,
-        reason=f'action={action.pk} approved by {actor.id}',
-    )
-
-    return action
 
 
 def start_problem_action(*, actor, action, **extra):
     _require_staff(actor)
-
-    action.status = 'in_progress'
-    action.save(update_fields=['status'])
-
-    record_history(
-        action.problem, 'action_started', actor,
-        detail=f'Action "{action.title}" started.',
-        changed_fields=['status'],
+    return _transition_action(
+        actor=actor, action=action,
+        expected_record_version=extra.get("expected_record_version"),
+        reason=extra.get("reason"),
+        allowed=ACTION_START_STATUSES, transition='started',
+        new_status='in_progress', event_type='action_started',
+        audit_action='problem_action_started',
+        detail=lambda current, previous: (
+            f'Action "{current.title}" started: '
+            f'{previous} -> {current.status}.'
+        ),
+        audit_reason=lambda current, previous: (
+            f'action={current.pk} started by {actor.id}: '
+            f'{previous} -> {current.status}'
+        ),
     )
-
-    from common.audit import log_action
-    log_action(
-        actor=actor, action='problem_action_started',
-        instance=action,
-        reason=f'action={action.pk} started by {actor.id}',
-    )
-
-    return action
 
 
 def complete_problem_action(*, actor, action, **extra):
     _require_staff(actor)
-
-    action.status = 'completed'
-    action.completed_at = timezone.now()
-    action.save(update_fields=['status', 'completed_at'])
-
-    record_history(
-        action.problem, 'action_completed', actor,
-        detail=f'Action "{action.title}" completed.',
-        changed_fields=['status', 'completed_at'],
+    return _transition_action(
+        actor=actor, action=action,
+        expected_record_version=extra.get("expected_record_version"),
+        reason=extra.get("reason"),
+        allowed=ACTION_COMPLETE_STATUSES, transition='completed',
+        new_status='completed', event_type='action_completed',
+        audit_action='problem_action_completed',
+        metadata={"completed_at": timezone.now()},
+        detail=lambda current, previous: (
+            f'Action "{current.title}" completed: '
+            f'{previous} -> {current.status}.'
+        ),
+        audit_reason=lambda current, previous: (
+            f'action={current.pk} completed by {actor.id}: '
+            f'{previous} -> {current.status}'
+        ),
     )
-
-    from common.audit import log_action
-    log_action(
-        actor=actor, action='problem_action_completed',
-        instance=action,
-        reason=f'action={action.pk} completed by {actor.id}',
-    )
-
-    return action
 
 
 def validate_problem_action(*, actor, action, **extra):
     _require_staff(actor)
-
-    if action.version > 1:
-        raise StaleRecordError("Stale action version.")
-
-    action.status = 'verified'
-    action.save(update_fields=['status'])
-
-    record_history(
-        action.problem, 'action_validated', actor,
-        detail=f'Action "{action.title}" validated.',
-        changed_fields=['status'],
+    return _transition_action(
+        actor=actor, action=action,
+        expected_record_version=extra.get("expected_record_version"),
+        reason=extra.get("reason"),
+        allowed=ACTION_VERIFY_STATUSES, transition='verified',
+        new_status='verified', event_type='action_validated',
+        audit_action='problem_action_validated',
+        metadata={"verified_by": actor, "verified_at": timezone.now()},
+        detail=lambda current, previous: (
+            f'Action "{current.title}" validated: '
+            f'{previous} -> {current.status}.'
+        ),
+        audit_reason=lambda current, previous: (
+            f'action={current.pk} validated by {actor.id}: '
+            f'{previous} -> {current.status}'
+        ),
     )
-
-    from common.audit import log_action
-    log_action(
-        actor=actor, action='problem_action_validated',
-        instance=action,
-        reason=f'action={action.pk} validated by {actor.id}',
-    )
-
-    return action
 
 
 def mark_problem_action_ineffective(*, actor, action, **extra):
     _require_staff(actor)
-
-    action.status = 'ineffective'
-    action.save(update_fields=['status'])
-
-    record_history(
-        action.problem, 'action_ineffective', actor,
-        detail=f'Action "{action.title}" marked ineffective.',
-        changed_fields=['status'],
+    return _transition_action(
+        actor=actor, action=action,
+        expected_record_version=extra.get("expected_record_version"),
+        reason=extra.get("reason"),
+        requires_reason=True,
+        reason_required_message="An ineffectiveness reason is required.",
+        allowed=ACTION_INEFFECTIVE_STATUSES, transition='marked ineffective',
+        new_status='ineffective', event_type='action_ineffective',
+        audit_action='problem_action_ineffective',
+        detail=lambda current, previous: (
+            f'Action "{current.title}" marked ineffective: '
+            f'{previous} -> {current.status}.'
+        ),
+        audit_reason=lambda current, previous: (
+            f'action={current.pk} marked ineffective by {actor.id}: '
+            f'{previous} -> {current.status}'
+        ),
     )
-
-    from common.audit import log_action
-    log_action(
-        actor=actor, action='problem_action_ineffective',
-        instance=action,
-        reason=f'action={action.pk} marked ineffective',
-    )
-
-    return action
 
 
 def cancel_problem_action(*, actor, action, **extra):
     _require_staff(actor)
-
-    action.status = 'cancelled'
-    action.save(update_fields=['status'])
-
-    record_history(
-        action.problem, 'action_cancelled', actor,
-        detail=f'Action "{action.title}" cancelled.',
-        changed_fields=['status'],
+    return _transition_action(
+        actor=actor, action=action,
+        expected_record_version=extra.get("expected_record_version"),
+        reason=extra.get("reason"),
+        requires_reason=True,
+        reason_required_message="A cancellation reason is required.",
+        allowed=ACTION_CANCEL_STATUSES, transition='cancelled',
+        new_status='cancelled', event_type='action_cancelled',
+        audit_action='problem_action_cancelled',
+        detail=lambda current, previous: (
+            f'Action "{current.title}" cancelled: '
+            f'{previous} -> {current.status}.'
+        ),
+        audit_reason=lambda current, previous: (
+            f'action={current.pk} cancelled by {actor.id}: '
+            f'{previous} -> {current.status}'
+        ),
     )
-
-    from common.audit import log_action
-    log_action(
-        actor=actor, action='problem_action_cancelled',
-        instance=action,
-        reason=f'action={action.pk} cancelled by {actor.id}',
-    )
-
-    return action
 
 
 # ---------------------------------------------------------------------------
@@ -1648,6 +1728,19 @@ def supersede_root_cause_analysis(*, actor, analysis, **extra):
 # Validation services
 # ---------------------------------------------------------------------------
 
+VALIDATION_START_STATUSES = frozenset({'draft'})
+VALIDATION_OPEN_STATUSES = frozenset({'draft', 'in_progress'})
+
+
+def _require_validation_status(validation, allowed, action):
+    if validation.status not in allowed:
+        raise ValidationError({
+            'validation': (
+                f"Only {' or '.join(sorted(allowed))} validations can be {action}."
+            ),
+        })
+
+
 def create_problem_validation(*, actor, problem, title, description="",
                               validation_type="functional", test_plan="",
                               test_results="", **extra):
@@ -1685,6 +1778,7 @@ def create_problem_validation(*, actor, problem, title, description="",
 
 def start_problem_validation(*, actor, validation, **extra):
     _require_staff(actor)
+    _require_validation_status(validation, VALIDATION_START_STATUSES, 'started')
 
     validation.status = 'in_progress'
     validation.save(update_fields=["status"])
@@ -1722,9 +1816,7 @@ def start_problem_validation(*, actor, validation, **extra):
 
 def pass_problem_validation(*, actor, validation, **extra):
     _require_staff(actor)
-
-    if validation.version > 1:
-        raise StaleRecordError("Stale validation version.")
+    _require_validation_status(validation, VALIDATION_OPEN_STATUSES, 'passed')
 
     validation.status = "verified"
     validation.passed = True
@@ -1750,6 +1842,7 @@ def pass_problem_validation(*, actor, validation, **extra):
 
 def fail_problem_validation(*, actor, validation, **extra):
     _require_staff(actor)
+    _require_validation_status(validation, VALIDATION_OPEN_STATUSES, 'failed')
 
     validation.status = "failed"
     validation.passed = False
@@ -1773,14 +1866,17 @@ def fail_problem_validation(*, actor, validation, **extra):
 
 def mark_problem_validation_inconclusive(*, actor, validation, **extra):
     _require_staff(actor)
+    _require_validation_status(
+        validation, VALIDATION_OPEN_STATUSES, 'marked inconclusive')
 
     validation.status = "inconclusive"
-    validation.save(update_fields=["status"])
+    validation.passed = False
+    validation.save(update_fields=["status", "passed"])
 
     record_history(
         validation.problem, "validation_inconclusive", actor,
         detail=f"Validation '{validation.title}' marked inconclusive.",
-        changed_fields=["status"],
+        changed_fields=["status", "passed"],
     )
 
     from common.audit import log_action
@@ -1795,14 +1891,16 @@ def mark_problem_validation_inconclusive(*, actor, validation, **extra):
 
 def cancel_problem_validation(*, actor, validation, **extra):
     _require_staff(actor)
+    _require_validation_status(validation, VALIDATION_OPEN_STATUSES, 'cancelled')
 
     validation.status = "cancelled"
-    validation.save(update_fields=["status"])
+    validation.passed = False
+    validation.save(update_fields=["status", "passed"])
 
     record_history(
         validation.problem, "validation_cancelled", actor,
         detail=f"Validation '{validation.title}' cancelled.",
-        changed_fields=["status"],
+        changed_fields=["status", "passed"],
     )
 
     from common.audit import log_action

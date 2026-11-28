@@ -63,11 +63,33 @@ const renderWith = (node) => render(<MemoryRouter>{node}</MemoryRouter>);
 beforeEach(() => {
   vi.clearAllMocks();
   auth.current = { isStaff: true, isManagerOrAdmin: true, user: { username: 'manager' } };
+  services.approveAction.mockReset();
+  services.cancelAction.mockReset();
+  services.completeAction.mockReset();
+  services.createAction.mockReset();
+  services.editAction.mockReset();
+  services.listActions.mockReset();
+  services.listRCAs.mockReset();
+  services.markActionIneffective.mockReset();
+  services.startAction.mockReset();
+  services.validateAction.mockReset();
   services.listActions.mockResolvedValue({ results: [] });
   services.listRCAs.mockResolvedValue({ results: [] });
   services.listWorkarounds.mockResolvedValue({ results: [] });
   services.listValidations.mockResolvedValue({ results: [] });
   services.listExceptions.mockResolvedValue({ results: [] });
+  services.createValidation.mockReset();
+  services.startValidation.mockReset();
+  services.passValidation.mockReset();
+  services.failValidation.mockReset();
+  services.markValidationInconclusive.mockReset();
+  services.cancelValidation.mockReset();
+  services.createException.mockReset();
+  services.submitException.mockReset();
+  services.approveException.mockReset();
+  services.rejectException.mockReset();
+  services.revokeException.mockReset();
+  services.expireException.mockReset();
   services.problemTimeline.mockResolvedValue({ results: [] });
   services.linkedTickets.mockResolvedValue({ results: [] });
   services.linkedCIs.mockResolvedValue({ results: [] });
@@ -81,22 +103,416 @@ describe('Actions workflow', () => {
     id: 1, title: 'Replace disk', action_type: 'corrective', status: 'planned',
     version: 1,
   };
+  const TRANSITION_BUTTONS = [
+    'Approve', 'Start', 'Complete', 'Validate', 'Ineffective', 'Cancel',
+  ];
+  const actionRow = () => within(screen.getByText('Replace disk').closest('tr'));
+  const waitForActionRow = async () => {
+    await screen.findByText('Replace disk');
+    return actionRow();
+  };
 
-  test('drives the lifecycle through dedicated transitions', async () => {
+  test('drives the lifecycle through dedicated transitions with version tokens', async () => {
     services.listActions.mockResolvedValue({ results: [PLANNED] });
     renderWith(<Actions problemId="1" />);
     fireEvent.click(await screen.findByText('Approve'));
-    await waitFor(() => expect(services.approveAction).toHaveBeenCalledWith(1));
+    await waitFor(() => {
+      expect(services.approveAction).toHaveBeenCalledWith(1, {
+        expected_record_version: 1,
+      });
+    });
     fireEvent.click(screen.getByText('Start'));
-    await waitFor(() => expect(services.startAction).toHaveBeenCalledWith(1));
+    await waitFor(() => {
+      expect(services.startAction).toHaveBeenCalledWith(1, {
+        expected_record_version: 1,
+      });
+    });
   });
 
-  test('renders a stale-version conflict safely', async () => {
-    services.listActions.mockResolvedValue({ results: [PLANNED] });
+  test('uses a section heading when embedded and keeps the page header standalone', async () => {
+    const embedded = renderWith(<Actions problemId="1" embedded />);
+    expect(await screen.findByRole('heading', { name: 'Actions', level: 3 })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Actions', level: 1 })).toBeNull();
+    expect(screen.queryByText('Corrective and preventive work')).toBeNull();
+    embedded.unmount();
+
+    renderWith(<Actions problemId="1" />);
+    expect(await screen.findByRole('heading', { name: 'Actions', level: 1 })).toBeTruthy();
+    expect(screen.getByText('Corrective and preventive work')).toBeTruthy();
+  });
+
+  const REASON_DIALOGS = {
+    Ineffective: {
+      field: 'Ineffectiveness reason',
+      confirm: 'Confirm ineffective',
+    },
+    Cancel: {
+      field: 'Cancellation reason',
+      confirm: 'Confirm cancellation',
+    },
+  };
+
+  test.each([
+    ['Approve', 'planned', 'approveAction'],
+    ['Start', 'planned', 'startAction'],
+    ['Start', 'approved', 'startAction'],
+    ['Complete', 'in_progress', 'completeAction'],
+    ['Validate', 'completed', 'validateAction'],
+    ['Ineffective', 'completed', 'markActionIneffective'],
+    ['Cancel', 'planned', 'cancelAction'],
+    ['Cancel', 'approved', 'cancelAction'],
+    ['Cancel', 'in_progress', 'cancelAction'],
+    ['Cancel', 'completed', 'cancelAction'],
+  ])('sends expected_record_version for %s from %s', async (button, status, fnName) => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, status, version: 4 }],
+    });
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await (await waitForActionRow()).findByRole('button', { name: button }));
+
+    const dialog = REASON_DIALOGS[button];
+    if (dialog) {
+      fireEvent.change(await screen.findByLabelText(dialog.field), {
+        target: { value: '  documented reason  ' },
+      });
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole(
+        'button', { name: dialog.confirm },
+      ));
+    }
+
+    await waitFor(() => {
+      expect(services[fnName]).toHaveBeenCalledWith(1, {
+        expected_record_version: 4,
+        ...(dialog ? { reason: 'documented reason' } : {}),
+      });
+    });
+  });
+
+  test.each([
+    ['Cancel', 'planned', 'cancelAction', 'Cancel action', 'Cancellation reason'],
+    ['Ineffective', 'completed', 'markActionIneffective',
+      'Mark action ineffective', 'Ineffectiveness reason'],
+  ])('%s opens a required reason dialog before calling the API', async (
+    button, status, fnName, title, fieldLabel,
+  ) => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, status, version: 4 }],
+    });
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await (await waitForActionRow()).findByRole(
+      'button', { name: button },
+    ));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(title)).toBeTruthy();
+    expect(within(dialog).getByLabelText(fieldLabel).value).toBe('');
+    expect(services[fnName]).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['Cancel', 'planned', 'cancelAction', 'Cancellation reason',
+      'A cancellation reason is required.'],
+    ['Ineffective', 'completed', 'markActionIneffective',
+      'Ineffectiveness reason', 'An ineffectiveness reason is required.'],
+  ])('%s rejects empty and whitespace-only reasons', async (
+    button, status, fnName, fieldLabel, missingMessage,
+  ) => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, status, version: 4 }],
+    });
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await (await waitForActionRow()).findByRole(
+      'button', { name: button },
+    ));
+
+    const dialog = await screen.findByRole('dialog');
+    const field = within(dialog).getByLabelText(fieldLabel);
+    const confirm = within(dialog).getByRole('button', {
+      name: button === 'Cancel' ? 'Confirm cancellation' : 'Confirm ineffective',
+    });
+
+    fireEvent.click(confirm);
+    expect(await within(dialog).findByText(missingMessage)).toBeTruthy();
+    expect(services[fnName]).not.toHaveBeenCalled();
+
+    fireEvent.change(field, { target: { value: '   ' } });
+    fireEvent.click(confirm);
+    expect(await within(dialog).findByText(missingMessage)).toBeTruthy();
+    expect(services[fnName]).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['Cancel', 'planned', 'cancelAction', 'Cancellation reason',
+      'Confirm cancellation', 'cancelled'],
+    ['Ineffective', 'completed', 'markActionIneffective',
+      'Ineffectiveness reason', 'Confirm ineffective', 'ineffective'],
+  ])('%s trims the reason, sends its version, and closes only after success', async (
+    button, status, fnName, fieldLabel, confirmLabel, targetStatus,
+  ) => {
+    let resolveTransition;
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, status, version: 4 }],
+    });
+    services[fnName].mockImplementation(() => new Promise((resolve) => {
+      resolveTransition = resolve;
+    }));
+
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await (await waitForActionRow()).findByRole(
+      'button', { name: button },
+    ));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(fieldLabel), {
+      target: { value: '  documented transition reason  ' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: confirmLabel }));
+
+    await waitFor(() => {
+      expect(services[fnName]).toHaveBeenCalledWith(1, {
+        expected_record_version: 4,
+        reason: 'documented transition reason',
+      });
+    });
+    expect(screen.getByRole('dialog')).toBeTruthy();
+
+    resolveTransition({ ...PLANNED, status: targetStatus, version: 5 });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(await screen.findByText(`${button === 'Cancel' ? 'Cancel' : 'Mark ineffective'} succeeded.`)).toBeTruthy();
+  });
+
+  test('keeps the reason dialog and text after a 400 reason validation error', async () => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, status: 'planned', version: 4 }],
+    });
+    services.cancelAction.mockRejectedValueOnce({
+      response: { status: 400, data: { reason: ['A cancellation reason is required.'] } },
+    });
+
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await (await waitForActionRow()).findByRole(
+      'button', { name: 'Cancel' },
+    ));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Cancellation reason'), {
+      target: { value: '  keep this text  ' },
+    });
+    fireEvent.click(within(dialog).getByRole(
+      'button', { name: 'Confirm cancellation' },
+    ));
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('reason: A cancellation reason is required.');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(screen.getByLabelText('Cancellation reason').value).toBe('  keep this text  ');
+    expect(services.cancelAction).toHaveBeenCalledTimes(1);
+  });
+
+  test('refreshes on a 409 without retrying and keeps the reason for manual review', async () => {
+    services.listActions
+      .mockResolvedValueOnce({ results: [{ ...PLANNED, status: 'planned', version: 4 }] })
+      .mockResolvedValueOnce({ results: [{ ...PLANNED, status: 'planned', version: 5 }] });
+    services.cancelAction
+      .mockRejectedValueOnce({ response: { status: 409 } })
+      .mockResolvedValueOnce({ ...PLANNED, status: 'cancelled', version: 6 });
+
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await (await waitForActionRow()).findByRole(
+      'button', { name: 'Cancel' },
+    ));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Cancellation reason'), {
+      target: { value: '  superseded  ' },
+    });
+    fireEvent.click(within(dialog).getByRole(
+      'button', { name: 'Confirm cancellation' },
+    ));
+
+    expect(await screen.findByText(/changed on the server/)).toBeTruthy();
+    await waitFor(() => expect(services.listActions).toHaveBeenCalledTimes(2));
+    expect(services.cancelAction).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('Cancellation reason').value).toBe('  superseded  ');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm cancellation' }));
+    await waitFor(() => {
+      expect(services.cancelAction).toHaveBeenLastCalledWith(1, {
+        expected_record_version: 5,
+        reason: 'superseded',
+      });
+    });
+  });
+
+  test('prevents duplicate submissions of a required reason transition', async () => {
+    let resolveCancel;
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, status: 'planned', version: 4 }],
+    });
+    services.cancelAction.mockImplementation(() => new Promise((resolve) => {
+      resolveCancel = resolve;
+    }));
+
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await (await waitForActionRow()).findByRole(
+      'button', { name: 'Cancel' },
+    ));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Cancellation reason'), {
+      target: { value: 'duplicate check' },
+    });
+    const confirm = within(dialog).getByRole(
+      'button', { name: 'Confirm cancellation' },
+    );
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    expect(services.cancelAction).toHaveBeenCalledTimes(1);
+
+    resolveCancel({ ...PLANNED, status: 'cancelled', version: 5 });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  test.each([
+    ['Approve', 'planned', 'approveAction'],
+    ['Start', 'approved', 'startAction'],
+    ['Complete', 'in_progress', 'completeAction'],
+    ['Validate', 'completed', 'validateAction'],
+  ])('%s still submits without a reason', async (button, status, fnName) => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, status, version: 4 }],
+    });
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await (await waitForActionRow()).findByRole(
+      'button', { name: button },
+    ));
+    await waitFor(() => {
+      expect(services[fnName]).toHaveBeenCalledWith(1, {
+        expected_record_version: 4,
+      });
+    });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  test('embedded Actions also gate cancellation behind a reason dialog', async () => {
+    services.listActions.mockResolvedValue({
+      results: [{ ...PLANNED, status: 'planned', version: 4 }],
+    });
+    renderWith(<Actions problemId="1" embedded />);
+    fireEvent.click(await (await waitForActionRow()).findByRole(
+      'button', { name: 'Cancel' },
+    ));
+
+    expect(await screen.findByLabelText('Cancellation reason')).toBeTruthy();
+    expect(services.cancelAction).not.toHaveBeenCalled();
+  });
+
+  test('refreshes and shows the new status and version after a successful transition', async () => {
+    services.listActions
+      .mockResolvedValueOnce({ results: [PLANNED] })
+      .mockResolvedValueOnce({
+        results: [{ ...PLANNED, status: 'in_progress', version: 2 }],
+      });
+    services.startAction.mockResolvedValue({
+      ...PLANNED, status: 'in_progress', version: 2,
+    });
+
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }));
+
+    expect(await screen.findByText('Start succeeded.')).toBeTruthy();
+    await waitFor(() => {
+      expect(actionRow().getByText('In progress')).toBeTruthy();
+      expect(actionRow().getByText('2')).toBeTruthy();
+    });
+    fireEvent.click(actionRow().getByRole('button', { name: 'Complete' }));
+    await waitFor(() => {
+      expect(services.completeAction).toHaveBeenCalledWith(1, {
+        expected_record_version: 2,
+      });
+    });
+  });
+
+  test('renders a stale-version conflict, refreshes, and never retries', async () => {
+    services.listActions
+      .mockResolvedValueOnce({ results: [PLANNED] })
+      .mockResolvedValueOnce({ results: [{ ...PLANNED, version: 2 }] });
     services.startAction.mockRejectedValueOnce({ response: { status: 409 } });
+
     renderWith(<Actions problemId="1" />);
     fireEvent.click(await screen.findByText('Start'));
+
     expect(await screen.findByText(/changed on the server/)).toBeTruthy();
+    expect(services.startAction).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(services.listActions).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Start succeeded.')).toBeNull();
+  });
+
+  test('keeps ordinary transition errors distinct from conflicts', async () => {
+    services.listActions.mockResolvedValue({ results: [PLANNED] });
+    services.startAction.mockRejectedValueOnce({
+      response: { status: 400, data: { detail: 'Invalid source state.' } },
+    });
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await (await waitForActionRow()).findByRole('button', { name: 'Start' }));
+
+    expect(await screen.findByText('Invalid source state.')).toBeTruthy();
+    expect(screen.queryByText(/changed on the server/)).toBeNull();
+    await waitFor(() => expect(services.listActions).toHaveBeenCalledTimes(1));
+  });
+
+  test('prevents duplicate transition submissions while a request is in flight', async () => {
+    let resolveStart;
+    services.listActions.mockResolvedValue({ results: [PLANNED] });
+    services.startAction.mockImplementation(() => new Promise((resolve) => {
+      resolveStart = resolve;
+    }));
+    renderWith(<Actions problemId="1" />);
+    fireEvent.click(await (await waitForActionRow()).findByRole('button', { name: 'Start' }));
+    expect(services.startAction).toHaveBeenCalledTimes(1);
+    fireEvent.click(actionRow().getByRole('button', { name: 'Start' }));
+    expect(services.startAction).toHaveBeenCalledTimes(1);
+
+    resolveStart({ ...PLANNED, status: 'in_progress', version: 2 });
+    expect(await screen.findByText('Start succeeded.')).toBeTruthy();
+  });
+
+  test('matches the backend status and role transition matrix', async () => {
+    const expected = {
+      planned: ['Approve', 'Start', 'Cancel'],
+      approved: ['Start', 'Cancel'],
+      in_progress: ['Complete', 'Cancel'],
+      completed: ['Validate', 'Ineffective', 'Cancel'],
+      verified: [],
+      ineffective: [],
+      cancelled: [],
+      closed: [],
+    };
+    for (const [status, expectedButtons] of Object.entries(expected)) {
+      cleanup();
+      services.listActions.mockResolvedValue({
+        results: [{ ...PLANNED, status }],
+      });
+      renderWith(<Actions problemId="1" />);
+      await screen.findByText('Replace disk');
+      const row = actionRow();
+      const visible = TRANSITION_BUTTONS.filter(
+        (name) => row.queryByRole('button', { name }),
+      );
+      expect(visible).toEqual(expectedButtons);
+      if (expectedButtons.length === 0) {
+        expect(screen.queryByLabelText('RCA for action 1')).toBeNull();
+      }
+    }
+  });
+
+  test('keeps approval limited to governance roles', async () => {
+    auth.current = {
+      isStaff: true, isManagerOrAdmin: false, user: { username: 'support' },
+    };
+    services.listActions.mockResolvedValue({ results: [PLANNED] });
+    renderWith(<Actions problemId="1" />);
+
+    const row = await waitForActionRow();
+    expect(row.getByRole('button', { name: 'Start' })).toBeTruthy();
+    expect(row.queryByRole('button', { name: 'Approve' })).toBeNull();
+    expect(row.getByRole('button', { name: 'Cancel' })).toBeTruthy();
   });
 
   test('loads RCA options for the current problem and creates an action with one', async () => {
@@ -125,6 +541,24 @@ describe('Actions workflow', () => {
       }));
     });
     await waitFor(() => expect(services.listActions).toHaveBeenCalledTimes(2));
+  });
+
+  test('prevents duplicate creation from rapid repeated submission', async () => {
+    let resolveCreate;
+    services.createAction.mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    renderWith(<Actions problemId="1" />);
+    fireEvent.change(await screen.findByLabelText(/Action title/), {
+      target: { value: 'Patch server' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Action' }));
+    expect(services.createAction).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: /Saving/ }));
+    expect(services.createAction).toHaveBeenCalledTimes(1);
+
+    resolveCreate({ ...PLANNED, title: 'Patch server' });
+    expect(await screen.findByRole('button', { name: 'Create Action' })).toBeTruthy();
   });
 
   test('displays the linked RCA title and status in the action row', async () => {
@@ -207,6 +641,9 @@ describe('Actions workflow', () => {
     expect(screen.queryByRole('button', { name: 'Save RCA' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Create Action' })).toBeNull();
     expect(screen.queryByLabelText('Root cause analysis')).toBeNull();
+    TRANSITION_BUTTONS.forEach((name) => {
+      expect(screen.queryByRole('button', { name })).toBeNull();
+    });
   });
 
   test('shows backend RCA-link validation errors without refreshing', async () => {
@@ -268,71 +705,585 @@ describe('Actions workflow', () => {
 });
 
 describe('Workaround workflow', () => {
-  test('submit and publish use their own endpoints', async () => {
-    services.listWorkarounds.mockResolvedValue({
-      results: [{ id: 2, title: 'Restart', steps: 'restart', status: 'draft' }],
+  const renderWorkarounds = async () => {
+    renderWith(<Workarounds problemId="1" />);
+    await screen.findByPlaceholderText('Workaround title');
+  };
+
+  test('create is disabled while the title is empty', async () => {
+    await renderWorkarounds();
+    expect(screen.getByRole('button', { name: 'Create Workaround' }).disabled).toBe(true);
+  });
+
+  test('create is disabled while steps are empty or whitespace', async () => {
+    await renderWorkarounds();
+    fireEvent.change(screen.getByPlaceholderText('Workaround title'), {
+      target: { value: 'Restart service' },
     });
+    fireEvent.change(screen.getByPlaceholderText('Steps'), {
+      target: { value: '   ' },
+    });
+    expect(screen.getByRole('button', { name: 'Create Workaround' }).disabled).toBe(true);
+  });
+
+  test('whitespace-only title and steps are rejected on direct submit', async () => {
+    await renderWorkarounds();
+    fireEvent.change(screen.getByPlaceholderText('Workaround title'), {
+      target: { value: '   ' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Steps'), {
+      target: { value: '   ' },
+    });
+    const form = screen.getByRole('button', { name: 'Create Workaround' }).closest('form');
+    fireEvent.submit(form);
+    expect(services.createWorkaround).not.toHaveBeenCalled();
+  });
+
+  test('create becomes available with valid title and steps and sends both fields', async () => {
+    await renderWorkarounds();
+    fireEvent.change(screen.getByPlaceholderText('Workaround title'), {
+      target: { value: '  Restart service  ' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Steps'), {
+      target: { value: '  1. Restart worker  ' },
+    });
+    const create = screen.getByRole('button', { name: 'Create Workaround' });
+    expect(create.disabled).toBe(false);
+    fireEvent.click(create);
+
+    await waitFor(() => {
+      expect(services.createWorkaround).toHaveBeenCalledWith('1', {
+        title: 'Restart service',
+        steps: '1. Restart worker',
+      });
+    });
+    await waitFor(() => expect(services.listWorkarounds).toHaveBeenCalledTimes(2));
+  });
+
+  test.each([
+    ['Submit', 'draft', 'submitWorkaround', 3],
+    ['Approve', 'submitted', 'approveWorkaround', 4],
+    ['Publish', 'approved', 'publishWorkaround', 5],
+    ['Expire', 'published', 'expireWorkaround', 6],
+    ['Retire', 'published', 'retireWorkaround', 6],
+  ])('sends expected_record_version for %s', async (label, status, helper, version) => {
+    services.listWorkarounds.mockResolvedValue({
+      results: [{ id: 11, title: 'Fix', steps: 'do it', status, version }],
+    });
+    services[helper].mockResolvedValue({ id: 11, title: 'Fix', steps: 'do it', status, version });
+
+    renderWith(<Workarounds problemId="1" />);
+    fireEvent.click(await screen.findByText(label));
+
+    await waitFor(() => expect(services[helper]).toHaveBeenCalledWith(11, {
+      expected_record_version: version,
+    }));
+  });
+
+  test('a successful transition supplies the refreshed version to the next transition', async () => {
+    services.listWorkarounds
+      .mockResolvedValueOnce({
+        results: [{ id: 12, title: 'Fix', steps: 'do it', status: 'draft', version: 7 }],
+      })
+      .mockResolvedValue({
+        results: [{ id: 12, title: 'Fix', steps: 'do it', status: 'submitted', version: 8 }],
+      });
+    services.submitWorkaround.mockResolvedValue({
+      id: 12, title: 'Fix', steps: 'do it', status: 'submitted', version: 8,
+    });
+    services.approveWorkaround.mockResolvedValue({
+      id: 12, title: 'Fix', steps: 'do it', status: 'approved', version: 9,
+    });
+
     renderWith(<Workarounds problemId="1" />);
     fireEvent.click(await screen.findByText('Submit'));
-    await waitFor(() => expect(services.submitWorkaround).toHaveBeenCalledWith(2));
+    await waitFor(() => expect(services.submitWorkaround).toHaveBeenCalledWith(12, {
+      expected_record_version: 7,
+    }));
+
+    fireEvent.click(await screen.findByText('Approve'));
+    await waitFor(() => expect(services.approveWorkaround).toHaveBeenCalledWith(12, {
+      expected_record_version: 8,
+    }));
+  });
+
+  test('a stale-version conflict refreshes the record without retrying', async () => {
+    services.listWorkarounds
+      .mockResolvedValueOnce({
+        results: [{ id: 13, title: 'Fix', steps: 'do it', status: 'submitted', version: 2 }],
+      })
+      .mockResolvedValue({
+        results: [{ id: 13, title: 'Fix', steps: 'do it', status: 'approved', version: 3 }],
+      });
+    services.approveWorkaround.mockRejectedValue({
+      response: {
+        status: 409,
+        data: { detail: 'Stale workaround version: sent 2, current is 3.' },
+      },
+    });
+
+    renderWith(<Workarounds problemId="1" />);
+    fireEvent.click(await screen.findByText('Approve'));
+
+    expect(await screen.findByText(/Version conflict/)).toBeTruthy();
+    await waitFor(() => expect(services.listWorkarounds).toHaveBeenCalledTimes(2));
+    expect(services.approveWorkaround).toHaveBeenCalledTimes(1);
+    expect(services.approveWorkaround).toHaveBeenCalledWith(13, {
+      expected_record_version: 2,
+    });
+    expect(screen.queryByText('Approve')).toBeNull();
+  });
+
+  test('duplicate lifecycle submissions for one record are prevented', async () => {
+    let resolveSubmit;
+    services.listWorkarounds.mockResolvedValue({
+      results: [{ id: 14, title: 'Fix', steps: 'do it', status: 'draft', version: 1 }],
+    });
+    services.submitWorkaround.mockImplementation(() => new Promise((resolve) => {
+      resolveSubmit = resolve;
+    }));
+
+    renderWith(<Workarounds problemId="1" />);
+    const submit = await screen.findByText('Submit');
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    expect(services.submitWorkaround).toHaveBeenCalledTimes(1);
+
+    resolveSubmit({ id: 14, title: 'Fix', steps: 'do it', status: 'submitted', version: 2 });
+    await waitFor(() => expect(services.listWorkarounds).toHaveBeenCalledTimes(2));
   });
 });
 
 describe('Validation contract', () => {
-  test('shows status and sends test_plan rather than validation_status', async () => {
-    services.listValidations.mockResolvedValue({
-      results: [{ id: 3, title: 'Failover', status: 'draft', passed: false }],
-    });
-    renderWith(<Validations problemId="1" />);
+  const ACTION_LABELS = ['Start', 'Pass', 'Fail', 'Inconclusive', 'Cancel'];
+
+  const row = (overrides = {}) => ({
+    id: 3, title: 'Failover', status: 'draft', passed: false, version: 3,
+    ...overrides,
+  });
+
+  test('renders an embedded section heading without duplicating the page header', async () => {
+    services.listValidations.mockResolvedValue({ results: [] });
+    renderWith(<Validations problemId="1" embedded />);
+    expect(await screen.findByRole('heading', { name: 'Validations' })).toBeTruthy();
+    expect(screen.queryByText('Validation runs recorded against this problem')).toBeNull();
+    expect(screen.getByPlaceholderText('Validation title')).toBeTruthy();
+  });
+
+  test('shows status and sends trimmed test_plan rather than validation_status', async () => {
+    services.listValidations.mockResolvedValue({ results: [row()] });
+    renderWith(<Validations problemId="1" embedded />);
     expect(await screen.findByText('Status')).toBeTruthy();
     expect(screen.queryByText('validation_status')).toBeNull();
-    fireEvent.change(screen.getByPlaceholderText('Validation title'), { target: { value: 'New run' } });
-    fireEvent.change(screen.getByPlaceholderText('Test plan'), { target: { value: 'kill node' } });
+    fireEvent.change(screen.getByPlaceholderText('Validation title'), {
+      target: { value: '  New run  ' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Test plan'), {
+      target: { value: '  kill node  ' },
+    });
     fireEvent.click(screen.getByText('Create Validation'));
     await waitFor(() => expect(services.createValidation).toHaveBeenCalledWith('1', {
       title: 'New run', test_plan: 'kill node',
     }));
+    await waitFor(() => expect(services.listValidations).toHaveBeenCalledTimes(2));
   });
 
-  test('pass transition is a dedicated POST', async () => {
-    services.listValidations.mockResolvedValue({
-      results: [{ id: 3, title: 'Failover', status: 'in_progress', passed: false }],
+  test('rejects a whitespace-only title without calling the API', async () => {
+    services.listValidations.mockResolvedValue({ results: [] });
+    renderWith(<Validations problemId="1" embedded />);
+    fireEvent.change(await screen.findByPlaceholderText('Validation title'), {
+      target: { value: '   ' },
     });
-    renderWith(<Validations problemId="1" />);
-    fireEvent.click(await screen.findByText('Pass'));
-    await waitFor(() => expect(services.passValidation).toHaveBeenCalledWith(3));
+    const create = screen.getByRole('button', { name: 'Create Validation' });
+    expect(create.disabled).toBe(true);
+    fireEvent.submit(create.closest('form'));
+    expect(services.createValidation).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['Start', 'draft', 'startValidation', 3, 4],
+    ['Pass', 'draft', 'passValidation', 3, 4],
+    ['Fail', 'draft', 'failValidation', 3, 4],
+    ['Inconclusive', 'draft', 'markValidationInconclusive', 3, 4],
+    ['Cancel', 'draft', 'cancelValidation', 3, 4],
+  ])('sends the current version for %s', async (
+    label, status, helper, version, nextVersion,
+  ) => {
+    services.listValidations.mockResolvedValue({
+      results: [row({ status, version })],
+    });
+    services[helper].mockResolvedValue(row({ version: nextVersion }));
+    renderWith(<Validations problemId="1" embedded />);
+    const table = await screen.findByRole('table');
+    fireEvent.click(within(table).getByRole('button', { name: label }));
+    await waitFor(() => expect(services[helper]).toHaveBeenCalledWith(3, {
+      expected_record_version: version,
+    }));
+    await waitFor(() => expect(services.listValidations).toHaveBeenCalledTimes(2));
+  });
+
+  test.each([
+    ['draft', ['Start', 'Pass', 'Fail', 'Inconclusive', 'Cancel']],
+    ['in_progress', ['Pass', 'Fail', 'Inconclusive', 'Cancel']],
+    ['verified', []],
+    ['failed', []],
+    ['inconclusive', []],
+    ['cancelled', []],
+  ])('shows only valid controls for %s', async (status, allowed) => {
+    services.listValidations.mockResolvedValue({
+      results: [row({ status, passed: status === 'verified', version: 2 })],
+    });
+    renderWith(<Validations problemId="1" embedded />);
+    await screen.findByText('Failover');
+    const table = within(screen.getByRole('table'));
+    for (const label of ACTION_LABELS) {
+      const button = table.queryByRole('button', { name: label });
+      if (allowed.includes(label)) expect(button).toBeTruthy();
+      else expect(button).toBeNull();
+    }
+  });
+
+  test('hides all mutation controls from non-staff users', async () => {
+    auth.current = { isStaff: false };
+    services.listValidations.mockResolvedValue({ results: [row()] });
+    renderWith(<Validations problemId="1" embedded />);
+    expect(await screen.findByText('Failover')).toBeTruthy();
+    expect(screen.queryByPlaceholderText('Validation title')).toBeNull();
+    const table = within(screen.getByRole('table'));
+    for (const label of ACTION_LABELS) {
+      expect(table.queryByRole('button', { name: label })).toBeNull();
+    }
+  });
+
+  test('uses the refreshed version for the next transition', async () => {
+    services.listValidations
+      .mockResolvedValueOnce({ results: [row({ version: 7 })] })
+      .mockResolvedValue({ results: [row({ status: 'in_progress', version: 8 })] });
+    services.startValidation.mockResolvedValue(row({ status: 'in_progress', version: 8 }));
+    services.passValidation.mockResolvedValue(row({
+      status: 'verified', passed: true, version: 9,
+    }));
+    renderWith(<Validations problemId="1" embedded />);
+    fireEvent.click(within(await screen.findByRole('table')).getByRole('button', { name: 'Start' }));
+    await waitFor(() => expect(services.startValidation).toHaveBeenCalledWith(3, {
+      expected_record_version: 7,
+    }));
+    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: 'Pass' }));
+    await waitFor(() => expect(services.passValidation).toHaveBeenCalledWith(3, {
+      expected_record_version: 8,
+    }));
+  });
+
+  test('a stale-version conflict refreshes the list without retrying', async () => {
+    services.listValidations
+      .mockResolvedValueOnce({ results: [row({ version: 2 })] })
+      .mockResolvedValue({ results: [row({ status: 'in_progress', version: 3 })] });
+    services.startValidation.mockRejectedValue({
+      response: {
+        status: 409,
+        data: { detail: 'Stale validation version: sent 2, current is 3.' },
+      },
+    });
+    renderWith(<Validations problemId="1" embedded />);
+    fireEvent.click(within(await screen.findByRole('table')).getByRole('button', { name: 'Start' }));
+    expect(await screen.findByText(/Version conflict/)).toBeTruthy();
+    expect(screen.getByText(/Stale validation version/)).toBeTruthy();
+    await waitFor(() => expect(services.listValidations).toHaveBeenCalledTimes(2));
+    expect(services.startValidation).toHaveBeenCalledTimes(1);
+    expect(services.startValidation).toHaveBeenCalledWith(3, {
+      expected_record_version: 2,
+    });
+    expect(within(screen.getByRole('table')).queryByRole('button', { name: 'Start' })).toBeNull();
+  });
+
+  test('keeps ordinary API errors distinct from version conflicts', async () => {
+    services.listValidations.mockResolvedValue({ results: [row()] });
+    services.passValidation.mockRejectedValue({
+      response: { data: { detail: 'Backend refused this validation.' } },
+    });
+    renderWith(<Validations problemId="1" embedded />);
+    fireEvent.click(within(await screen.findByRole('table')).getByRole('button', { name: 'Pass' }));
+    expect(await screen.findByText('Backend refused this validation.')).toBeTruthy();
+    expect(screen.queryByText(/Version conflict/)).toBeNull();
+    expect(services.listValidations).toHaveBeenCalledTimes(1);
+  });
+
+  test('duplicate lifecycle submissions for one record are prevented', async () => {
+    let resolveStart;
+    services.listValidations.mockResolvedValue({ results: [row()] });
+    services.startValidation.mockImplementation(() => new Promise((resolve) => {
+      resolveStart = resolve;
+    }));
+    renderWith(<Validations problemId="1" embedded />);
+    const start = within(await screen.findByRole('table')).getByRole('button', { name: 'Start' });
+    fireEvent.click(start);
+    fireEvent.click(start);
+    expect(services.startValidation).toHaveBeenCalledTimes(1);
+    resolveStart(row({ status: 'in_progress', version: 4 }));
+    await waitFor(() => expect(services.listValidations).toHaveBeenCalledTimes(2));
   });
 });
 
 describe('Exception contract', () => {
   const ROW = {
     id: 4, title: 'Accept risk', exception_type: 'operational', status: 'active',
-    reason: 'temp', created_by_username: 'author',
+    reason: 'temp', created_by_username: 'author', version: 3,
   };
+  const futureDate = () => {
+    const date = new Date();
+    date.setDate(date.getDate() + 30);
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0'),
+    ].join('-');
+  };
+  const expectedExpiry = (value) => new Date(`${value}T23:59:59`).toISOString();
 
-  test('renders exception_type and blocks self-approval', async () => {
-    services.listExceptions.mockResolvedValue({ results: [{ ...ROW, created_by_username: 'manager' }] });
+  test('exposes the supported exception types and loads the problem-scoped list', async () => {
     renderWith(<Exceptions problemId="1" />);
-    expect(await screen.findByText('operational')).toBeTruthy();
+    expect(await screen.findByText('No exceptions yet')).toBeTruthy();
+    expect(services.listExceptions).toHaveBeenCalledWith('1');
+    expect(Array.from(screen.getByLabelText('Exception type').options).map((o) => o.value))
+      .toEqual(['operational', 'unknown_root_cause', 'critical']);
+  });
+
+  test('renders exception metadata and blocks self-approval', async () => {
+    services.listExceptions.mockResolvedValue({
+      results: [{ ...ROW, created_by_username: 'manager', approved_by_username: 'admin' }],
+    });
+    renderWith(<Exceptions problemId="1" />);
+
+    expect(await screen.findByText('Accept risk')).toBeTruthy();
+    expect(screen.getByText('operational')).toBeTruthy();
+    expect(screen.getByText('admin')).toBeTruthy();
     expect(screen.getByText('Approve').disabled).toBe(true);
     expect(screen.queryByText('Risk')).toBeNull();
   });
 
-  test('sends exception_type and reason, never type or risk', async () => {
+  test('creates with verified fields, trimmed text, and no legacy field names', async () => {
+    const expiryDate = futureDate();
     renderWith(<Exceptions problemId="1" />);
-    fireEvent.change(screen.getByPlaceholderText('Exception title'), { target: { value: 'Temp' } });
-    fireEvent.change(screen.getByPlaceholderText('Reason'), { target: { value: 'why' } });
-    fireEvent.click(screen.getByText('Create Exception'));
+    fireEvent.change(screen.getByPlaceholderText('Exception title'), { target: { value: '  Temp  ' } });
+    fireEvent.change(screen.getByLabelText('Exception type'), { target: { value: 'critical' } });
+    fireEvent.change(screen.getByPlaceholderText('Reason'), { target: { value: '  why  ' } });
+    fireEvent.change(screen.getByPlaceholderText('Conditions'), { target: { value: '  peak hours  ' } });
+    fireEvent.change(screen.getByLabelText('Expires at'), { target: { value: expiryDate } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Exception' }));
+
     await waitFor(() => {
-      const payload = services.createException.mock.calls[0][1];
-      expect(payload.exception_type).toBe('operational');
-      expect(payload).not.toHaveProperty('type');
-      expect(payload).not.toHaveProperty('risk');
+      expect(services.createException).toHaveBeenCalledWith('1', {
+        title: 'Temp',
+        exception_type: 'critical',
+        reason: 'why',
+        conditions: 'peak hours',
+        expires_at: expectedExpiry(expiryDate),
+      });
     });
+    expect(services.createException.mock.calls[0][1].expires_at)
+      .toMatch(/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/);
+    expect(await screen.findByText('Exception created.')).toBeTruthy();
+    await waitFor(() => expect(services.listExceptions).toHaveBeenCalledTimes(2));
+  });
+
+  test('does not submit a whitespace-only title', async () => {
+    renderWith(<Exceptions problemId="1" />);
+    fireEvent.change(screen.getByPlaceholderText('Exception title'), { target: { value: '   ' } });
+    const form = screen.getByRole('button', { name: 'Create Exception' }).closest('form');
+    fireEvent.submit(form);
+
+    expect(services.createException).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['Submit', 'draft', 'submitException'],
+    ['Approve', 'active', 'approveException'],
+    ['Expire', 'active', 'expireException'],
+  ])('sends %s with the current version token', async (label, status, helper) => {
+    services.listExceptions.mockResolvedValue({
+      results: [{ ...ROW, status, version: 7 }],
+    });
+    services[helper].mockResolvedValue({ ...ROW, status, version: 8 });
+
+    renderWith(<Exceptions problemId="1" />);
+    fireEvent.click(await screen.findByText(label));
+
+    await waitFor(() => {
+      expect(services[helper]).toHaveBeenCalledWith(4, { expected_record_version: 7 });
+    });
+    expect(await screen.findByText(`${label} succeeded.`)).toBeTruthy();
+    await waitFor(() => expect(services.listExceptions).toHaveBeenCalledTimes(2));
+  });
+
+  test.each([
+    ['Reject', 'reject', 'rejection', 'rejectException', 'A rejection reason is required.'],
+    ['Revoke', 'revoke', 'revocation', 'revokeException', 'A revocation reason is required.'],
+  ])('validates and sends a trimmed %s reason', async (
+    button, action, reasonLabel, helper, missingMessage,
+  ) => {
+    services.listExceptions.mockResolvedValue({
+      results: [{ ...ROW, status: 'active', version: 9 }],
+    });
+    services[helper].mockResolvedValue({
+      ...ROW,
+      status: action === 'reject' ? 'rejected' : 'revoked',
+      version: 10,
+    });
+
+    renderWith(<Exceptions problemId="1" />);
+    fireEvent.click(await screen.findByText(button));
+
+    const field = screen.getByLabelText(`${reasonLabel[0].toUpperCase()}${reasonLabel.slice(1)} reason`);
+    const confirm = screen.getByRole('button', { name: `Confirm ${reasonLabel}` });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.change(field, { target: { value: '   ' } });
+    fireEvent.click(confirm);
+    expect(await screen.findByText(missingMessage)).toBeTruthy();
+    expect(services[helper]).not.toHaveBeenCalled();
+
+    fireEvent.change(field, { target: { value: '  documented risk  ' } });
+    fireEvent.click(confirm);
+
+    await waitFor(() => {
+      expect(services[helper]).toHaveBeenCalledWith(4, {
+        expected_record_version: 9,
+        reason: 'documented risk',
+      });
+    });
+    expect(await screen.findByText(`${button} succeeded.`)).toBeTruthy();
+  });
+
+  test('shows backend reason validation errors and keeps the reason form open', async () => {
+    services.listExceptions.mockResolvedValue({ results: [ROW] });
+    services.rejectException.mockRejectedValue({
+      response: { data: { reason: ['A rejection reason is required.'] } },
+    });
+
+    renderWith(<Exceptions problemId="1" />);
+    fireEvent.click(await screen.findByText('Reject'));
+    fireEvent.change(screen.getByLabelText('Rejection reason'), {
+      target: { value: 'not blank' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm rejection' }));
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('reason: A rejection reason is required.');
+    expect(screen.getByLabelText('Rejection reason')).toBeTruthy();
+  });
+
+  test('hides all mutation controls from non-staff users', async () => {
+    auth.current = {
+      isStaff: false, isManagerOrAdmin: false, user: { username: 'employee' },
+    };
+    services.listExceptions.mockResolvedValue({ results: [ROW] });
+
+    renderWith(<Exceptions problemId="1" />);
+    expect(await screen.findByText('Accept risk')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Create Exception' })).toBeNull();
+    ['Submit', 'Approve', 'Reject', 'Revoke', 'Expire'].forEach((label) => {
+      expect(screen.queryByText(label)).toBeNull();
+    });
+  });
+
+  test('support staff cannot approve or reject but can use staff transitions', async () => {
+    auth.current = {
+      isStaff: true, isManagerOrAdmin: false, user: { username: 'support' },
+    };
+    services.listExceptions.mockResolvedValue({ results: [ROW] });
+
+    renderWith(<Exceptions problemId="1" />);
+    expect(await screen.findByText('Accept risk')).toBeTruthy();
+    expect(screen.getByText('Revoke')).toBeTruthy();
+    expect(screen.getByText('Expire')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Create Exception' })).toBeTruthy();
+    expect(screen.queryByText('Approve')).toBeNull();
+    expect(screen.queryByText('Reject')).toBeNull();
+  });
+
+  test('prevents duplicate lifecycle submissions', async () => {
+    let resolveSubmit;
+    services.listExceptions.mockResolvedValue({
+      results: [{ ...ROW, status: 'draft', version: 2 }],
+    });
+    services.submitException.mockImplementation(() => new Promise((resolve) => {
+      resolveSubmit = resolve;
+    }));
+
+    renderWith(<Exceptions problemId="1" />);
+    const submit = await screen.findByText('Submit');
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    expect(services.submitException).toHaveBeenCalledTimes(1);
+
+    resolveSubmit({ ...ROW, status: 'active', version: 3 });
+    await waitFor(() => expect(services.listExceptions).toHaveBeenCalledTimes(2));
+  });
+
+  test('refreshes on a stale-version conflict without retrying', async () => {
+    services.listExceptions
+      .mockResolvedValueOnce({ results: [{ ...ROW, status: 'active', version: 2 }] })
+      .mockResolvedValue({ results: [{ ...ROW, status: 'approved', version: 3 }] });
+    services.approveException.mockRejectedValue({
+      response: {
+        status: 409,
+        data: { detail: 'Stale exception version: sent 2, current is 3.' },
+      },
+    });
+
+    renderWith(<Exceptions problemId="1" />);
+    fireEvent.click(await screen.findByText('Approve'));
+
+    expect(await screen.findByText(/Version conflict/)).toBeTruthy();
+    await waitFor(() => expect(services.listExceptions).toHaveBeenCalledTimes(2));
+    expect(services.approveException).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Approve')).toBeNull();
+  });
+
+  test('surfaces a load error without hiding the create form', async () => {
+    services.listExceptions.mockRejectedValueOnce(new Error('exceptions endpoint down'));
+
+    renderWith(<Exceptions problemId="1" />);
+    expect(await screen.findByText('Could not load exceptions.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Exceptions' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Create Exception' })).toBeTruthy();
   });
 });
 
 describe('Timeline contract', () => {
+  const EVENT_TYPES = [
+    'milestone', 'investigation_start', 'root_cause_found',
+    'workaround_implemented', 'action_taken', 'validation_completed',
+    'fix_implemented', 'problem_resolved', 'problem_closed',
+    'exception_granted', 'exception_denied',
+  ];
+  const SOURCES = [
+    'manual', 'ticket', 'major_incident', 'change_review',
+    'knowledge', 'monitoring', 'cmdb',
+  ];
+
+  test('exposes exactly the backend event-type and source choices', async () => {
+    services.problemTimeline.mockResolvedValue({ results: [] });
+    renderWith(<Timeline problemId="1" />);
+    expect(await screen.findByText('No timeline events yet')).toBeTruthy();
+
+    expect(Array.from(screen.getByLabelText('Type').options).map((o) => o.value))
+      .toEqual(EVENT_TYPES);
+    expect(Array.from(screen.getByLabelText('Source').options).map((o) => o.value))
+      .toEqual(SOURCES);
+  });
+
+  test('shows loading and then the empty state', async () => {
+    let resolveList;
+    services.problemTimeline.mockImplementation(() => new Promise((resolve) => {
+      resolveList = resolve;
+    }));
+    renderWith(<Timeline problemId="1" />);
+
+    expect(screen.getByRole('status', { name: 'Loading' })).toBeTruthy();
+    resolveList({ results: [] });
+    expect(await screen.findByText('No timeline events yet')).toBeTruthy();
+  });
+
   test('lists by occurred_at and creates with the real fields', async () => {
     services.problemTimeline.mockResolvedValue({
       results: [{
@@ -340,16 +1291,50 @@ describe('Timeline contract', () => {
         source: 'manual', occurred_at: '2026-01-01T09:00:00Z', recorded_by_username: 'support',
       }],
     });
+    services.createTimelineEvent.mockResolvedValue({});
     renderWith(<Timeline problemId="1" />);
     expect(await screen.findByText('Kickoff')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'root_cause_found' } });
+    fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'ticket' } });
     fireEvent.change(screen.getByPlaceholderText('Event title'), { target: { value: 'Review' } });
     fireEvent.click(screen.getByText('Add Timeline Event'));
+
     await waitFor(() => {
       const payload = services.createTimelineEvent.mock.calls[0][1];
       expect(payload.title).toBe('Review');
+      expect(payload.event_type).toBe('root_cause_found');
+      expect(payload.source).toBe('ticket');
       expect(payload).toHaveProperty('occurred_at');
       expect(payload).not.toHaveProperty('recorded_at');
     });
+    expect(await screen.findByText('Timeline event added.')).toBeTruthy();
+    await waitFor(() => expect(services.problemTimeline).toHaveBeenCalledTimes(2));
+  });
+
+  test('hides mutation controls from non-staff users', async () => {
+    auth.current = {
+      isStaff: false,
+      isManagerOrAdmin: false,
+      user: { username: 'employee' },
+    };
+    services.problemTimeline.mockResolvedValue({
+      results: [{ id: 5, event_type: 'milestone', title: 'Kickoff', source: 'manual' }],
+    });
+    renderWith(<Timeline problemId="1" />);
+
+    expect(await screen.findByText('Kickoff')).toBeTruthy();
+    expect(screen.queryByText('Add Timeline Event')).toBeNull();
+    expect(screen.queryByPlaceholderText('Event title')).toBeNull();
+  });
+
+  test('surfaces a load error without hiding the timeline', async () => {
+    services.problemTimeline.mockRejectedValueOnce(new Error('timeline endpoint down'));
+    renderWith(<Timeline problemId="1" />);
+
+    expect(await screen.findByText('Could not load the timeline.')).toBeTruthy();
+    expect(screen.getByText('Timeline')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Event title')).toBeTruthy();
   });
 });
 

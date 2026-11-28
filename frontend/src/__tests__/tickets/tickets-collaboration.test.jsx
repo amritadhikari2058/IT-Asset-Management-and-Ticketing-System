@@ -126,6 +126,46 @@ describe('TicketDetail canned responses', () => {
     expect(notesRequests).toBe(2);
   });
 
+  it('only offers general responses and responses for the ticket queue', async () => {
+    staff();
+
+    mockGet.mockImplementation(async (url) => {
+      if (url === '/tickets/7/') {
+        return { data: { ...TICKET, queue: 4 } };
+      }
+
+      if (url === '/tickets/canned-responses/') {
+        return {
+          data: [
+            { id: 21, title: 'General response', visibility: 'both', queue: null },
+            { id: 22, title: 'Hardware response', visibility: 'both', queue: 4 },
+            { id: 23, title: 'Software response', visibility: 'both', queue: 5 },
+          ],
+        };
+      }
+
+      return detailRoute(url);
+    });
+
+    render(<TicketDetail id='7' />);
+
+    const selector = await screen.findByLabelText('Saved response');
+
+    expect(screen.getByRole('option', { name: 'General response' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Hardware response' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'Software response' })).toBeNull();
+
+    fireEvent.change(selector, { target: { value: '22' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply saved response' }));
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith(
+        '/tickets/7/apply_canned_response/',
+        { canned_response_id: 22, visibility: 'internal_note' }
+      );
+    });
+  });
+
   it('does not expose or request canned responses for employees', async () => {
     employee();
 

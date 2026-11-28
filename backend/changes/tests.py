@@ -244,23 +244,160 @@ class ChangeApprovalTests(TestCase):
 
 class ChangeAttachmentTests(TestCase):
     def setUp(self):
+        from django.test import override_settings
+
         self.dep, self.admin, self.mgr, self.sup, self.emp = make_users()
         self.tc = make_ticket_category()
         self.item = make_service_item(self.tc)
         self.change = make_change(self.emp, self.item, status="submitted")
 
-    def test_attachment_creation(self):
-        from django.core.files.uploadedfile import SimpleUploadedFile
-        f = SimpleUploadedFile("plan.txt", b"plan content", content_type="text/plain")
-        att = ChangeAttachment.objects.create(
-            change=self.change, uploaded_by=self.mgr,
-            document_type="implementation_plan",
-            original_filename="plan.txt",
-            content_type="text/plain",
-            size=len(b"plan content"),
+        storage_override = override_settings(
+            STORAGES={
+                "default": {
+                    "BACKEND": "django.core.files.storage.InMemoryStorage",
+                },
+                "staticfiles": {
+                    "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+                },
+            }
         )
-        self.assertEqual(att.document_type, "implementation_plan")
+        storage_override.enable()
+        self.addCleanup(storage_override.disable)
 
+    def test_attachment_creation_through_service(self):
+        import hashlib
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from changes.services import add_attachment
+
+        content = b"implementation plan content"
+        uploaded_file = SimpleUploadedFile(
+            "plan.txt", content, content_type="text/plain"
+        )
+
+        attachment = add_attachment(
+            change=self.change,
+            user=self.mgr,
+            uploaded_file=uploaded_file,
+            document_type="implementation_plan",
+        )
+
+        self.assertEqual(attachment.change, self.change)
+        self.assertEqual(attachment.uploaded_by, self.mgr)
+        self.assertEqual(attachment.original_filename, "plan.txt")
+        self.assertEqual(attachment.content_type, "text/plain")
+        self.assertEqual(attachment.size, len(content))
+        self.assertEqual(attachment.checksum, hashlib.sha256(content).hexdigest())
+
+        with attachment.file.open("rb") as stored_file:
+            self.assertEqual(stored_file.read(), content)
+
+    def test_employee_can_upload_and_download_own_attachment(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        client = APIClient()
+        _auth(client, self.emp)
+
+        content = b"change implementation plan"
+        uploaded_file = SimpleUploadedFile(
+            "implementation.txt",
+            content,
+            content_type="text/plain",
+        )
+
+        upload_response = client.post(
+            "/api/changes/attachments/",
+            {
+                "change": self.change.pk,
+                "document_type": "implementation_plan",
+                "file": uploaded_file,
+                "description": "Implementation plan",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(
+            upload_response.status_code,
+            201,
+            getattr(upload_response, "data", upload_response.content),
+        )
+
+        attachment_id = upload_response.data["id"]
+
+        self.assertEqual(
+            upload_response.data["original_filename"],
+            "implementation.txt",
+        )
+        self.assertEqual(
+            upload_response.data["uploaded_by"],
+            self.emp.pk,
+        )
+        self.assertTrue(
+            ChangeHistory.objects.filter(
+                change=self.change,
+                event_type="attachment_added",
+            ).exists()
+        )
+
+        download_response = client.get(
+            f"/api/changes/attachments/{attachment_id}/download/"
+        )
+
+        try:
+            self.assertEqual(download_response.status_code, 200)
+            self.assertIn("attachment", download_response["Content-Disposition"])
+            self.assertEqual(
+                b"".join(download_response.streaming_content),
+                content,
+            )
+        finally:
+            file_to_stream = getattr(download_response, "file_to_stream", None)
+            if file_to_stream is not None:
+                file_to_stream.close()
+            download_response.close()
+
+    def test_employee_cannot_access_another_employees_attachment(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        attachment = ChangeAttachment.objects.create(
+            change=self.change,
+            uploaded_by=self.emp,
+            document_type="implementation_plan",
+            original_filename="private-plan.txt",
+            content_type="text/plain",
+            size=12,
+        )
+        attachment.file.save(
+            "private-plan.txt",
+            SimpleUploadedFile(
+                "private-plan.txt",
+                b"private data",
+                content_type="text/plain",
+            ),
+            save=True,
+        )
+
+        other_employee = User.objects.create_user(
+            username="other@x",
+            email="other@x",
+            employee_id="E2",
+            password="pw12345678",
+            role="employee",
+            home_department=self.dep,
+        )
+
+        client = APIClient()
+        _auth(client, other_employee)
+
+        list_response = client.get("/api/changes/attachments/")
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.data["results"], [])
+
+        download_response = client.get(
+            f"/api/changes/attachments/{attachment.pk}/download/"
+        )
+
+        self.assertEqual(download_response.status_code, 404)
 
 class ChangeConflictTests(TestCase):
     def setUp(self):
@@ -293,6 +430,168 @@ class MaintenanceWindowTests(TestCase):
         )
         self.assertEqual(mw.code, "WW-001")
 
+
+class ChangeRelatedRecordsAPITests(TestCase):
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.sup, self.emp = make_users()
+        self.tc = make_ticket_category()
+        self.item = make_service_item(self.tc)
+        self.change = make_change(self.emp, self.item, status="submitted")
+
+        self.other_employee = User.objects.create_user(
+            username="other@x",
+            email="other@x",
+            employee_id="E2",
+            password="pw12345678",
+            role="employee",
+            home_department=self.dep,
+        )
+        self.other_change = make_change(
+            self.other_employee, self.item, status="submitted"
+        )
+
+    def test_manager_can_create_stakeholder_and_communication(self):
+        client = APIClient()
+        _auth(client, self.mgr)
+
+        stakeholder_response = client.post(
+            "/api/changes/stakeholders/",
+            {
+                "change": self.change.pk,
+                "user": self.emp.pk,
+                "stakeholder_type": "observer",
+                "notification_level": "major_updates",
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            stakeholder_response.status_code,
+            201,
+            getattr(stakeholder_response, "data", stakeholder_response.content),
+        )
+        self.assertEqual(
+            stakeholder_response.data["user_email"], self.emp.email
+        )
+        self.assertEqual(
+            stakeholder_response.data["notification_level"], "major_updates"
+        )
+        self.assertEqual(
+            stakeholder_response.data["added_by"], self.mgr.pk
+        )
+
+        communication_response = client.post(
+            "/api/changes/communications/",
+            {
+                "change": self.change.pk,
+                "communication_type": "planned_outage",
+                "audience": "stakeholders",
+                "subject": "Maintenance notice",
+                "message": "A maintenance window is planned.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            communication_response.status_code,
+            201,
+            getattr(communication_response, "data", communication_response.content),
+        )
+        self.assertEqual(
+            communication_response.data["communication_type"], "planned_outage"
+        )
+        self.assertEqual(communication_response.data["status"], "sent")
+        self.assertEqual(
+            communication_response.data["sent_by"], self.mgr.pk
+        )
+        self.assertTrue(
+            ChangeHistory.objects.filter(
+                change=self.change,
+                event_type="communication_sent",
+            ).exists()
+        )
+
+    def test_employee_can_only_list_related_records_for_own_changes(self):
+        own_stakeholder = ChangeStakeholder.objects.create(
+            change=self.change,
+            user=self.emp,
+            stakeholder_type="observer",
+            added_by=self.mgr,
+        )
+        other_stakeholder = ChangeStakeholder.objects.create(
+            change=self.other_change,
+            user=self.other_employee,
+            stakeholder_type="observer",
+            added_by=self.mgr,
+        )
+        own_communication = ChangeCommunication.objects.create(
+            change=self.change,
+            communication_type="reminder",
+            audience="stakeholders",
+            subject="Own change notice",
+            message="Notice for own change.",
+            sent_by=self.mgr,
+            status="sent",
+        )
+        other_communication = ChangeCommunication.objects.create(
+            change=self.other_change,
+            communication_type="reminder",
+            audience="stakeholders",
+            subject="Other change notice",
+            message="Notice for another employee's change.",
+            sent_by=self.mgr,
+            status="sent",
+        )
+
+        client = APIClient()
+        _auth(client, self.emp)
+
+        stakeholder_response = client.get("/api/changes/stakeholders/")
+        self.assertEqual(stakeholder_response.status_code, 200)
+        stakeholder_results = stakeholder_response.data.get(
+            "results", stakeholder_response.data
+        )
+        stakeholder_ids = {item["id"] for item in stakeholder_results}
+        self.assertIn(own_stakeholder.pk, stakeholder_ids)
+        self.assertNotIn(other_stakeholder.pk, stakeholder_ids)
+
+        communication_response = client.get("/api/changes/communications/")
+        self.assertEqual(communication_response.status_code, 200)
+        communication_results = communication_response.data.get(
+            "results", communication_response.data
+        )
+        communication_ids = {item["id"] for item in communication_results}
+        self.assertIn(own_communication.pk, communication_ids)
+        self.assertNotIn(other_communication.pk, communication_ids)
+
+    def test_employee_cannot_create_stakeholders_or_communications(self):
+        client = APIClient()
+        _auth(client, self.emp)
+
+        stakeholder_response = client.post(
+            "/api/changes/stakeholders/",
+            {
+                "change": self.change.pk,
+                "user": self.emp.pk,
+                "stakeholder_type": "observer",
+                "notification_level": "all_updates",
+            },
+            format="json",
+        )
+        self.assertEqual(stakeholder_response.status_code, 403)
+
+        communication_response = client.post(
+            "/api/changes/communications/",
+            {
+                "change": self.change.pk,
+                "communication_type": "reminder",
+                "audience": "stakeholders",
+                "subject": "Unauthorized notice",
+                "message": "This should not be created.",
+            },
+            format="json",
+        )
+        self.assertEqual(communication_response.status_code, 403)
 
 class ChangeCommunicationTests(TestCase):
     def setUp(self):
@@ -2222,3 +2521,385 @@ class ChangeSchedulingExceptionTests(TestCase):
         self.assertEqual(res.status_code, 403)
         ex.refresh_from_db()
         self.assertEqual(ex.status, "pending")
+
+
+class ChangeRiskAPITests(TestCase):
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.sup, self.emp = make_users()
+        self.tc = make_ticket_category()
+        self.item = make_service_item(self.tc)
+        self.client = APIClient()
+        self.change = make_change(self.emp, self.item, status="submitted")
+
+    def _auth(self, user):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {_token(user)}")
+
+    def _risk_payload(self, **overrides):
+        payload = {
+            "service_impact_score": 3,
+            "user_impact_score": 3,
+            "complexity_score": 2,
+            "reversibility_score": 2,
+            "test_coverage_score": 3,
+            "implementation_experience_score": 2,
+            "timing_risk_score": 2,
+            "dependency_risk_score": 2,
+            "security_risk_score": 1,
+            "data_integrity_risk_score": 1,
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_manager_can_calculate_risk_and_start_risk_assessment(self):
+        self._auth(self.mgr)
+
+        response = self.client.post(
+            f"/api/changes/{self.change.pk}/calculate_risk/",
+            self._risk_payload(),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.change.refresh_from_db()
+        self.assertEqual(self.change.status, "risk_assessment")
+        self.assertEqual(response.data["total_score"], 21)
+        self.assertEqual(response.data["calculated_level"], "medium")
+
+    def test_system_admin_can_calculate_risk(self):
+        self._auth(self.admin)
+
+        response = self.client.post(
+            f"/api/changes/{self.change.pk}/calculate_risk/",
+            self._risk_payload(),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+    def test_support_and_employee_cannot_calculate_risk(self):
+        for user in (self.sup, self.emp):
+            with self.subTest(role=user.role):
+                self._auth(user)
+                response = self.client.post(
+                    f"/api/changes/{self.change.pk}/calculate_risk/",
+                    self._risk_payload(),
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 403)
+
+    def test_assessment_versions_increment_for_reassessment(self):
+        from changes.services import calculate_risk
+
+        first = calculate_risk(
+            self.change, self._risk_payload(), self.mgr
+        )
+        second = calculate_risk(
+            self.change, self._risk_payload(), self.mgr
+        )
+
+        self.assertEqual(first.assessment_version, 1)
+        self.assertEqual(second.assessment_version, 2)
+
+    def test_override_records_the_overriding_user(self):
+        from changes.services import calculate_risk
+
+        assessment = calculate_risk(
+            self.change,
+            self._risk_payload(
+                override_level="critical",
+                override_reason="Additional operational concern",
+            ),
+            self.mgr,
+            override_level="critical",
+            override_reason="Additional operational concern",
+        )
+
+        self.assertEqual(assessment.override_level, "critical")
+        self.assertEqual(assessment.override_reason, "Additional operational concern")
+        self.assertEqual(assessment.overridden_by, self.mgr)
+
+    def test_risk_assessment_list_can_filter_by_change(self):
+        from changes.services import calculate_risk
+
+        other_change = make_change(self.emp, self.item, status="submitted")
+        calculate_risk(self.change, self._risk_payload(), self.mgr)
+        calculate_risk(other_change, self._risk_payload(), self.mgr)
+
+        self._auth(self.admin)
+        response = self.client.get(
+            f"/api/changes/risk-assessments/?change={self.change.pk}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        results = response.data.get("results", response.data)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["change"], self.change.pk)
+
+    def test_invalid_change_filter_returns_empty_list(self):
+        from changes.services import calculate_risk
+
+        calculate_risk(self.change, self._risk_payload(), self.mgr)
+
+        self._auth(self.admin)
+        response = self.client.get(
+            "/api/changes/risk-assessments/?change=not-a-number"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        results = response.data.get("results", response.data)
+        self.assertEqual(results, [])
+
+    def test_manager_can_confirm_risk_assessment(self):
+        from changes.services import calculate_risk
+
+        calculate_risk(self.change, self._risk_payload(), self.mgr)
+        self.change.status = "risk_assessment"
+        self.change.save(update_fields=["status", "updated_at"])
+
+        self._auth(self.mgr)
+        response = self.client.post(
+            f"/api/changes/{self.change.pk}/confirm_risk/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.change.refresh_from_db()
+        self.assertEqual(self.change.status, "technical_review")
+
+    def test_confirmation_is_rejected_before_risk_assessment_status(self):
+        from changes.services import calculate_risk
+
+        calculate_risk(self.change, self._risk_payload(), self.mgr)
+        self.change.status = "submitted"
+        self.change.save(update_fields=["status", "updated_at"])
+
+        self._auth(self.mgr)
+        response = self.client.post(
+            f"/api/changes/{self.change.pk}/confirm_risk/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.change.refresh_from_db()
+        self.assertEqual(self.change.status, "submitted")
+
+    def test_support_and_employee_cannot_confirm_risk(self):
+        from changes.services import calculate_risk
+
+        calculate_risk(self.change, self._risk_payload(), self.mgr)
+        self.change.status = "risk_assessment"
+        self.change.save(update_fields=["status", "updated_at"])
+
+        for user in (self.sup, self.emp):
+            with self.subTest(role=user.role):
+                self._auth(user)
+                response = self.client.post(
+                    f"/api/changes/{self.change.pk}/confirm_risk/",
+                    {},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 403)
+
+class ChangeSchedulingPermissionsAPITests(TestCase):
+    def setUp(self):
+        self.dep, self.admin, self.mgr, self.sup, self.emp = make_users()
+        self.tc = make_ticket_category()
+        self.item = make_service_item(self.tc)
+        self.client = APIClient()
+
+    def _auth(self, user):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {_token(user)}")
+
+    def _approved_change(self):
+        return make_change(
+            self.emp,
+            self.item,
+            status="approved",
+        )
+
+    def _schedule_payload(self):
+        from datetime import timedelta
+
+        start = timezone.now() + timedelta(days=2)
+        end = start + timedelta(hours=1)
+        return {
+            "planned_start": start.isoformat(),
+            "planned_end": end.isoformat(),
+            "expected_downtime_minutes": 30,
+        }
+
+    def test_manager_can_schedule_approved_change(self):
+        change = self._approved_change()
+        self._auth(self.mgr)
+
+        response = self.client.post(
+            f"/api/changes/{change.pk}/schedule/",
+            self._schedule_payload(),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        change.refresh_from_db()
+        self.assertEqual(change.status, "scheduled")
+
+    def test_system_admin_can_schedule_approved_change(self):
+        change = self._approved_change()
+        self._auth(self.admin)
+
+        response = self.client.post(
+            f"/api/changes/{change.pk}/schedule/",
+            self._schedule_payload(),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        change.refresh_from_db()
+        self.assertEqual(change.status, "scheduled")
+
+    def test_support_and_employee_cannot_schedule_or_reschedule(self):
+        for user in (self.sup, self.emp):
+            for action in ("schedule", "reschedule"):
+                with self.subTest(role=user.role, action=action):
+                    change = self._approved_change()
+                    self._auth(user)
+
+                    response = self.client.post(
+                        f"/api/changes/{change.pk}/{action}/",
+                        self._schedule_payload(),
+                        format="json",
+                    )
+
+                    self.assertEqual(response.status_code, 403)
+                    change.refresh_from_db()
+                    self.assertEqual(change.status, "approved")
+
+class ChangeScheduleListFilterAPITests(TestCase):
+    def setUp(self):
+        from datetime import timedelta
+
+        self.dep, self.admin, self.mgr, self.sup, self.emp = make_users()
+        self.tc = make_ticket_category()
+        self.item = make_service_item(self.tc)
+        self.client = APIClient()
+
+        self.start = timezone.now() + timedelta(days=10)
+        self.end = self.start + timedelta(hours=2)
+
+        self.target = make_change(
+            self.emp,
+            self.item,
+            title="Database migration window",
+            status="scheduled",
+            priority="high",
+            risk_level="critical",
+            planned_start=self.start,
+            planned_end=self.end,
+        )
+        self.other = make_change(
+            self.emp,
+            self.item,
+            title="Network maintenance",
+            status="approved",
+            priority="normal",
+            risk_level="low",
+            planned_start=self.start + timedelta(days=2),
+            planned_end=self.end + timedelta(days=2),
+        )
+        self.outside_scope = make_change(
+            self.admin,
+            self.item,
+            title="Private administrative change",
+            status="scheduled",
+            priority="high",
+            risk_level="critical",
+            planned_start=self.start,
+            planned_end=self.end,
+        )
+
+    def _auth(self, user):
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {_token(user)}"
+        )
+
+    def _list_ids(self, params=None):
+        response = self.client.get("/api/changes/", params or {})
+        self.assertEqual(response.status_code, 200)
+        rows = (
+            response.data.get("results", [])
+            if isinstance(response.data, dict)
+            else response.data
+        )
+        return {row["id"] for row in rows}
+
+    def test_status_priority_and_risk_filters(self):
+        self._auth(self.mgr)
+        ids = self._list_ids({
+            "status": "scheduled",
+            "priority": "high",
+            "risk": "critical",
+        })
+        self.assertIn(self.target.pk, ids)
+        self.assertNotIn(self.other.pk, ids)
+
+    def test_date_from_and_date_to_are_inclusive(self):
+        self._auth(self.mgr)
+        target_date = self.start.date().isoformat()
+        ids = self._list_ids({
+            "date_from": target_date,
+            "date_to": target_date,
+        })
+        self.assertIn(self.target.pk, ids)
+        self.assertNotIn(self.other.pk, ids)
+
+    def test_date_from_filters_planned_start(self):
+        from datetime import timedelta
+
+        self._auth(self.mgr)
+        cutoff = (self.start + timedelta(days=1)).date()
+        ids = self._list_ids({"date_from": cutoff.isoformat()})
+        self.assertNotIn(self.target.pk, ids)
+        self.assertIn(self.other.pk, ids)
+
+    def test_search_matches_change_number_and_title(self):
+        self._auth(self.mgr)
+        number_ids = self._list_ids({
+            "search": self.target.change_number,
+        })
+        title_ids = self._list_ids({
+            "search": "database migration",
+        })
+        self.assertIn(self.target.pk, number_ids)
+        self.assertNotIn(self.other.pk, number_ids)
+        self.assertIn(self.target.pk, title_ids)
+        self.assertNotIn(self.other.pk, title_ids)
+
+    def test_employee_scope_is_preserved_when_filters_are_used(self):
+        self._auth(self.emp)
+        ids = self._list_ids({
+            "status": "scheduled",
+            "priority": "high",
+            "risk": "critical",
+        })
+        self.assertIn(self.target.pk, ids)
+        self.assertNotIn(self.outside_scope.pk, ids)
+
+    def test_invalid_date_filter_returns_bad_request(self):
+        self._auth(self.mgr)
+        response = self.client.get(
+            "/api/changes/",
+            {"date_from": "not-a-date"},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_reversed_date_range_returns_bad_request(self):
+        self._auth(self.mgr)
+        response = self.client.get(
+            "/api/changes/",
+            {
+                "date_from": "2026-12-20",
+                "date_to": "2026-12-01",
+            },
+        )
+        self.assertEqual(response.status_code, 400)

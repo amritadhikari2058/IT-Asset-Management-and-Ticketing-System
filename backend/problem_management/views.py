@@ -282,7 +282,7 @@ class ProblemTicketLinkViewSet(_LinkViewSet):
 
     def get_queryset(self):
         qs = ProblemTicketLink.objects.select_related(
-            "problem", "ticket", "linked_by",
+            "problem", "ticket", "ticket__category", "linked_by",
         ).filter(is_deleted=False)
         problem_id = self.request.query_params.get("problem")
         if problem_id:

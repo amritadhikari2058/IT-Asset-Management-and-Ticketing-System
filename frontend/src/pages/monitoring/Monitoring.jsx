@@ -62,6 +62,7 @@ export function Monitoring() {
   if (hash === '#/monitoring/incidents') return <IncidentMonitor />;
   if (hash === '#/monitoring/performance') return <PerfMonitor />;
   if (hash === '#/monitoring/email-storage') return <EmailStorageMonitor />;
+  if (hash === '#/monitoring/notification-outbox') return <NotificationOutbox />;
   if (hash === '#/monitoring/health') return <HealthMonitor />;
   if (hash === '#/monitoring/overview') return <MonitoringOverview />;
   if (hash === '#/monitoring/sources') return <SourceManagement />;
@@ -165,12 +166,303 @@ function HealthDashboard() {
           <a href="#/monitoring/incidents" className="btn-secondary">Incidents</a>
           <a href="#/monitoring/performance" className="btn-secondary">API performance</a>
           <a href="#/monitoring/email-storage" className="btn-secondary">Email &amp; storage</a>
+          <a href="#/monitoring/notification-outbox" className="btn-secondary">Notification outbox</a>
         </div>
       </div>
     </div>
   );
 }
 
+function NotificationOutbox() {
+  const auth = useAuth();
+  const isAdmin = canAdministerMonitoring(auth);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [status, setStatus] = useState('');
+  const [eventType, setEventType] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [inspectEvent, setInspectEvent] = useState(null);
+  const [cancelEvent, setCancelEvent] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [actionBusy, setActionBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError('');
+      try {
+        const params = { limit: 50 };
+        if (status) params.status = status;
+        if (eventType.trim()) params.event_type = eventType.trim();
+
+        const response = await api.get('/common/notification-outbox/', { params });
+        if (!cancelled) setData(response.data);
+      } catch (e) {
+        if (!cancelled) setError(parseApiError(e).global || 'Failed to load notification outbox.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+    return () => { cancelled = true; };
+  }, [status, eventType, refreshKey]);
+
+  const stats = data?.stats || {};
+  const events = Array.isArray(data?.events) ? data.events : [];
+
+  async function inspect(id) {
+    setError('');
+    setMessage('');
+    try {
+      const response = await api.get(`/common/notification-outbox/${id}/inspect/`);
+      setInspectEvent(response.data);
+    } catch (e) {
+      setError(parseApiError(e).global || 'Unable to inspect this event.');
+    }
+  }
+
+  async function retry(id) {
+    if (actionBusy) return;
+    setActionBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await api.post(`/common/notification-outbox/${id}/retry/`);
+      setMessage('Retry queued successfully.');
+      setRefreshKey((value) => value + 1);
+    } catch (e) {
+      setError(parseApiError(e).global || 'Unable to retry this event.');
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function cancel() {
+    if (!cancelEvent || !cancelReason.trim() || actionBusy) return;
+    setActionBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await api.post(`/common/notification-outbox/${cancelEvent.id}/cancel/`, {
+        reason: cancelReason.trim(),
+      });
+      setMessage('Notification event cancelled.');
+      setCancelEvent(null);
+      setCancelReason('');
+      setRefreshKey((value) => value + 1);
+    } catch (e) {
+      setError(parseApiError(e).global || 'Unable to cancel this event.');
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  const statItems = [
+    ['Total', stats.total],
+    ['Pending', stats.pending],
+    ['Retry', stats.retry],
+    ['Processing', stats.processing],
+    ['Delivered', stats.delivered],
+    ['Failed', stats.failed],
+    ['Cancelled', stats.cancelled],
+    ['Expired claims', stats.expired_claims],
+    ['Delivered · 24h', stats.delivered_last_24h],
+    ['Failed · 24h', stats.failed_last_24h],
+    ['Oldest pending age', stats.oldest_pending_age_seconds == null
+      ? '—'
+      : `${Math.floor(stats.oldest_pending_age_seconds / 60)} min`],
+  ];
+
+  return (
+    <div>
+      <PageHeader
+        title="Notification Outbox"
+        sub="Monitor queued notification delivery and review failed or delayed events."
+        actions={(
+          <div className="row-gap">
+            <button type="button" className="btn-secondary"
+              onClick={() => setRefreshKey((value) => value + 1)}>
+              Refresh
+            </button>
+            <a href="#/monitoring" className="btn-ghost">&larr; Monitoring</a>
+          </div>
+        )}
+      />
+
+      {error ? <div className="field-error" role="alert">{error}</div> : null}
+      {message ? <div className="small" role="status">{message}</div> : null}
+
+      <div className="panel">
+        <div className="panel-head"><h3>Delivery statistics</h3></div>
+        <div className="panel-pad">
+          {loading && !data ? (
+            <div role="status"><span className="spinner" aria-hidden="true" /> Loading statistics…</div>
+          ) : (
+            <div className="grid" style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))',
+              gap: 12,
+            }}>
+              {statItems.map(([label, value]) => (
+                <div className="kpi-card" key={label}>
+                  <div className="kpi-value">{value ?? '—'}</div>
+                  <div className="kpi-label">{label}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <div className="panel-head"><h3>Notification events</h3></div>
+        <div className="panel-pad">
+          <div className="row-gap" style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
+            <label className="field">
+              <span className="form-label">Status</span>
+              <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
+                <option value="">All statuses</option>
+                {['pending', 'retry', 'processing', 'delivered', 'failed', 'cancelled'].map((value) => (
+                  <option key={value} value={value}>{value}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span className="form-label">Event type</span>
+              <input className="input" value={eventType}
+                onChange={(e) => setEventType(e.target.value)}
+                placeholder="Filter by event type" />
+            </label>
+          </div>
+
+          {loading ? (
+            <div role="status"><span className="spinner" aria-hidden="true" /> Loading events…</div>
+          ) : events.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-title">No notification events found</div>
+              <div className="small">Try changing the filters or check again after notifications are queued.</div>
+            </div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table className="grid">
+                <thead>
+                  <tr>
+                    <th>Created</th>
+                    <th>Event type</th>
+                    <th>Channel</th>
+                    <th>Recipient</th>
+                    <th>Status</th>
+                    <th>Attempts</th>
+                    <th>Last error</th>
+                    {isAdmin ? <th>Actions</th> : null}
+                  </tr>
+                </thead>
+                <tbody>
+                  {events.map((event) => (
+                    <tr key={event.id}>
+                      <td className="small">{event.created_at ? new Date(event.created_at).toLocaleString() : '—'}</td>
+                      <td>{event.event_type || '—'}</td>
+                      <td>{event.channel || '—'}</td>
+                      <td>{event.recipient_email || event.recipient || '—'}</td>
+                      <td><Badge kind="status" value={event.status} label={event.status} /></td>
+                      <td>{event.attempts ?? 0} / {event.max_attempts ?? '—'}</td>
+                      <td className="small cell-muted">{event.last_error || '—'}</td>
+                      {isAdmin ? (
+                        <td>
+                          <div className="cell-actions">
+                            <button type="button" className="btn-ghost"
+                              onClick={() => inspect(event.id)}>Inspect</button>
+                            {['failed', 'cancelled'].includes(event.status) ? (
+                              <button type="button" className="btn-secondary"
+                                disabled={actionBusy} onClick={() => retry(event.id)}>Retry</button>
+                            ) : null}
+                            {['pending', 'retry', 'processing'].includes(event.status) ? (
+                              <button type="button" className="btn-ghost"
+                                disabled={actionBusy}
+                                onClick={() => { setCancelEvent(event); setCancelReason(''); }}>
+                                Cancel
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
+                      ) : null}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="small muted" style={{ marginTop: 12 }}>
+            Showing up to 50 events. Notification payloads are not included in this list.
+          </div>
+        </div>
+      </div>
+
+      {inspectEvent ? (
+        <Modal title="Notification event inspection" onClose={() => setInspectEvent(null)} size="large">
+          <div className="panel-pad">
+            <dl className="grid" style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+              gap: 12,
+            }}>
+              {['id', 'event_type', 'channel', 'recipient_email', 'status', 'attempts',
+                'max_attempts', 'next_attempt_at', 'last_attempt_at', 'delivered_at',
+                'claimed_by', 'last_error', 'cancel_reason'].map((key) => (
+                <div key={key}>
+                  <dt className="form-label">{key.replace(/_/g, ' ')}</dt>
+                  <dd className="small" style={{ margin: 0, overflowWrap: 'anywhere' }}>
+                    {inspectEvent[key] == null || inspectEvent[key] === '' ? '—' : String(inspectEvent[key])}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <h4>Payload</h4>
+            <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+              {JSON.stringify(inspectEvent.payload ?? {}, null, 2)}
+            </pre>
+          </div>
+        </Modal>
+      ) : null}
+
+      {cancelEvent ? (
+        <Modal title="Cancel notification event" onClose={() => {
+          if (!actionBusy) {
+            setCancelEvent(null);
+            setCancelReason('');
+          }
+        }}>
+          <div className="panel-pad">
+            <p>Cancel this notification event? This action cannot be used to stop an event that has already been delivered.</p>
+            <label className="field">
+              <span className="form-label">Reason</span>
+              <textarea className="input" rows={3} maxLength={255}
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="Explain why this notification is being cancelled." />
+            </label>
+            <div className="row-end" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button type="button" className="btn-secondary" disabled={actionBusy}
+                onClick={() => { setCancelEvent(null); setCancelReason(''); }}>
+                Keep event
+              </button>
+              <button type="button" className="btn-primary"
+                disabled={actionBusy || !cancelReason.trim()}
+                onClick={cancel}>
+                {actionBusy ? 'Cancelling…' : 'Confirm cancellation'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+    </div>
+  );
+}
 function HealthMonitor() {
   const [data, setData] = useState(null);
   const [, setLoading] = useState(true);

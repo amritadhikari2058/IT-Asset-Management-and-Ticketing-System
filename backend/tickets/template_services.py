@@ -136,6 +136,13 @@ def apply_canned_response(ticket, validated_data, actor):
     if not response.is_active:
         raise PermissionDenied("This canned response is inactive.")
 
+    # Queue-less responses are general-purpose. Queue-specific responses
+    # may only be applied to tickets assigned to that same queue.
+    if response.queue_id is not None and response.queue_id != ticket.queue_id:
+        raise PermissionDenied(
+            "This canned response is restricted to a different support queue."
+        )
+
     if visibility == "public_reply" and response.visibility not in ("public_reply", "both"):
         raise ValidationError("This response cannot be used as a public reply.")
     if visibility == "internal_note" and response.visibility not in ("internal_note", "both"):

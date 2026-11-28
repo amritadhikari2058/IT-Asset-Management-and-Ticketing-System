@@ -286,3 +286,187 @@ describe('Change Management page components render directly', () => {
     expect(screen.getAllByText('0').length).toBeGreaterThanOrEqual(1);
   });
 });
+
+
+describe('ChangeScheduleView coverage', () => {
+  const scheduleRow = {
+    id: 101,
+    change_number: 'CHG-2026-0101',
+    title: 'Database maintenance',
+    status: 'scheduled',
+    risk_level: 'high',
+    priority: 'high',
+    change_type: 'normal',
+    planned_start: '2026-12-01T10:00:00Z',
+    planned_end: '2026-12-01T11:00:00Z',
+    department: 'IT',
+  };
+
+  const emptyPage = {
+    results: [],
+    count: 0,
+    next: null,
+    previous: null,
+  };
+
+  const latestRequestParams = () => {
+    const calls = mockFetchPage.mock.calls;
+    const latestUrl = calls[calls.length - 1]?.[0];
+    return new URLSearchParams(String(latestUrl).split('?')[1] || '');
+  };
+
+  it('denies employees access without requesting schedule data', () => {
+    mockAuth.mockReturnValue(makeAuth('employee'));
+
+    render(<ChangeScheduleView />);
+
+    expect(screen.getByText('Access Denied')).toBeTruthy();
+    expect(screen.getByText('Only IT staff can view the schedule.')).toBeTruthy();
+    expect(mockFetchPage).not.toHaveBeenCalled();
+  });
+
+  it('shows the loading state while the schedule request is pending', () => {
+    mockAuth.mockReturnValue(makeAuth('it_manager'));
+    mockFetchPage.mockReturnValue(new Promise(() => {}));
+
+    render(<ChangeScheduleView />);
+
+    expect(screen.getByText('Loading schedule...')).toBeTruthy();
+  });
+
+  it('shows a parsed error when the schedule request fails', async () => {
+    mockAuth.mockReturnValue(makeAuth('it_manager'));
+    mockFetchPage.mockRejectedValue(new Error('Request failed'));
+
+    render(<ChangeScheduleView />);
+
+    expect(await screen.findByText('Error: Error')).toBeTruthy();
+  });
+
+  it('serializes all filters and resets pagination to page one', async () => {
+    mockAuth.mockReturnValue(makeAuth('it_manager'));
+    mockFetchPage.mockResolvedValue(emptyPage);
+
+    render(<ChangeScheduleView />);
+    await screen.findByText('Change Schedule');
+
+    fireEvent.change(screen.getByLabelText('Status'), {
+      target: { value: 'scheduled' },
+    });
+    fireEvent.change(screen.getByLabelText('Priority'), {
+      target: { value: 'high' },
+    });
+    fireEvent.change(screen.getByLabelText('Risk Level'), {
+      target: { value: 'critical' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Search changes...'), {
+      target: { value: 'database' },
+    });
+    fireEvent.change(screen.getByLabelText('From Date'), {
+      target: { value: '2026-12-01' },
+    });
+    fireEvent.change(screen.getByLabelText('To Date'), {
+      target: { value: '2026-12-31' },
+    });
+
+    await waitFor(() => {
+      const params = latestRequestParams();
+
+      expect(params.get('page')).toBe('1');
+      expect(params.get('page_size')).toBe('20');
+      expect(params.get('status')).toBe('scheduled');
+      expect(params.get('priority')).toBe('high');
+      expect(params.get('risk')).toBe('critical');
+      expect(params.get('search')).toBe('database');
+      expect(params.get('date_from')).toBe('2026-12-01');
+      expect(params.get('date_to')).toBe('2026-12-31');
+    });
+  });
+
+  it('clears all filters and reloads the first page when Reset Filters is clicked', async () => {
+    mockAuth.mockReturnValue(makeAuth('it_manager'));
+    mockFetchPage.mockResolvedValue(emptyPage);
+
+    render(<ChangeScheduleView />);
+    await screen.findByText('Change Schedule');
+
+    fireEvent.change(screen.getByLabelText('Status'), {
+      target: { value: 'scheduled' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Search changes...'), {
+      target: { value: 'database' },
+    });
+
+    await waitFor(() => {
+      expect(latestRequestParams().get('status')).toBe('scheduled');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Filters' }));
+
+    await waitFor(() => {
+      const params = latestRequestParams();
+
+      expect(params.get('page')).toBe('1');
+      expect(params.get('page_size')).toBe('20');
+      expect(params.has('status')).toBe(false);
+      expect(params.has('priority')).toBe(false);
+      expect(params.has('risk')).toBe(false);
+      expect(params.has('search')).toBe(false);
+      expect(params.has('date_from')).toBe(false);
+      expect(params.has('date_to')).toBe(false);
+    });
+
+    expect(screen.getByLabelText('Status').value).toBe('');
+    expect(screen.getByPlaceholderText('Search changes...').value).toBe('');
+  });
+
+  it('shows the empty state when no changes match the request', async () => {
+    mockAuth.mockReturnValue(makeAuth('it_manager'));
+    mockFetchPage.mockResolvedValue(emptyPage);
+
+    render(<ChangeScheduleView />);
+
+    expect(await screen.findByText('No scheduled changes')).toBeTruthy();
+    expect(screen.getByText('No changes match the current filters.')).toBeTruthy();
+  });
+
+  it('moves forward and backward through server pagination', async () => {
+    mockAuth.mockReturnValue(makeAuth('it_manager'));
+
+    mockFetchPage.mockImplementation((url) => {
+      const params = new URLSearchParams(String(url).split('?')[1] || '');
+      const page = params.get('page');
+
+      return Promise.resolve({
+        results: [scheduleRow],
+        count: 21,
+        next: page === '1' ? 'http://testserver/api/changes/?page=2' : null,
+        previous: page === '2' ? 'http://testserver/api/changes/?page=1' : null,
+      });
+    });
+
+    render(<ChangeScheduleView />);
+
+    expect(await screen.findByText('CHG-2026-0101')).toBeTruthy();
+
+    const nextButton = screen.getByRole('button', { name: /Next/ });
+    expect(nextButton.disabled).toBe(false);
+
+    fireEvent.click(nextButton);
+
+    await waitFor(() => {
+      expect(latestRequestParams().get('page')).toBe('2');
+    });
+
+    const previousButton = screen.getByRole('button', { name: /Prev/ });
+    await waitFor(() => {
+      expect(previousButton.disabled).toBe(false);
+    });
+
+    fireEvent.click(previousButton);
+
+    await waitFor(() => {
+      expect(latestRequestParams().get('page')).toBe('1');
+    });
+  });
+});

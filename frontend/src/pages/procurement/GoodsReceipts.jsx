@@ -51,7 +51,9 @@ export function GoodsReceiptsPage({ purchaseOrderId }) {
     }
   }, [page, filters, purchaseOrderId]);
 
-  useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
+  useEffect(() => {
+    if (caps.canViewProcurement) load();
+  }, [load, caps.canViewProcurement]); // eslint-disable-line react/set-state-in-effect
 
   const pageCount = Math.max(1, Math.ceil(count / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);

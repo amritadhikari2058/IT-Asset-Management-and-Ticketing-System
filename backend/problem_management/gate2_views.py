@@ -1,4 +1,5 @@
 """Gate 2 base views and read endpoints (transport only, no logic duplication)."""
+from django.db import transaction
 from rest_framework import viewsets
 from rest_framework.exceptions import NotFound, ValidationError as DRFValidationError
 from rest_framework.pagination import PageNumberPagination
@@ -37,6 +38,19 @@ class Gate2ModelViewSet(viewsets.ModelViewSet):
     parent_field = None
     create_map = {}
     locked_statuses = frozenset()
+    # Maps field names to the validation message returned when a PATCH tries
+    # to change a server-owned/transition-managed field. Viewsets opt in.
+    immutable_fields = {}
+    protected_fields = {}
+
+    def _reject_protected_patch_fields(self, data):
+        errors = {}
+        for fields in (self.immutable_fields, self.protected_fields):
+            for field, message in fields.items():
+                if field in data:
+                    errors[field] = message
+        if errors:
+            raise DRFValidationError(errors)
 
     def get_queryset(self):
         qs = self.model.objects.filter(is_deleted=False)
@@ -68,6 +82,7 @@ class Gate2ModelViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()
+        self._reject_protected_patch_fields(request.data)
         if instance.status in self.locked_statuses:
             raise DRFValidationError(
                 {"detail": f"A {instance.status} record can no longer be edited."})
@@ -78,7 +93,12 @@ class Gate2ModelViewSet(viewsets.ModelViewSet):
         serializer.validated_data.pop("status", None)
         guarded(services.validate_record_references,
                 problem=instance.problem, data=serializer.validated_data)
-        updated = guarded(serializer.save)
+
+        def save_in_transaction():
+            with transaction.atomic():
+                return serializer.save()
+
+        updated = guarded(save_in_transaction)
         return Response(self.get_serializer(updated).data)
 
 
@@ -159,18 +179,12 @@ class ProblemReadinessView(APIView):
 class LinkedTicketsView(ProblemCollectionView):
     model = ProblemTicketLink
     serializer_class = ProblemTicketLinkSerializer
-    
+
     def get_queryset(self):
         qs = super().get_queryset()
-        # Annotate with ticket details for display
-        from tickets.models import Ticket
-        qs = qs.select_related("ticket").annotate(
-            ticket_number=F("ticket__ticket_number"),
-            ticket_title=F("ticket__title"),
-            ticket_status=F("ticket__status"),
-            ticket_priority=F("ticket__priority"),
-        ).order_by("-linked_at")
-        return qs
+        return qs.select_related(
+            "problem", "ticket", "ticket__category", "linked_by",
+        ).order_by("-linked_at", "-id")
 
 
 class LinkedCIsView(ProblemCollectionView):

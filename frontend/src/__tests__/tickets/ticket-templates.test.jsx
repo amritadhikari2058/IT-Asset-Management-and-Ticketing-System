@@ -253,6 +253,20 @@ describe('TicketTemplatesPage', () => {
     expect(screen.getByText('New laptop request')).toBeTruthy();
     expect(screen.queryByText('Software access request')).toBeNull();
   });
+  it('navigates to ticket creation when Use template is selected', async () => {
+    setupApi([template]);
+
+    render(<TicketTemplatesPage />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Use template' }),
+    );
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe('#/tickets/new?template=12');
+    });
+  });
+
   it('blocks non-staff users without making API requests', () => {
     mockAuth.mockReturnValue({
       isStaff: false,

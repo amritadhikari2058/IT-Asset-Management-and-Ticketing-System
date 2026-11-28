@@ -128,6 +128,112 @@ class TestSavedViewResultVisibility:
 
 
 @pytest.mark.django_db
+class TestCannedResponseQueueRestrictions:
+    def test_general_response_can_be_applied_to_queued_ticket(self, base):
+        from tickets.template_services import apply_canned_response
+
+        queue = TicketQueue.objects.create(name="Hardware", code="HW-TEST")
+        ticket = base["t_owner"]
+        ticket.queue = queue
+        ticket.save(update_fields=["queue"])
+
+        response = CannedResponse.objects.create(
+            title="General help",
+            body="Please restart the device.",
+            visibility="both",
+            owner=base["support"],
+        )
+
+        note = apply_canned_response(
+            ticket,
+            {"canned_response_id": response.pk, "visibility": "internal_note"},
+            base["support"],
+        )
+
+        assert note.body == "Please restart the device."
+        assert note.ticket_id == ticket.pk
+
+    def test_matching_queue_response_can_be_applied(self, base):
+        from tickets.template_services import apply_canned_response
+
+        queue = TicketQueue.objects.create(name="Hardware", code="HW-MATCH")
+        ticket = base["t_owner"]
+        ticket.queue = queue
+        ticket.save(update_fields=["queue"])
+
+        response = CannedResponse.objects.create(
+            title="Hardware help",
+            body="Hardware queue instructions.",
+            visibility="both",
+            owner=base["support"],
+            queue=queue,
+        )
+
+        note = apply_canned_response(
+            ticket,
+            {"canned_response_id": response.pk, "visibility": "internal_note"},
+            base["support"],
+        )
+
+        assert note.body == "Hardware queue instructions."
+
+    def test_different_queue_response_is_rejected(self, base):
+        from tickets.template_services import (
+            apply_canned_response,
+            PermissionDenied,
+        )
+
+        ticket_queue = TicketQueue.objects.create(
+            name="Hardware", code="HW-DIFF"
+        )
+        response_queue = TicketQueue.objects.create(
+            name="Software", code="SW-DIFF"
+        )
+        ticket = base["t_owner"]
+        ticket.queue = ticket_queue
+        ticket.save(update_fields=["queue"])
+
+        response = CannedResponse.objects.create(
+            title="Software help",
+            body="Software queue instructions.",
+            visibility="both",
+            owner=base["support"],
+            queue=response_queue,
+        )
+
+        with pytest.raises(PermissionDenied):
+            apply_canned_response(
+                ticket,
+                {"canned_response_id": response.pk, "visibility": "internal_note"},
+                base["support"],
+            )
+
+    def test_queue_specific_response_is_rejected_for_unqueued_ticket(self, base):
+        from tickets.template_services import (
+            apply_canned_response,
+            PermissionDenied,
+        )
+
+        queue = TicketQueue.objects.create(
+            name="Hardware", code="HW-NULL"
+        )
+        response = CannedResponse.objects.create(
+            title="Hardware help",
+            body="Hardware queue instructions.",
+            visibility="both",
+            owner=base["support"],
+            queue=queue,
+        )
+
+        with pytest.raises(PermissionDenied):
+            apply_canned_response(
+                base["t_owner"],
+                {"canned_response_id": response.pk, "visibility": "internal_note"},
+                base["support"],
+            )
+
+
+@pytest.mark.django_db
 class TestMergeRecordMatrix:
     def test_support_cannot_retrieve_merge_record(self, api, base):
         rec = TicketMergeRecord.objects.create(primary_ticket=base["t_owner"], merged_ticket=base["t_other"], reason="dup")

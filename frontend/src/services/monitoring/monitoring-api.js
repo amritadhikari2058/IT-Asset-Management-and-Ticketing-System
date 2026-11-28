@@ -10,6 +10,7 @@ const SUPPORTED_ALERT_ACTIONS = new Set([
 
 export const MonitoringEndpoints = {
   sources: '/monitoring/sources/',
+  alertList: '/monitoring/alerts/',
   sourceRotate: (id) => `/monitoring/sources/${id}/rotate-secret/`,
   sourceDisable: (id) => `/monitoring/sources/${id}/disable/`,
   sourceEnable: (id) => `/monitoring/sources/${id}/enable/`,
@@ -32,6 +33,20 @@ export async function listSources(params = {}) {
   const url = `${MonitoringEndpoints.sources}?${p.toString()}`;
   const r = await api.get(url);
   return r.data;
+}
+
+/** List monitoring alerts (GET /monitoring/alerts/).
+ * Supports the backend's page and page_size pagination parameters.
+ */
+export async function listAlerts(params = {}) {
+  const p = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== '' && value != null) p.set(key, value);
+  }
+  const query = p.toString();
+  const url = `${MonitoringEndpoints.alertList}${query ? `?${query}` : ''}`;
+  const response = await api.get(url);
+  return response.data;
 }
 
 /** Retrieve a single monitoring source (GET /monitoring/sources/<id>/). */
@@ -109,6 +124,7 @@ export default {
   disableSource,
   rotateSourceSecret,
   testSource,
+  listAlerts,
   getAlert,
   alertAction,
   loadDashboard,

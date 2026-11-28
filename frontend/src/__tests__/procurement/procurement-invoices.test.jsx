@@ -226,6 +226,14 @@ describe('P3 invoice detail readiness and visibility', () => {
     expect(screen.queryByRole('button', { name: 'Add Line' })).toBeNull();
   });
 
+  it('hides Approve from an IT Manager when System Admin approval is required', async () => {
+    mockInvoiceLoad({ status: 'matched', requires_system_admin_approval: true });
+    render(<ProcurementInvoiceDetail id={1} />);
+    expect(await screen.findByText(/Invoice INV-1/)).toBeTruthy();
+    expect(screen.getByRole('note').textContent).toMatch(/requires System Admin approval/i);
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeTruthy();
+  });
   it('keeps Mark Payment Ready disabled until the backend readiness is true', async () => {
     mockInvoiceLoad({ status: 'approved', payment_status: 'not_ready' });
     render(<ProcurementInvoiceDetail id={1} />);

@@ -5,6 +5,7 @@
 
 import React, { useEffect, useState } from 'react';
 import api from '../../api';
+import { ChangeAttachmentPanel } from './ChangeAttachmentPanel';
 import { PageHeader, Badge, Button } from '../../components';
 import { useAuth } from '../../auth';
 import { parseApiError, formatDate, formatDateTime, statusBadgeVariant, riskBadgeVariant, priorityBadgeVariant, actionAvailability, STATUS_LABELS, CHANGE_TYPE_LABELS, RISK_LEVEL_LABELS, PRIORITY_LABELS } from '../../shared/changes-utils';
@@ -430,34 +431,22 @@ export function ChangeDetail({ match }) {
     )}
   </div>;
 
-  const { attachments } = change;
+  const renderAttachments = () => <ChangeAttachmentPanel changeId={change.id} />;
 
-  const renderAttachments = () =>
-  <div>
-    {attachments ? (
-      <div>
-        {attachments.map((a, i) => (
-          <div key={a.id || i} className="mt-1">
-            <strong>{a.document_type}</strong>: {a.filename}
-            {a.uploader && <p>Uploader: {a.uploader.email}</p>}
-          </div>
-        ))}
-      </div>
-    ) : (
-      <p>No attachments</p>
-    )}
-  </div>;
-
-  const { communications } = change;
+  const communications = Array.isArray(change.communications)
+    ? change.communications
+    : [];
 
   const renderCommunications = () =>
   <div>
-    {communications ? (
+    {communications.length > 0 ? (
       <div>
         {communications.map((c, i) => (
           <div key={c.id || i} className="mt-1">
-            <strong>{c.type}</strong>: {c.subject}
+            <strong>{c.communication_type || 'Communication'}</strong>: {c.subject || '—'}
+            {c.status && <p>Status: {c.status}</p>}
             {c.sent_at && <p>Sent: {formatDateTime(c.sent_at)}</p>}
+            {c.scheduled_for && <p>Scheduled: {formatDateTime(c.scheduled_for)}</p>}
           </div>
         ))}
       </div>
@@ -466,15 +455,20 @@ export function ChangeDetail({ match }) {
     )}
   </div>;
 
-  const { stakeholders } = change;
+  const stakeholders = Array.isArray(change.stakeholders)
+    ? change.stakeholders
+    : [];
 
   const renderStakeholders = () =>
   <div>
-    {stakeholders ? (
+    {stakeholders.length > 0 ? (
       <div>
         {stakeholders.map((s, i) => (
           <div key={s.id || i} className="mt-1">
-            <strong>{s.user?.employee_id}:</strong> {s.user?.email}
+            <strong>{s.user_email || 'Unknown user'}</strong>
+            {s.stakeholder_type && <>: {s.stakeholder_type}</>}
+            {s.department_name && <span> — {s.department_name}</span>}
+            {s.notification_level && <p>Notifications: {s.notification_level}</p>}
           </div>
         ))}
       </div>

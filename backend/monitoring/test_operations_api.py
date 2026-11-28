@@ -108,7 +108,7 @@ class AlertCollectionApiTests(APITestCase):
     def test_list_anonymous_denied(self):
         """Test Anonymous user is denied alert list access."""
         response = self.client.get("/api/monitoring/alerts/")
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_list_no_sensitive_fields(self):
         """Test that sensitive fields are absent from list response."""

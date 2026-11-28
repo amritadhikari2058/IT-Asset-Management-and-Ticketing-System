@@ -56,7 +56,6 @@ class MonitoringDashboardView(APIView):
     Permission scoping applied via DashboardPermission.
     """
 
-    authentication_classes = []
     permission_classes = [DashboardPermission]
 
     def get(self, request):

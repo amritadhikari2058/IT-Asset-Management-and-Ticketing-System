@@ -27,10 +27,11 @@ const VALID_TRANSITIONS = {
   archived: [],
 };
 
-export function TicketForm({ id }) {
+export function TicketForm({ id, templateId }) {
   const { user, isStaff, canCreateTickets } = useAuth();
   const isEdit = !!id;
-  const [loading, setLoading] = useState(isEdit);
+  const [loading, setLoading] = useState(isEdit || !!templateId);
+  const [templateRequiredAsset, setTemplateRequiredAsset] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [form, setForm] = useState({
     title: '', description: '', priority: 'medium', category: '',
@@ -50,8 +51,47 @@ export function TicketForm({ id }) {
   useEffect(() => {
     if (!isEdit) {
       if (user?.home_department) setForm((f) => ({ ...f, department: user.home_department })); // eslint-disable-line react/set-state-in-effect
-      return;
+      if (!templateId) {
+        setTemplateRequiredAsset(false);
+        return undefined;
+      }
+
+      let active = true;
+      const controller = new AbortController();
+      (async () => {
+        setLoading(true);
+        try {
+          const r = await api.get(`/tickets/templates/${templateId}/`, {
+            signal: controller.signal,
+          });
+          if (!active) return;
+          const template = r.data;
+          setTemplateRequiredAsset(!!template.required_asset);
+          setForm((f) => ({
+            ...f,
+            title: template.title_template ?? f.title,
+            description: template.description_template ?? f.description,
+            priority: template.priority ?? f.priority,
+            category: template.category ?? f.category,
+            assignee: isStaff && template.default_assignee
+              ? template.default_assignee
+              : f.assignee,
+          }));
+        } catch (e) {
+          if (active && !controller.signal.aborted) {
+            setLoadError(parseApiError(e).global || 'Could not load ticket template.');
+          }
+        } finally {
+          if (active) setLoading(false);
+        }
+      })();
+
+      return () => {
+        active = false;
+        controller.abort();
+      };
     }
+
     let active = true;
     const controller = new AbortController();
     (async () => {
@@ -80,7 +120,7 @@ export function TicketForm({ id }) {
       active = false;
       controller.abort();
     };
-  }, [id, isEdit, user]);
+  }, [id, isEdit, user, templateId, isStaff]);
 
   useEffect(() => {
     return () => setOkMsg('');
@@ -125,6 +165,10 @@ export function TicketForm({ id }) {
     setFieldErrors({});
     setGlobalError('');
     setOkMsg('');
+    if (!isEdit && templateRequiredAsset && form.asset === '') {
+      setFieldErrors({ asset: 'Select a related asset because this template requires one.' });
+      return;
+    }
     const payload = {
       title: form.title.trim(),
       description: form.description.trim(),
@@ -240,7 +284,11 @@ export function TicketForm({ id }) {
           <Field label="Department" error={fieldMsg(fieldErrors, 'department')} hint="Defaults to your home department.">
             <DepartmentSelect value={form.department} onChange={set('department')} disabled={submitting} />
           </Field>
-          <Field label="Related asset (optional)" error={fieldMsg(fieldErrors, 'asset')}>
+          <Field
+            label={templateRequiredAsset ? 'Related asset' : 'Related asset (optional)'}
+            required={templateRequiredAsset}
+            error={fieldMsg(fieldErrors, 'asset')}
+          >
             <AssetSelect value={form.asset} onChange={set('asset')} disabled={submitting} />
           </Field>
         </div>
@@ -346,6 +394,11 @@ export function TicketDetail({ id }) {
   const [cannedVisibility, setCannedVisibility] = useState('internal_note');
   const [cannedBusy, setCannedBusy] = useState(false);
   const [cannedError, setCannedError] = useState('');
+  const ticketQueueId = ticket?.queue == null ? null : Number(ticket.queue);
+  const availableCannedResponses = cannedResponses.filter((response) => (
+    response.queue == null
+    || (ticketQueueId !== null && Number(response.queue) === ticketQueueId)
+  ));
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [attachments, setAttachments] = useState([]);
@@ -455,7 +508,14 @@ export function TicketDetail({ id }) {
   };
 
   const applyCannedResponse = async () => {
-    if (!isStaff || cannedBusy || !cannedResponseId) return;
+    if (
+      !isStaff
+      || cannedBusy
+      || !cannedResponseId
+      || !availableCannedResponses.some(
+        (item) => String(item.id) === cannedResponseId
+      )
+    ) return;
 
     setCannedBusy(true);
     setCannedError('');
@@ -702,7 +762,7 @@ export function TicketDetail({ id }) {
                 className="input"
                 value={cannedResponseId}
                 onChange={(e) => {
-                  const selected = cannedResponses.find(
+                  const selected = availableCannedResponses.find(
                     (item) => String(item.id) === e.target.value
                   );
                   setCannedResponseId(e.target.value);
@@ -713,11 +773,11 @@ export function TicketDetail({ id }) {
                   );
                   setCannedError('');
                 }}
-                disabled={cannedBusy || cannedResponses.length === 0}
+                disabled={cannedBusy || availableCannedResponses.length === 0}
                 aria-label="Saved response"
               >
                 <option value="">Choose a saved response...</option>
-                {cannedResponses.map((response) => (
+                {availableCannedResponses.map((response) => (
                   <option key={response.id} value={response.id}>
                     {response.title}
                   </option>
@@ -735,12 +795,12 @@ export function TicketDetail({ id }) {
                   disabled={cannedBusy}
                   aria-label="Saved response visibility"
                 >
-                  {cannedResponses.find(
+                  {availableCannedResponses.find(
                     (item) => String(item.id) === cannedResponseId
                   )?.visibility !== 'internal_note' && (
                     <option value="public_reply">Public reply</option>
                   )}
-                  {cannedResponses.find(
+                  {availableCannedResponses.find(
                     (item) => String(item.id) === cannedResponseId
                   )?.visibility !== 'public_reply' && (
                     <option value="internal_note">Internal note</option>

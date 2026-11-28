@@ -5,7 +5,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .models import MonitoringAutomationPolicy, MonitoringSource
-from .permissions import SystemAdminPermission, ITSupportPermission, ITManagerPermission
+from common.permissions import IsActiveAuthenticated
+
+from .permissions import SystemAdminPermission
 from .policy_serializers import MonitoringAutomationPolicySerializer
 
 
@@ -22,51 +24,22 @@ class MonitoringAutomationPolicyViewSet(viewsets.ModelViewSet):
 
     queryset = MonitoringAutomationPolicy.objects.all().order_by("-is_active", "name", "pk")
     serializer_class = MonitoringAutomationPolicySerializer
-    authentication_classes = []
-    permission_classes = [SystemAdminPermission]
+    permission_classes = [IsActiveAuthenticated, SystemAdminPermission]
 
     def get_permissions(self):
-        """Role-based permission control per action.
+        """Require active authentication and enforce role/action access."""
 
-        - System Admin: full CRUD
-        - IT Manager: read-only unless existing governance permits writes
-        - IT Support: read-only or denied according to existing policy
-        - Employee: denied
-        - Inactive user: denied
-        - Unknown role: denied
-        - Anonymous user: denied
-        """
-        role = getattr(self.request.user, "role", None)
         user = self.request.user
-
-        # Deny inactive and anonymous users
-        if not getattr(user, "is_active", False):
-            return [SystemAdminPermission()]
-
-        if not user.is_authenticated:
-            return [SystemAdminPermission()]
+        role = getattr(user, "role", None)
 
         if role == "system_admin":
-            # Full CRUD for system admins
-            return []  # No additional permissions
-        elif role == "it_manager":
-            # IT Manager: read-only (list, retrieve)
-            if self.action in ("list", "retrieve"):
-                return []
-            # Deny write actions
-            return [SystemAdminPermission()]
-        elif role == "it_support":
-            # IT Support: read-only
-            if self.action in ("list", "retrieve"):
-                return []
-            return [SystemAdminPermission()]  # Denied for writes
-        elif role == "employee":
-            # Employee: denied entirely
-            return [SystemAdminPermission()]
-        else:
-            # Unknown role: denied
-            return [SystemAdminPermission()]
+            return [IsActiveAuthenticated()]
 
+        if role in ("it_manager", "it_support") and self.action in ("list", "retrieve"):
+            return [IsActiveAuthenticated()]
+
+        # Employees, unknown roles, and non-admin write actions are denied.
+        return [IsActiveAuthenticated(), SystemAdminPermission()]
     def destroy(self, request, *args, **kwargs):
         """Governed delete: deactivate instead of hard delete.
 

@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 
-const { mockGet, mockPatch, mockAuth } = vi.hoisted(() => ({
+const { mockGet, mockPost, mockPatch, mockAuth } = vi.hoisted(() => ({
   mockGet: vi.fn(),
+  mockPost: vi.fn(),
   mockPatch: vi.fn(),
   mockAuth: vi.fn(),
 }));
@@ -10,7 +11,7 @@ const { mockGet, mockPatch, mockAuth } = vi.hoisted(() => ({
 vi.mock('../../api', () => ({
   default: {
     get: (...args) => mockGet(...args),
-    post: () => {},
+    post: (...args) => mockPost(...args),
     patch: (...args) => mockPatch(...args),
     delete: vi.fn(),
   },
@@ -96,6 +97,7 @@ beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
   window.location.hash = '';
+  mockPost.mockResolvedValue({ data: { id: 30 } });
 });
 
 afterEach(() => cleanup());
@@ -324,6 +326,77 @@ describe('Ticket update — state refresh after mutation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(mockPatch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(window.location.hash).toBe('#/tickets/7'));
+  });
+});
+
+describe('Ticket creation from template', () => {
+  const requiredAssetTemplate = {
+    id: 12,
+    title_template: 'Request for a new laptop',
+    description_template: 'Laptop request details',
+    priority: 'high',
+    category: null,
+    default_assignee: null,
+    required_asset: true,
+  };
+
+  it('prefills supported fields from the selected template', async () => {
+    staff();
+
+    mockGet.mockImplementation(async (url) => {
+      if (url === '/tickets/templates/12/') {
+        return { data: requiredAssetTemplate };
+      }
+      return ticketRoutes(url);
+    });
+
+    render(<TicketForm templateId="12" />);
+
+    const subject = await screen.findByPlaceholderText(
+      'Brief summary of the issue',
+    );
+
+    await waitFor(() => {
+      expect(subject.value).toBe('Request for a new laptop');
+    });
+
+    expect(screen.getByPlaceholderText('Steps to reproduce, impact, environment…').value).toBe(
+      'Laptop request details',
+    );
+    expect(screen.getAllByRole('combobox')[0].value).toBe('high');
+    expect(screen.getByText('Related asset')).toBeTruthy();
+  });
+
+  it('blocks submission when the template requires an asset', async () => {
+    staff();
+
+    mockGet.mockImplementation(async (url) => {
+      if (url === '/tickets/templates/12/') {
+        return { data: requiredAssetTemplate };
+      }
+      return ticketRoutes(url);
+    });
+
+    render(<TicketForm templateId="12" />);
+
+    await screen.findByRole('button', { name: 'Create ticket' });
+
+    fireEvent.change(
+      screen.getByPlaceholderText('Brief summary of the issue'),
+      { target: { value: 'Laptop request' } },
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Steps to reproduce, impact, environment…'), {
+      target: { value: 'A laptop is required.' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create ticket' }));
+
+    expect(await screen.findByText(
+      'Select a related asset because this template requires one.',
+    )).toBeTruthy();
+
+    expect(mockPost).not.toHaveBeenCalled();
   });
 });
 

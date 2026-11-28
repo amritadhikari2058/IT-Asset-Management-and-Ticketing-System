@@ -8,7 +8,7 @@ import {
   TableControls, UserSelect, useSort, useTableColumns,
 } from '../components';
 import { fetchPage, fieldMsg, parseApiError } from '../api-utils';
-import { AssetBulkCreateModal, EmployeeCreateModal, EmployeeImportModal, ReportTable, TicketBulkCreateModal } from './bulk';
+import { AssetBulkCreateModal, EmployeeCreateModal, EmployeeImportModal, EmployeeBulkUpdateModal, ReportTable, TicketBulkCreateModal } from './bulk';
 
 const TICKET_STATUSES = ['', 'open', 'in_progress', 'resolved', 'closed', 'reopened', 'archived'];
 const TICKET_PRIORITIES = ['', 'low', 'medium', 'high', 'critical'];
@@ -1717,6 +1717,7 @@ export function Users() {
   const [err, setErr] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showBulkUpdate, setShowBulkUpdate] = useState(false);
   const [rowBusy, setRowBusy] = useState(null);
   const [confirmUser, setConfirmUser] = useState(null); // {user, activate:boolean}
   const [roleTarget, setRoleTarget] = useState(null);
@@ -2004,6 +2005,7 @@ export function Users() {
         actions={<>
           {isStaff && <button type="button" className="btn-primary" onClick={() => setShowCreate(true)}>+ Add employee</button>}
           {isStaff && <button type="button" className="btn-secondary" onClick={() => setShowImport(true)}>Bulk import…</button>}
+          {isStaff && <button type="button" className="btn-secondary" onClick={() => setShowBulkUpdate(true)}>Bulk update…</button>}
           {isStaff && <button type="button" className="btn-secondary" onClick={() => setExportOpen(true)}>Export…</button>}
         </>} />
         {isStaff && selUsers.size > 0 && (
@@ -2101,6 +2103,7 @@ export function Users() {
       <p className="muted small">Import template key: employee_id — roles never change via bulk import.</p>
       {showCreate && <EmployeeCreateModal onClose={() => setShowCreate(false)} onCreated={refresh} />}
       {showImport && <EmployeeImportModal onClose={() => setShowImport(false)} onImported={refresh} />}
+      {showBulkUpdate && <EmployeeBulkUpdateModal onClose={() => setShowBulkUpdate(false)} onUpdated={refresh} />}
       {editingUser && (
         <EmployeeEditModal
           user={editingUser}

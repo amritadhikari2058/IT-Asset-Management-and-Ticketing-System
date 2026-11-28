@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAuth } from '../../auth';
 import { Badge, Button, DataTable, Field, Input, LoadingRows, PageHeader, Panel, PanelPad } from '../../components';
@@ -7,7 +7,7 @@ import {
   publishWorkaround, retireWorkaround, submitWorkaround,
 } from '../../services/problem-management';
 
-export function Workarounds({ problemId: problemIdProp }) {
+export function Workarounds({ problemId: problemIdProp, embedded = false }) {
   const params = useParams();
   const problemId = problemIdProp ?? params.id;
   const { isStaff, isManagerOrAdmin } = useAuth();
@@ -19,10 +19,10 @@ export function Workarounds({ problemId: problemIdProp }) {
   const [steps, setSteps] = useState('');
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const busyRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    setError('');
     try {
       const data = await listWorkarounds(problemId);
       setRows(Array.isArray(data) ? data : data?.results ?? []);
@@ -35,13 +35,16 @@ export function Workarounds({ problemId: problemIdProp }) {
 
   useEffect(() => { load(); }, [load]); // eslint-disable-line react/set-state-in-effect
 
+  const cleanTitle = title.trim();
+  const cleanSteps = steps.trim();
+
   const submit = async (ev) => {
     ev.preventDefault();
-    if (!title.trim() || saving) return;
+    if (!cleanTitle || !cleanSteps || saving) return;
     setSaving(true);
     setError('');
     try {
-      await createWorkaround(problemId, { title: title.trim(), steps: steps.trim() });
+      await createWorkaround(problemId, { title: cleanTitle, steps: cleanSteps });
       setTitle('');
       setSteps('');
       await load();
@@ -52,18 +55,42 @@ export function Workarounds({ problemId: problemIdProp }) {
     }
   };
 
+  const versionPayload = (row) => (
+    row?.version == null ? {} : { expected_record_version: row.version }
+  );
+
+  const mergeRecord = (updated) => {
+    if (!updated || updated.id == null) return;
+    setRows((current) => current.map((row) => (
+      row.id === updated.id ? { ...row, ...updated } : row
+    )));
+  };
+
   const move = async (row, fn, label) => {
-    if (busyId) return;
+    if (busyRef.current !== null) return;
+    busyRef.current = row.id;
     setBusyId(row.id);
     setError('');
     setNotice('');
     try {
-      await fn(row.id);
+      const updated = await fn(row.id, versionPayload(row));
+      mergeRecord(updated);
       setNotice(`${label} succeeded.`);
       await load();
     } catch (e) {
-      setError(e?.response?.data?.detail || `${label} failed.`);
+      const status = e?.response?.status ?? e?.status;
+      if (status === 409) {
+        const detail = e?.response?.data?.detail
+          || e?.response?.data?.error
+          || (typeof e?.message === 'string' ? e.message : '')
+          || 'The record changed on the server.';
+        setError(`Version conflict: ${detail} Review the refreshed record before trying again.`);
+        await load();
+      } else {
+        setError(e?.response?.data?.detail || `${label} failed.`);
+      }
     } finally {
+      busyRef.current = null;
       setBusyId(null);
     }
   };
@@ -77,7 +104,7 @@ export function Workarounds({ problemId: problemIdProp }) {
       label: 'Actions',
       render: (r) => {
         if (!isStaff) return '—';
-        const disabled = busyId === r.id;
+        const disabled = busyId !== null;
         const buttons = [];
         if (r.status === 'draft') {
           buttons.push(<Button key="submit" kind="ghost" size="small" disabled={disabled} onClick={() => move(r, submitWorkaround, 'Submit')}>Submit</Button>);
@@ -101,7 +128,9 @@ export function Workarounds({ problemId: problemIdProp }) {
 
   return (
     <div>
-      <PageHeader title="Workarounds" sub="Temporary mitigations" />
+      {embedded
+        ? <h3>Workarounds</h3>
+        : <PageHeader title="Workarounds" sub="Temporary mitigations" />}
       {error && <div className="error-summary" role="alert">{error}</div>}
       {notice && <div className="success-summary" role="status">{notice}</div>}
       {loading ? <LoadingRows n={3} /> : (
@@ -119,10 +148,10 @@ export function Workarounds({ problemId: problemIdProp }) {
               <Field label="Workaround title" required>
                 <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Workaround title" />
               </Field>
-              <Field label="Steps">
+              <Field label="Steps" required>
                 <Input value={steps} onChange={(e) => setSteps(e.target.value)} placeholder="Steps" />
               </Field>
-              <Button type="submit" disabled={!title.trim() || saving}>
+              <Button type="submit" disabled={!cleanTitle || !cleanSteps || saving}>
                 {saving ? 'Saving…' : 'Create Workaround'}
               </Button>
               <Button kind="ghost" onClick={() => { setTitle(''); setSteps(''); }}>Cancel</Button>

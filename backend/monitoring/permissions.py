@@ -20,6 +20,21 @@ class SystemAdminPermission(permissions.BasePermission):
         return bool(user and user.is_authenticated and getattr(user, "role", "") == "system_admin")
 
 
+
+class ActiveSystemAdminPermission(permissions.BasePermission):
+    """Require an authenticated, active, non-deleted System Admin."""
+
+    message = "Only active System Administrators may manage monitoring sources."
+
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(
+            user
+            and user.is_authenticated
+            and getattr(user, "is_active", False)
+            and not getattr(user, "is_deleted", False)
+            and getattr(user, "role", "") == "system_admin"
+        )
 class ITManagerPermission(permissions.BasePermission):
     """Permission for IT Manager and above."""
 
@@ -44,3 +59,4 @@ class ITSupportPermission(permissions.BasePermission):
             and getattr(user, "role", "")
             in ("system_admin", "it_manager", "it_support")
         )
+

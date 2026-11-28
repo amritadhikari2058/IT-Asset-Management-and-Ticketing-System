@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from '../../api';
 import { useAuth } from '../../auth';
 import {
@@ -19,6 +19,8 @@ const EMPTY_FORM = {
   body: '',
   visibility: 'internal_note',
   category: '',
+  queue: '',
+  queue_name: '',
   is_shared: false,
 };
 
@@ -26,6 +28,7 @@ export function CannedResponsesPage() {
   const { isEmployee, isManagerOrAdmin } = useAuth();
 
   const [responses, setResponses] = useState([]);
+  const [queues, setQueues] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -51,6 +54,24 @@ export function CannedResponsesPage() {
 
   useEffect(() => {
     fetchResponses();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    api.get('/tickets/queues/')
+      .then((response) => {
+        if (!active) return;
+        const data = response.data;
+        setQueues(data.results ?? data ?? []);
+      })
+      .catch(() => {
+        if (active) setQueues([]);
+      });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const updateField = (field, value) => {
@@ -81,6 +102,8 @@ export function CannedResponsesPage() {
       body: response.body || '',
       visibility: response.visibility || 'internal_note',
       category: response.category || '',
+      queue: response.queue == null ? '' : String(response.queue),
+      queue_name: response.queue_name || '',
       is_shared: !!response.is_shared,
     });
 
@@ -101,6 +124,7 @@ export function CannedResponsesPage() {
       body: form.body.trim(),
       visibility: form.visibility,
       category: form.category.trim(),
+      queue: form.queue ? Number(form.queue) : null,
       is_shared: isManagerOrAdmin ? form.is_shared : false,
     };
 
@@ -215,6 +239,27 @@ export function CannedResponsesPage() {
             />
 
             <Select
+              label="Queue"
+              value={form.queue}
+              onChange={(e) => updateField('queue', e.target.value)}
+              disabled={saving}
+            >
+              <option value="">No queue</option>
+              {form.queue && !queues.some(
+                (queue) => String(queue.id) === form.queue
+              ) && (
+                <option value={form.queue}>
+                  {form.queue_name || `Queue #${form.queue}`} (inactive or unavailable)
+                </option>
+              )}
+              {queues.map((queue) => (
+                <option key={queue.id} value={queue.id}>
+                  {queue.name}
+                </option>
+              ))}
+            </Select>
+
+            <Select
               label="Visibility"
               value={form.visibility}
               onChange={(e) => updateField('visibility', e.target.value)}
@@ -288,7 +333,8 @@ export function CannedResponsesPage() {
             />
           ) : (
             <DataTable
-              items={responses}
+              rows={responses}
+              keyOf={(response) => response.id}
               columns={[
                 {
                   key: 'title',
@@ -316,6 +362,11 @@ export function CannedResponsesPage() {
                   key: 'category',
                   label: 'Category',
                   render: (response) => response.category || '-',
+                },
+                {
+                  key: 'queue_name',
+                  label: 'Queue',
+                  render: (response) => response.queue_name || '-',
                 },
                 {
                   key: 'is_shared',

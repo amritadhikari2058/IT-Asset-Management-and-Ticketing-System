@@ -197,6 +197,29 @@ class CurrentUserTests(TestCase):
         res = self.c.get("/api/accounts/me/")
         self.assertEqual(res.status_code, 401)
 
+    def test_me_does_not_expose_superuser_or_permissions(self):
+        superuser = User.objects.create_user(
+            username="su-me@x", email="su-me@x", employee_id="SU-ME",
+            password="pw12345678", role="employee",
+            home_department=self.dep, is_superuser=True,
+        )
+        self.assertTrue(superuser.is_authenticated)
+        self.assertTrue(superuser.is_active)
+        self.assertTrue(superuser.is_superuser)
+        self.assertEqual(superuser.role, "employee")
+
+        auth(self.c, superuser)
+        res = self.c.get("/api/accounts/me/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["role"], "employee")
+        for field in (
+            "is_superuser", "groups", "user_permissions", "permissions",
+        ):
+            self.assertNotIn(field, res.data)
+        blob = str(res.data).lower()
+        for marker in ("is_superuser", "user_permissions", "groups"):
+            self.assertNotIn(marker, blob)
+
 
 class BulkImportReportTests(TestCase):
     """CSV error reports for the employee import confirmation POST."""

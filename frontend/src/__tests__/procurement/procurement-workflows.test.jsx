@@ -282,4 +282,46 @@ describe('Purchase request detail and actions', () => {
     await waitFor(() => expect(screen.getByText(/This request changed while you were working/)).toBeTruthy());
     expect(mockPost).toHaveBeenCalledTimes(1);
   });
+  it('cancels a purchase request with a required reason and version', async () => {
+    routeGet(detailRoutes({ ...BASE_REQUEST, version: 7 }));
+    render(<PurchaseRequestDetail id="1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel request' }));
+    const dialog = screen.getByRole('dialog');
+    const confirm = within(dialog).getByRole('button', { name: 'Cancel request' });
+
+    expect(confirm.disabled).toBe(true);
+
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Cancellation reason' }), {
+      target: { value: 'Request no longer required' },
+    });
+
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      '/procurement/purchase-requests/1/cancel/',
+      { reason: 'Request no longer required', version: 7 },
+    ));
+  });
+
+  it('reloads a purchase request after cancellation returns a 409 conflict', async () => {
+    routeGet(detailRoutes({ ...BASE_REQUEST, version: 8 }));
+    mockPost.mockRejectedValueOnce({ response: { status: 409, data: {} } });
+    render(<PurchaseRequestDetail id="1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel request' }));
+    const dialog = screen.getByRole('dialog');
+
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Cancellation reason' }), {
+      target: { value: 'Duplicate request' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel request' }));
+
+    expect(await screen.findByText(/This request changed while you were working/)).toBeTruthy();
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(
+      mockGet.mock.calls.filter(([url]) => String(url).startsWith('/procurement/purchase-requests/1/')),
+    ).toHaveLength(2);
+  });
 });

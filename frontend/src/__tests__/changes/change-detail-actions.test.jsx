@@ -279,6 +279,64 @@ describe('ChangeDetail workflow actions', () => {
     expect(screen.queryByRole('button', { name: 'Return for Correction' })).toBeNull();
   });
 
+  it('renders communication records using the API serializer fields', async () => {
+    await renderDetail({
+      overrides: {
+        communications: [{
+          id: 11,
+          communication_type: 'email',
+          subject: 'Maintenance notice',
+          status: 'sent',
+          sent_at: null,
+        }],
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Communications' }));
+
+    expect(screen.getByText('email')).toBeTruthy();
+    expect(screen.getByText(/Maintenance notice/)).toBeTruthy();
+    expect(screen.getByText('Status: sent')).toBeTruthy();
+  });
+
+  it('shows an empty state when there are no communications', async () => {
+    await renderDetail({ overrides: { communications: [] } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Communications' }));
+
+    expect(screen.getByText('No communications')).toBeTruthy();
+  });
+
+  it('renders stakeholder records using the API serializer fields', async () => {
+    await renderDetail({
+      overrides: {
+        stakeholders: [{
+          id: 12,
+          user: 5,
+          user_email: 'alex@example.com',
+          stakeholder_type: 'technical',
+          department_name: 'IT',
+          notification_level: 'all_updates',
+        }],
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stakeholders' }));
+
+    expect(screen.getByText('alex@example.com')).toBeTruthy();
+    expect(screen.getByText(/technical/)).toBeTruthy();
+    expect(screen.getByText(/IT/)).toBeTruthy();
+    expect(screen.getByText('Notifications: all_updates')).toBeTruthy();
+  });
+
+  it('shows an empty state when there are no stakeholders', async () => {
+    await renderDetail({ overrides: { stakeholders: [] } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stakeholders' }));
+
+    expect(screen.getByText('No stakeholders')).toBeTruthy();
+  });
+
   it('does not expose actions for a closed change', async () => {
     await renderDetail({ status: 'closed', role: 'system_admin' });
 

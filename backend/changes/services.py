@@ -251,22 +251,33 @@ def ensure_change_tasks(change, template=None):
 
 
 def calculate_risk(change, factors, assessed_by, override_level="", override_reason=""):
-    """Calculate and persist a risk assessment for a change.
-
-    factors: dict of factor_name -> int (1..5).
-    Returns the ChangeRiskAssessment row.
-    """
+    """Calculate and persist a versioned risk assessment for a change."""
     from changes.risk import assess_risk
 
     with transaction.atomic():
+        if change.status not in ("submitted", "risk_assessment"):
+            raise ValidationError(
+                "Risk can only be calculated for submitted changes or changes "
+                "already undergoing risk assessment."
+            )
+
         result = assess_risk(factors, override_level, override_reason)
         total_score = result["total_score"]
         calculated_level = result["calculated_level"]
 
+        previous_version = (
+            ChangeRiskAssessment.objects.filter(change=change)
+            .order_by("-assessment_version")
+            .values_list("assessment_version", flat=True)
+            .first()
+            or 0
+        )
+        next_version = previous_version + 1
+
         assessment = ChangeRiskAssessment.objects.create(
             change=change,
             assessed_by=assessed_by,
-            assessment_version=1,
+            assessment_version=next_version,
             service_impact_score=result["scores"]["service_impact_score"],
             user_impact_score=result["scores"]["user_impact_score"],
             complexity_score=result["scores"]["complexity_score"],
@@ -285,20 +296,29 @@ def calculate_risk(change, factors, assessed_by, override_level="", override_rea
             calculated_level=calculated_level,
             override_level=result["override_level"],
             override_reason=result["override_reason"],
+            overridden_by=assessed_by if result["override_level"] else None,
         )
 
-        # Update the change's risk_level and calculated_risk_score.
+        change.status = "risk_assessment"
         change.risk_level = calculated_level
         change.calculated_risk_score = total_score
         change.save(
-            update_fields=["risk_level", "calculated_risk_score", "updated_at"]
+            update_fields=[
+                "status",
+                "risk_level",
+                "calculated_risk_score",
+                "updated_at",
+            ]
         )
 
         ChangeHistory.objects.create(
             change=change,
             actor=assessed_by,
             event_type="risk_calculated",
-            detail=f"Risk assessment v{assessment.assessment_version}: {calculated_level} (score {total_score})",
+            detail=(
+                f"Risk assessment v{assessment.assessment_version}: "
+                f"{calculated_level} (score {total_score})"
+            ),
         )
 
         log_action(
@@ -309,6 +329,7 @@ def calculate_risk(change, factors, assessed_by, override_level="", override_rea
             details={
                 "change_number": change.change_number,
                 "risk_assessment_id": str(assessment.pk),
+                "assessment_version": assessment.assessment_version,
                 "total_score": total_score,
                 "level": calculated_level,
             },
@@ -316,38 +337,43 @@ def calculate_risk(change, factors, assessed_by, override_level="", override_rea
 
         return assessment
 
-
 def confirm_risk(change, user):
-    """Confirm a risk assessment (technical review confirmation)."""
-    assessment = (
-        ChangeRiskAssessment.objects.filter(change=change)
-        .order_by("-assessment_version")
-        .first()
-    )
-    if not assessment:
-        raise ValidationError("No risk assessment to confirm.")
+    """Confirm a risk assessment and move the change to technical review."""
+    with transaction.atomic():
+        if change.status != "risk_assessment":
+            raise ValidationError(
+                "A change must be in risk assessment status before confirmation."
+            )
 
-    change.status = "technical_review"
-    change.save(update_fields=["status", "updated_at"])
+        assessment = (
+            ChangeRiskAssessment.objects.filter(change=change)
+            .order_by("-assessment_version")
+            .first()
+        )
+        if not assessment:
+            raise ValidationError("No risk assessment to confirm.")
 
-    ChangeHistory.objects.create(
-        change=change,
-        actor=user,
-        event_type="technical_review_completed",
-        detail="Technical review completed; risk assessment confirmed.",
-    )
-    log_action(
-        actor=user,
-        action="update",
-        instance=change,
-        reason="Technical review completed",
-        details={
-            "change_number": change.change_number,
-            "risk_assessment_id": str(assessment.pk),
-        },
-    )
-    return assessment
+        change.status = "technical_review"
+        change.save(update_fields=["status", "updated_at"])
 
+        ChangeHistory.objects.create(
+            change=change,
+            actor=user,
+            event_type="technical_review_completed",
+            detail="Technical review completed; risk assessment confirmed.",
+        )
+        log_action(
+            actor=user,
+            action="update",
+            instance=change,
+            reason="Technical review completed",
+            details={
+                "change_number": change.change_number,
+                "risk_assessment_id": str(assessment.pk),
+                "assessment_version": assessment.assessment_version,
+            },
+        )
+        return assessment
 
 def request_approval(change, user, approval_level="manager"):
     """Request approval for a change.
@@ -1061,7 +1087,9 @@ def cancel_change(change, user, reason=""):
     return change
 
 
-def create_stakeholder(change, user, stakeholder_type, notification_level="all_updates"):
+def create_stakeholder(
+    change, user, stakeholder_type, notification_level="all_updates", added_by=None
+):
     """Add a stakeholder to a change."""
     stakeholder, _ = ChangeStakeholder.objects.get_or_create(
         change=change,
@@ -1070,7 +1098,7 @@ def create_stakeholder(change, user, stakeholder_type, notification_level="all_u
         defaults={
             "department": getattr(user, "home_department", None),
             "notification_level": notification_level,
-            "added_by": user,
+            "added_by": added_by or user,
         },
     )
     return stakeholder
@@ -1125,20 +1153,26 @@ def link_knowledge(change, article, relation_type, user):
     return link
 
 
-def add_attachment(change, user, uploaded_file, document_type, description=""):
-    """Add an attachment to a change."""
-    from django.core.files.base import ContentFile
+def add_attachment(
+    change, user, uploaded_file, document_type, description="", task=None
+):
+    """Add an attachment to a change or one of its tasks."""
+    from .models import ChangeAttachment
+    from common.attachment_security import safe_original_filename
+
+    safe_name = safe_original_filename(uploaded_file.name) or "attachment"
 
     attachment = ChangeAttachment.objects.create(
         change=change,
+        task=task,
         uploaded_by=user,
         document_type=document_type,
-        original_filename=uploaded_file.name,
+        original_filename=safe_name,
         content_type=getattr(uploaded_file, "content_type", "") or "",
         size=getattr(uploaded_file, "size", 0) or 0,
         description=description,
     )
-    attachment.file.save(uploaded_file.name, uploaded_file, save=True)
+    attachment.file.save(safe_name, uploaded_file, save=True)
     attachment.checksum = _compute_checksum(attachment.file)
     attachment.save(update_fields=["checksum"])
     return attachment

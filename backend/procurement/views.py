@@ -2206,6 +2206,9 @@ class SupplierInvoiceLineViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = SupplierInvoiceLine.objects.select_related("invoice", "purchase_order_item", "goods_receipt_item")
+        user = self.request.user
+        if not (is_manager_or_admin(user) or user.is_superuser):
+            qs = qs.filter(invoice__created_by=user)
         inv = _as_int(_param(self.request, "invoice"))
         if inv: qs = qs.filter(invoice_id=inv)
         return qs.order_by("id")
@@ -2216,15 +2219,22 @@ class SupplierInvoiceLineViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         inv = serializer.validated_data["invoice"]
+        user = self.request.user
+        if not (is_manager_or_admin(user) or user.is_superuser) and inv.created_by_id != user.id:
+            raise PermissionDenied("You can only add lines to invoices you created.")
         if inv.status != "draft":
             raise PermissionDenied("Invoice lines can only be added while invoice is Draft.")
-        line = serializer.save()
+        serializer.save()
         invoice_services.recalculate_invoice_totals(inv)
 
     def perform_update(self, serializer):
-        inv = self.get_object().invoice
+        line = self.get_object()
+        inv = line.invoice
         if inv.status != "draft":
             raise PermissionDenied("Invoice lines can only be edited while invoice is Draft.")
+        target_invoice = serializer.validated_data.get("invoice", inv)
+        if target_invoice.pk != inv.pk:
+            raise PermissionDenied("Invoice lines cannot be moved to another invoice.")
         serializer.save()
         invoice_services.recalculate_invoice_totals(inv)
 

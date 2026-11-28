@@ -25,6 +25,7 @@ vi.mock('../../pages/bulk/Bulk', () => ({
   AssetBulkCreateModal: () => null,
   EmployeeCreateModal: () => null,
   EmployeeImportModal: () => null,
+  EmployeeBulkUpdateModal: () => null,
   TicketBulkCreateModal: () => null,
 }));
 

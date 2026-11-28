@@ -5,7 +5,7 @@ import {
   AccessDeniedPanel, ErrorPanel, LoadingPanel, StatusBadge, SeverityBadge,
 } from '../../components/monitoring/MonitoringUI';
 import { getAlert, alertAction, parseMonitoringError } from '../../services/monitoring/monitoring-api';
-import { canAccessMonitoring } from '../../components/monitoring/access';
+import { canAdministerMonitoring } from '../../components/monitoring/access';
 
 /** Alert Detail — safe summary from the supported retrieve endpoint only.
  *
@@ -24,18 +24,19 @@ import { canAccessMonitoring } from '../../components/monitoring/access';
  * Fields not exposed by the serializer are not rendered:
  *   environment, target, metric, fingerprint, first/last seen, recovery,
  *   occurrences detail, acknowledgements, linked ticket, automation state.
- * Sub-action endpoints (events, history, ticket) are registered in urls.py
- * but have no corresponding methods on the ViewSet, so they are not called.
+ * Events, history, and linked-ticket data are exposed through separate
+ * backend viewsets. This page currently uses only the alert retrieve endpoint.
  */
 export function AlertDetail({ alertId }) {
   const auth = useAuth();
+  const canAdminister = canAdministerMonitoring(auth);
   const [alert, setAlert] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionBusy, setActionBusy] = useState('');
 
   useEffect(() => {
-    if (!alertId) return;
+    if (!canAdminister || !alertId) return undefined;
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -52,7 +53,7 @@ export function AlertDetail({ alertId }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [alertId]);
+  }, [alertId, canAdminister]);
 
   const act = async (action, payload) => {
     setActionBusy(action);
@@ -67,7 +68,7 @@ export function AlertDetail({ alertId }) {
     }
   };
 
-  if (!canAccessMonitoring(auth)) {
+  if (!canAdminister) {
     return (
       <div>
         <PageHeader title="Alert detail" sub="Correlated monitoring alert." />

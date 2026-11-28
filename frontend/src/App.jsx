@@ -11,6 +11,7 @@ import {
 } from './pages/kb';
 import { AssetForm, AssetDetail } from './pages/assets';
 import { AuditLogPage } from './pages/audits';
+import { DataIntegrity } from './pages/data-integrity';
 import { VendorForm, VendorsPage, VendorDetail } from './pages/vendors';
 import { TicketForm, TicketDetail } from './pages/tickets';
 import { ChangesPage } from './pages/changes';
@@ -171,6 +172,7 @@ const NAV = [
   { hash: '#/recycle', label: 'Recycle Bin', cap: 'canAccessRecycleBin' },
   { hash: '#/privacy', label: 'Privacy', cap: 'isAdmin' },
   { hash: '#/retention', label: 'Retention', cap: 'isAdmin' },
+  { hash: '#/data-integrity', label: 'Data Integrity', cap: 'isAdmin' },
   { hash: '#/backup', label: 'Backup & Recovery', staffOnly: true },
 ];
 
@@ -232,11 +234,13 @@ const TITLES = {
   '#/audit': 'Audit Log',
   '#/privacy': 'Privacy erasure',
   '#/retention': 'Data retention',
+  '#/data-integrity': 'Data Integrity',
   '#/monitoring': 'Monitoring',
   '#/monitoring/overview': 'Monitoring',
   '#/monitoring/sources': 'Sources',
   '#/monitoring/alerts': 'Alerts',
   '#/monitoring/policies': 'Policies',
+  '#/monitoring/notification-outbox': 'Notification Outbox',
   '#/problem-management': 'Problems',
   '#/backup': 'Backup &amp; DR',
   '#/sla-config': 'SLA config',
@@ -290,10 +294,11 @@ function crumbs(hash) {
   if (h === '#/assets/reports' || h.startsWith('#/assets/reports?')) return ['Assets', 'Asset Reports'];
   if (h === '#/vendors/new') return ['Vendors', 'New'];
   if (h === '#/recycle' || h === '#/audit') return ['Administration', TITLES[h]];
+  if (h === '#/data-integrity') return ['Administration', 'Data Integrity'];
   if (h === '#/privacy') return ['Administration', 'Privacy erasure'];
   if (h.startsWith('#/privacy/')) return ['Administration', 'Privacy erasure'];
-  if (h === '#/monitoring') return ['Administration', 'Monitoring'];
-  if (h.startsWith('#/monitoring/')) return ['Administration', 'Monitoring'];
+  if (h === '#/monitoring') return ['Service Operations', 'Monitoring'];
+  if (h.startsWith('#/monitoring/')) return ['Service Operations', 'Monitoring'];
   if (h === '#/problem-management') return ['Service Operations', 'Problems'];
   if (h.startsWith('#/problem-management/')) return ['Service Operations', 'Problems', 'Problem'];
   if (h === '#/backup') return ['Administration', 'Backup & DR'];
@@ -441,6 +446,7 @@ function matchRoute(hash, auth) {
   if (route === '#/tickets/bulk-imports') return auth.isStaff ? <TicketBulkImportsPage /> : <AccessDenied />;
   if ((m = route.match(/^#\/tickets\/bulk-imports\/(\d+)$/))) return auth.isStaff ? <TicketBulkImportDetailPage id={m[1]} /> : <AccessDenied />;
   if ((m = route.match(/^#\/tickets\/(\d+)\/edit$/))) return <TicketForm id={m[1]} />;
+  if ((m = route.match(/^#\/tickets\/new\?template=(\d+)$/))) return <TicketForm templateId={m[1]} />;
   if (route === '#/tickets/new') return <TicketForm />;
   if ((m = route.match(/^#\/tickets\/(\d+)$/))) return <TicketDetail id={m[1]} />;
   if ((m = route.match(/^#\/tickets\/(\d+)\/timeline$/))) return <TicketTimeline id={m[1]} />;
@@ -484,6 +490,7 @@ function matchRoute(hash, auth) {
   if (route === '#/workflow/rules') return <Workflow tab="rules" />;
   if (route === '#/workflow/approvals') return <Workflow tab="approvals" />;
   if (route === '#/workflow/executions') return <Workflow tab="executions" />;
+  if (route === '#/data-integrity') return auth.isAdmin ? <DataIntegrity /> : <AccessDenied />;
   if (route === '#/privacy' || route.startsWith('#/privacy/')) return <Privacy />;
   if (route === '#/retention' || route.startsWith('#/retention/')) return <Retention />;
   if (route === '#/monitoring' || route.startsWith('#/monitoring/')) return <Monitoring />;

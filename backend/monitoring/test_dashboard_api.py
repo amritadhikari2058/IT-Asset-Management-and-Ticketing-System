@@ -401,7 +401,7 @@ class DashboardPermissionTests(APITestCase):
     def test_anonymous_user_denied(self):
         """Anonymous user denied."""
         response = self.client.get("/api/monitoring/dashboard/")
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_response_has_integer_metrics(self):
         """Response values are integers where expected."""

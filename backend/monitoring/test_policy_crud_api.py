@@ -101,7 +101,7 @@ class PolicyCRUDApiTests(TestCase):
         """Anonymous user is denied policy list access."""
         client = APIClient()
         response = client.get("/api/monitoring/automation-policies/")
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 401)
 
     # --- Retrieve ---
 

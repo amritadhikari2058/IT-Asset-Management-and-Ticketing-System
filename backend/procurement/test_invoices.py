@@ -146,6 +146,68 @@ class InvoiceAPITests(APITestCase):
             r = cm.post(f"/api/procurement/supplier-invoices/{inv.id}/mark-paid/", {"payment_reference": "REF1", "payment_date": timezone.now().date().isoformat()}, format="json")
             self.assertEqual(r.status_code, 200, r.data)
 
+    def test_support_can_only_access_own_invoice_lines(self):
+        inv, owner_client = self.create_invoice(user=self.support)
+        line = self.add_line(inv, owner_client).data
+        other_support = make_user("s2@t.test", "it_support", "S2")
+        other_client = self.client_for(other_support)
+
+        listing = other_client.get(f"/api/procurement/supplier-invoice-lines/?invoice={inv.id}")
+        self.assertEqual(listing.status_code, 200, listing.data)
+        results = listing.data.get("results", listing.data)
+        self.assertNotIn(line["id"], [item["id"] for item in results])
+
+        detail_url = f"/api/procurement/supplier-invoice-lines/{line['id']}/"
+        self.assertEqual(other_client.get(detail_url).status_code, 404)
+        self.assertEqual(other_client.patch(detail_url, {"unit_price": "125.00"}, format="json").status_code, 404)
+        self.assertEqual(other_client.delete(detail_url).status_code, 404)
+
+        create_response = other_client.post("/api/procurement/supplier-invoice-lines/", {
+            "invoice": inv.id, "purchase_order_item": self.poi.id, "goods_receipt_item": self.gri.id,
+            "description": "Unauthorized line", "invoiced_quantity": "1", "unit_price": "100.00",
+            "discount_amount": "0.00", "tax_rate": "0", "tax_amount": "0.00",
+        }, format="json")
+        self.assertEqual(create_response.status_code, 403, create_response.data)
+
+    def test_manager_can_access_and_update_another_users_invoice_line(self):
+        inv, owner_client = self.create_invoice(user=self.support)
+        line = self.add_line(inv, owner_client).data
+        manager_client = self.client_for(self.manager)
+
+        listing = manager_client.get(f"/api/procurement/supplier-invoice-lines/?invoice={inv.id}")
+        self.assertEqual(listing.status_code, 200, listing.data)
+        results = listing.data.get("results", listing.data)
+        self.assertIn(line["id"], [item["id"] for item in results])
+
+        response = manager_client.patch(
+            f"/api/procurement/supplier-invoice-lines/{line['id']}/",
+            {"unit_price": "125.00"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        line_obj = SupplierInvoice.objects.get(pk=inv.id).lines.get(pk=line["id"])
+        self.assertEqual(line_obj.unit_price, Decimal("125.00"))
+
+    def test_invoice_line_cannot_be_reassigned_to_another_invoice(self):
+        inv, owner_client = self.create_invoice(user=self.support)
+        line = self.add_line(inv, owner_client).data
+
+        second_invoice_response = owner_client.post(
+            "/api/procurement/supplier-invoices/",
+            self.inv_payload(invoice_number="INV-2"),
+            format="json",
+        )
+        self.assertIn(second_invoice_response.status_code, (200, 201), second_invoice_response.data)
+        second_invoice_id = second_invoice_response.data["id"]
+
+        response = owner_client.patch(
+            f"/api/procurement/supplier-invoice-lines/{line['id']}/",
+            {"invoice": second_invoice_id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+        line_obj = SupplierInvoice.objects.get(pk=inv.id).lines.get(pk=line["id"])
+        self.assertEqual(line_obj.invoice_id, inv.id)
     def test_place_and_release_hold(self):
         inv, c = self.create_invoice(); self.add_line(inv, c)
         cm = self.client_for(self.manager)

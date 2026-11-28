@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAuth } from '../../auth';
 import { Badge, Button, DataTable, Field, Input, LoadingRows, PageHeader, Panel, PanelPad } from '../../components';
@@ -7,7 +7,7 @@ import {
   markValidationInconclusive, passValidation, startValidation,
 } from '../../services/problem-management';
 
-export function Validations({ problemId: problemIdProp }) {
+export function Validations({ problemId: problemIdProp, embedded = false }) {
   const params = useParams();
   const problemId = problemIdProp ?? params.id;
   const { isStaff } = useAuth();
@@ -19,6 +19,7 @@ export function Validations({ problemId: problemIdProp }) {
   const [testPlan, setTestPlan] = useState('');
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const busyRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -52,18 +53,42 @@ export function Validations({ problemId: problemIdProp }) {
     }
   };
 
+  const versionPayload = (row) => (
+    row?.version == null ? {} : { expected_record_version: row.version }
+  );
+
+  const mergeRecord = (updated) => {
+    if (!updated || updated.id == null) return;
+    setRows((current) => current.map((row) => (
+      row.id === updated.id ? { ...row, ...updated } : row
+    )));
+  };
+
   const move = async (row, fn, label) => {
-    if (busyId) return;
+    if (busyRef.current !== null) return;
+    busyRef.current = row.id;
     setBusyId(row.id);
     setError('');
     setNotice('');
     try {
-      await fn(row.id);
+      const updated = await fn(row.id, versionPayload(row));
+      mergeRecord(updated);
       setNotice(`${label} succeeded.`);
       await load();
     } catch (e) {
-      setError(e?.response?.data?.detail || `${label} failed.`);
+      const status = e?.response?.status ?? e?.status;
+      if (status === 409) {
+        const detail = e?.response?.data?.detail
+          || e?.response?.data?.error
+          || (typeof e?.message === 'string' ? e.message : '')
+          || 'The record changed on the server.';
+        await load();
+        setError(`Version conflict: ${detail} Review the refreshed record before trying again.`);
+      } else {
+        setError(e?.response?.data?.detail || `${label} failed.`);
+      }
     } finally {
+      busyRef.current = null;
       setBusyId(null);
     }
   };
@@ -78,7 +103,7 @@ export function Validations({ problemId: problemIdProp }) {
       label: 'Actions',
       render: (r) => {
         if (!isStaff) return '—';
-        const disabled = busyId === r.id;
+        const disabled = busyId !== null;
         const buttons = [];
         if (r.status === 'draft') {
           buttons.push(<Button key="start" kind="ghost" size="small" disabled={disabled} onClick={() => move(r, startValidation, 'Start')}>Start</Button>);
@@ -96,7 +121,9 @@ export function Validations({ problemId: problemIdProp }) {
 
   return (
     <div>
-      <PageHeader title="Validations" sub="Validation runs recorded against this problem" />
+      {embedded
+        ? <h3>Validations</h3>
+        : <PageHeader title="Validations" sub="Validation runs recorded against this problem" />}
       {error && <div className="error-summary" role="alert">{error}</div>}
       {notice && <div className="success-summary" role="status">{notice}</div>}
       {loading ? <LoadingRows n={3} /> : (

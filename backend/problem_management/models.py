@@ -1054,9 +1054,12 @@ class ProblemAction(SoftDeleteModel):
     ]
     STATUS_CHOICES = [
         ("planned", "Planned"),
+        ("approved", "Approved"),
         ("in_progress", "In Progress"),
         ("completed", "Completed"),
         ("verified", "Verified"),
+        ("ineffective", "Ineffective"),
+        ("cancelled", "Cancelled"),
         ("closed", "Closed"),
     ]
     problem = models.ForeignKey(

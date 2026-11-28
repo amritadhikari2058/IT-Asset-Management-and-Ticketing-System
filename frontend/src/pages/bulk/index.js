@@ -1,1 +1,1 @@
-export { TicketBulkCreateModal, EmployeeCreateModal, ReportTable, EmployeeImportModal, AssetBulkCreateModal } from './Bulk';
+export { TicketBulkCreateModal, EmployeeCreateModal, ReportTable, EmployeeImportModal, EmployeeBulkUpdateModal, AssetBulkCreateModal } from './Bulk';

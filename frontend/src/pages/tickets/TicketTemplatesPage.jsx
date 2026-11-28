@@ -296,8 +296,17 @@ export function TicketTemplatesPage() {
     {
       key: 'actions',
       label: 'Actions',
-      render: (template) => canEditTemplate(template) || canDeleteTemplate(template) ? (
+      render: (template) => (
         <div className="row-gap">
+          <Button
+            kind="primary"
+            size="small"
+            onClick={() => {
+              window.location.hash = `#/tickets/new?template=${template.id}`;
+            }}
+          >
+            Use template
+          </Button>
           {canEditTemplate(template) ? (
             <Button kind="secondary" size="small" onClick={() => openEdit(template)}>
               Edit
@@ -309,7 +318,7 @@ export function TicketTemplatesPage() {
             </Button>
           ) : null}
         </div>
-      ) : <span className="muted">View only</span>,
+      ),
     },
   ];
 

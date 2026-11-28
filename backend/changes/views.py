@@ -33,6 +33,7 @@ Frontend visibility is UX-only; backend enforcement is authoritative.
 from django.db import transaction
 from django.db.models import Q, Count, Avg
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -55,7 +56,13 @@ from changes.models import (
     BlackoutPeriod,
     ChangeSchedulingException,
 )
-from changes.services import _check_scheduling_policy, schedule_change
+from changes.services import (
+    _check_scheduling_policy,
+    schedule_change,
+    create_stakeholder,
+    send_communication,
+    add_attachment as add_change_attachment,
+)
 from changes.models import (
     ChangeAttachment,
     ChangeStakeholder,
@@ -255,8 +262,57 @@ class ChangeRequestViewSet(viewsets.ModelViewSet):
             "requester", "change_owner", "implementation_lead",
             "department", "current_approver",
         )
-        return _scope_queryset(self.request.user, qs)
+        qs = _scope_queryset(self.request.user, qs)
 
+        # Schedule-page filters apply only to list requests. Keeping them
+        # out of detail/action lookups prevents query parameters from
+        # unexpectedly hiding an otherwise accessible change.
+        if self.action == "list":
+            params = self.request.query_params
+
+            for param, field in (
+                ("status", "status"),
+                ("priority", "priority"),
+                ("risk", "risk_level"),
+            ):
+                value = params.get(param)
+                if value:
+                    qs = qs.filter(**{field: value})
+
+            date_from = params.get("date_from")
+            date_to = params.get("date_to")
+            parsed_from = None
+            parsed_to = None
+
+            if date_from:
+                parsed_from = parse_date(date_from)
+                if parsed_from is None:
+                    raise ValidationError({
+                        "date_from": "Use a valid YYYY-MM-DD date."
+                    })
+                qs = qs.filter(planned_start__date__gte=parsed_from)
+
+            if date_to:
+                parsed_to = parse_date(date_to)
+                if parsed_to is None:
+                    raise ValidationError({
+                        "date_to": "Use a valid YYYY-MM-DD date."
+                    })
+                qs = qs.filter(planned_start__date__lte=parsed_to)
+
+            if parsed_from and parsed_to and parsed_from > parsed_to:
+                raise ValidationError({
+                    "date_to": "Must be on or after date_from."
+                })
+
+            search = params.get("search", "").strip()
+            if search:
+                qs = qs.filter(
+                    Q(change_number__icontains=search)
+                    | Q(title__icontains=search)
+                )
+
+        return qs
     def get_permissions(self):
         if self.action in ("create",):
             return [permissions.IsAuthenticated()]
@@ -264,7 +320,10 @@ class ChangeRequestViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated(), IsChangeApprover()]
         if self.action == "close":
             return [IsChangeCloser()]
-        if self.action in ("destroy",):
+        if self.action in (
+            "calculate_risk", "confirm_risk", "destroy",
+            "schedule", "reschedule",
+        ):
             return [IsChangeManagerOrAdmin()]
         return [permissions.IsAuthenticated()]
 
@@ -893,7 +952,18 @@ class ChangeRiskAssessmentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = ChangeRiskAssessment.objects.select_related("change")
-        return _scope_queryset(self.request.user, qs)
+        qs = _scope_queryset(self.request.user, qs)
+
+        change_id = self.request.query_params.get("change")
+        if change_id is not None:
+            try:
+                change_id = int(change_id)
+            except (TypeError, ValueError):
+                return qs.none()
+
+            qs = qs.filter(change_id=change_id)
+
+        return qs
 
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
@@ -1107,24 +1177,80 @@ class ChangeAttachmentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = ChangeAttachment.objects.select_related("change", "task", "uploaded_by")
-        return _scope_queryset(self.request.user, qs)
+        return _scope_change_related_queryset(self.request.user, qs)
 
     def get_permissions(self):
-        if self.action in ("list", "retrieve"):
-            return [permissions.IsAuthenticated()]
-        if self.action in ("create",):
+        if self.action in ("list", "retrieve", "download", "create"):
             return [permissions.IsAuthenticated()]
         return [IsChangeManagerOrAdmin()]
 
     def perform_create(self, serializer):
-        attachment = serializer.save(uploaded_by=self.request.user)
+        data = serializer.validated_data
+        change = data.get("change")
+
+        if change is None or not _scope_queryset(
+            self.request.user, ChangeRequest.objects.filter(pk=change.pk)
+        ).exists():
+            raise NotFound("Change request not found.")
+
+        task = data.get("task")
+        if task and task.change_id != change.pk:
+            raise ValidationError({
+                "task": "The selected task does not belong to this change."
+            })
+
+        attachment = add_change_attachment(
+            change=change,
+            user=self.request.user,
+            uploaded_file=data["file"],
+            document_type=data["document_type"],
+            description=data.get("description", ""),
+            task=task,
+        )
+
+        serializer.instance = attachment
+
         ChangeHistory.objects.create(
             change=attachment.change,
             actor=self.request.user,
             event_type="attachment_added",
             detail=f"Attachment added: {attachment.original_filename}",
         )
-        return attachment
+
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        """Download an attachment without exposing its storage URL."""
+        import mimetypes
+        import os
+
+        from django.http import FileResponse
+        from common.attachment_security import (
+            add_download_security_headers,
+            safe_content_disposition_filename,
+        )
+
+        attachment = self.get_object()
+
+        try:
+            handle = attachment.file.open("rb")
+        except FileNotFoundError:
+            return Response(
+                {"detail": "File missing from storage."},
+                status=status.HTTP_410_GONE,
+            )
+
+        name = attachment.original_filename or os.path.basename(
+            attachment.file.name
+        )
+        response = FileResponse(
+            handle,
+            content_type=mimetypes.guess_type(name)[0]
+            or "application/octet-stream",
+        )
+        safe_name = safe_content_disposition_filename(name)
+        response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+        add_download_security_headers(response)
+        return response
 
 
 # ---------------------------------------------------------------------------
@@ -1137,13 +1263,33 @@ class ChangeStakeholderViewSet(viewsets.ModelViewSet):
     serializer_class = ChangeStakeholderSerializer
 
     def get_queryset(self):
-        qs = ChangeStakeholder.objects.select_related("change", "user", "department")
-        return _scope_queryset(self.request.user, qs)
+        qs = ChangeStakeholder.objects.select_related(
+            "change", "user", "department", "added_by"
+        )
+        return _scope_change_related_queryset(self.request.user, qs)
 
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
             return [permissions.IsAuthenticated()]
-        return [permissions.IsAuthenticated()]
+        return [IsChangeManagerOrAdmin()]
+
+    def perform_create(self, serializer):
+        data = serializer.validated_data
+        change = data.get("change")
+
+        if change is None or not _scope_queryset(
+            self.request.user, ChangeRequest.objects.filter(pk=change.pk)
+        ).exists():
+            raise NotFound("Change request not found.")
+
+        stakeholder = create_stakeholder(
+            change=change,
+            user=data["user"],
+            stakeholder_type=data["stakeholder_type"],
+            notification_level=data.get("notification_level", "all_updates"),
+            added_by=self.request.user,
+        )
+        serializer.instance = stakeholder
 
 
 class ChangeCommunicationViewSet(viewsets.ModelViewSet):
@@ -1152,13 +1298,32 @@ class ChangeCommunicationViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = ChangeCommunication.objects.select_related("change", "sent_by")
-        return _scope_queryset(self.request.user, qs)
+        return _scope_change_related_queryset(self.request.user, qs)
 
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
             return [permissions.IsAuthenticated()]
-        return [permissions.IsAuthenticated()]
+        return [IsChangeManagerOrAdmin()]
 
+    def perform_create(self, serializer):
+        data = serializer.validated_data
+        change = data.get("change")
+
+        if change is None or not _scope_queryset(
+            self.request.user, ChangeRequest.objects.filter(pk=change.pk)
+        ).exists():
+            raise NotFound("Change request not found.")
+
+        communication = send_communication(
+            change=change,
+            communication_type=data["communication_type"],
+            audience=data["audience"],
+            subject=data["subject"],
+            message=data["message"],
+            user=self.request.user,
+            scheduled_for=data.get("scheduled_for"),
+        )
+        serializer.instance = communication
 
 # ---------------------------------------------------------------------------
 # ChangeImplementation / PostImplementationReview

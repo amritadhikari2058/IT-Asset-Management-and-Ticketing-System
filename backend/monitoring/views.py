@@ -18,7 +18,8 @@ from .serializers import (
     MonitoringAlertListSerializer,
 )
 from .permissions import (
-    SystemAdminPermission,
+    SystemAdminPermission,
+    ActiveSystemAdminPermission,
     ITSupportPermission,
     IsMonitoringSource,
 )
@@ -36,7 +37,6 @@ class MonitoringEventViewSet(viewsets.ReadOnlyModelViewSet):
 
     queryset = MonitoringEvent.objects.all()
     serializer_class = MonitoringEventSerializer
-    authentication_classes = []
     permission_classes = [SystemAdminPermission]
 
 
@@ -45,7 +45,6 @@ class MonitoringAlertViewSet(viewsets.ReadOnlyModelViewSet):
 
     queryset = MonitoringAlert.objects.all()
     serializer_class = MonitoringAlertSerializer
-    authentication_classes = []
     permission_classes = [SystemAdminPermission]
 
     def get_serializer_class(self):
@@ -141,18 +140,13 @@ class MonitoringSourceViewSet(MonitoringSourceCreateMixin, MonitoringSourceUpdat
 
     queryset = MonitoringSource.objects.all()
     serializer_class = MonitoringSourceListSerializer
-
+    permission_classes = [ActiveSystemAdminPermission]
     def get_serializer_class(self):
         """Use the write serializer for create and partial update; list
         serializer for retrieve and list."""
         if self.action in ("create", "partial_update"):
             return MonitoringSourceWriteSerializer
         return MonitoringSourceListSerializer
-
-    def get_permissions(self):
-        if self.action in ["create", "rotate_secret"]:
-            return [SystemAdminPermission()]
-        return super().get_permissions()
 
     @action(methods=["POST"], detail=True, url_path="rotate-secret")
     def rotate_secret(self, request, pk=None):
@@ -190,7 +184,6 @@ class MonitoringSourceViewSet(MonitoringSourceCreateMixin, MonitoringSourceUpdat
 class ReportViewSet(viewsets.ViewSet):
     """ViewSet for monitoring reports."""
 
-    authentication_classes = []
     permission_classes = [SystemAdminPermission]
 def ingest_event(request, source_code):
     """Ingest a single monitoring event."""
@@ -387,3 +380,4 @@ class MonitoringIngestionView(APIView):
             },
             status=status.HTTP_202_ACCEPTED,
         )
+

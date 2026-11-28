@@ -163,4 +163,81 @@ describe('Monitoring page', () => {
     const healthy = await screen.findAllByText('Healthy');
     expect(healthy.length).toBeGreaterThanOrEqual(1);
   });
+  it('shows notification outbox statistics and events to IT staff', async () => {
+    mockAuth.mockReturnValue(ctx({ isStaff: true }));
+    mockGet.mockResolvedValue({ data: {
+      stats: { total: 3, pending: 1, retry: 0, processing: 0, delivered: 1, failed: 1, cancelled: 0, expired_claims: 0, delivered_last_24h: 1, failed_last_24h: 1, oldest_pending_age_seconds: 120 },
+      events: [{ id: 'event-1', event_type: 'ticket.created', channel: 'email', recipient_email: 'employee@example.com', status: 'failed', attempts: 2, max_attempts: 3, created_at: '2026-01-01T08:00:00Z', last_error: 'SMTP unavailable' }],
+    } });
+    window.location.hash = '#/monitoring/notification-outbox';
+    render(<Monitoring />);
+
+    await screen.findByText('Notification Outbox');
+    expect(screen.getByText('employee@example.com')).toBeTruthy();
+    expect(screen.getByText('ticket.created')).toBeTruthy();
+    expect(screen.getByText('SMTP unavailable')).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Inspect' })).toBeNull();
+    expect(mockGet).toHaveBeenCalledWith('/common/notification-outbox/', { params: { limit: 50 } });
+  });
+
+  it('allows System Admin to inspect an event payload on demand', async () => {
+    mockAuth.mockReturnValue(ctx({ isAdmin: true, isStaff: true }));
+    mockGet
+      .mockResolvedValueOnce({ data: {
+        stats: { total: 1 },
+        events: [{ id: 'event-2', event_type: 'ticket.created', channel: 'email', recipient_email: 'employee@example.com', status: 'delivered', attempts: 1, max_attempts: 3 }],
+      } })
+      .mockResolvedValueOnce({ data: {
+        id: 'event-2', event_type: 'ticket.created', channel: 'email',
+        recipient_email: 'employee@example.com', status: 'delivered',
+        attempts: 1, max_attempts: 3, payload: { subject: 'Ticket created' },
+      } });
+    window.location.hash = '#/monitoring/notification-outbox';
+    render(<Monitoring />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Inspect' }));
+    await screen.findByText('Notification event inspection');
+    expect(screen.getByText(/Ticket created/)).toBeTruthy();
+    expect(mockGet).toHaveBeenLastCalledWith('/common/notification-outbox/event-2/inspect/');
+  });
+
+  it('allows System Admin to retry a failed notification event', async () => {
+    mockAuth.mockReturnValue(ctx({ isAdmin: true, isStaff: true }));
+    mockGet.mockResolvedValue({ data: {
+      stats: { total: 1, failed: 1 },
+      events: [{ id: 'event-3', event_type: 'ticket.created', channel: 'email', status: 'failed', attempts: 3, max_attempts: 3 }],
+    } });
+    mockPost.mockResolvedValue({ data: { retried: true, id: 'event-3', status: 'pending' } });
+    window.location.hash = '#/monitoring/notification-outbox';
+    render(<Monitoring />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+    expect(mockPost).toHaveBeenCalledWith('/common/notification-outbox/event-3/retry/');
+  });
+
+  it('requires a reason when System Admin cancels a pending event', async () => {
+    mockAuth.mockReturnValue(ctx({ isAdmin: true, isStaff: true }));
+    mockGet.mockResolvedValue({ data: {
+      stats: { total: 1, pending: 1 },
+      events: [{ id: 'event-4', event_type: 'ticket.created', channel: 'email', status: 'pending', attempts: 0, max_attempts: 3 }],
+    } });
+    mockPost.mockResolvedValue({ data: { cancelled: true, id: 'event-4', status: 'cancelled' } });
+    window.location.hash = '#/monitoring/notification-outbox';
+    render(<Monitoring />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    const confirmButton = screen.getByRole('button', { name: 'Confirm cancellation' });
+    expect(confirmButton.disabled).toBe(true);
+
+    fireEvent.change(screen.getByPlaceholderText('Explain why this notification is being cancelled.'), {
+      target: { value: 'Duplicate notification' },
+    });
+    expect(confirmButton.disabled).toBe(false);
+    fireEvent.click(confirmButton);
+
+    expect(mockPost).toHaveBeenCalledWith('/common/notification-outbox/event-4/cancel/', {
+      reason: 'Duplicate notification',
+    });
+  });
 });

@@ -22,6 +22,9 @@ class TicketSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(
         source="department.name", read_only=True
     )
+    queue_name = serializers.CharField(
+        source="queue.name", read_only=True, allow_null=True
+    )
     sla_due_at = serializers.DateTimeField(read_only=True)
     sla_breached = serializers.BooleanField(read_only=True)
     is_overdue = serializers.SerializerMethodField(read_only=True)
@@ -57,12 +60,13 @@ class TicketSerializer(serializers.ModelSerializer):
         fields = ["id", "title", "description", "category", "category_name",
                   "priority", "status", "requester", "requester_email",
                   "assignee", "assignee_email", "department",
-                  "department_name", "on_behalf_reason", "asset",
+                  "department_name", "queue", "queue_name",
+                  "on_behalf_reason", "asset",
                   "resolution_notes", "resolved_at", "closed_at",
                   "sla_due_at", "sla_breached", "is_overdue",
                   "source_service_request",
                   "created_at", "updated_at"]
-        read_only_fields = ["id", "requester", "resolved_at", "closed_at",
+        read_only_fields = ["id", "requester", "queue", "resolved_at", "closed_at",
                             "sla_due_at", "sla_breached", "is_overdue",
                             "created_at", "updated_at"]
 

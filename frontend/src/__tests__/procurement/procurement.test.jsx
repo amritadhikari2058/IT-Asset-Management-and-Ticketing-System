@@ -296,4 +296,58 @@ describe('Goods receipt list', () => {
     render(<GoodsReceiptsPage />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy());
   });
+
+  it('sends search, received-date, discrepancy and ordering filters to the API', async () => {
+    routeGet({ '/procurement/goods-receipts/': page([GR]) });
+    render(<GoodsReceiptsPage />);
+
+    expect(await screen.findByText('GR-2026-00007')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Search'), {
+      target: { value: 'GR-2026-00007' },
+    });
+    fireEvent.change(screen.getByLabelText('Received from'), {
+      target: { value: '2026-11-01' },
+    });
+    fireEvent.change(screen.getByLabelText('Received to'), {
+      target: { value: '2026-11-28' },
+    });
+    fireEvent.change(screen.getByLabelText('Discrepancies'), {
+      target: { value: 'true' },
+    });
+    fireEvent.change(screen.getByLabelText('Order by'), {
+      target: { value: 'gr_number' },
+    });
+
+    await waitFor(() => {
+      const urls = mockGet.mock.calls.map((call) => decodeURIComponent(String(call[0])));
+      expect(urls.some((url) =>
+        url.includes('search=GR-2026-00007')
+        && url.includes('received_from=2026-11-01')
+        && url.includes('received_to=2026-11-28')
+        && url.includes('discrepancy=true')
+        && url.includes('ordering=gr_number')
+      )).toBe(true);
+    });
+  });
+
+  it('limits the receipt list to the supplied purchase order', async () => {
+    routeGet({ '/procurement/goods-receipts/': page([GR]) });
+    render(<GoodsReceiptsPage purchaseOrderId="4" />);
+
+    expect(await screen.findByText('GR-2026-00007')).toBeTruthy();
+
+    await waitFor(() => {
+      const urls = mockGet.mock.calls.map((call) => decodeURIComponent(String(call[0])));
+      expect(urls.some((url) => url.includes('purchase_order=4'))).toBe(true);
+    });
+  });
+
+  it('blocks employees from loading the receipt list', async () => {
+    mockAuth.mockReturnValue(makeAuth('employee'));
+    render(<GoodsReceiptsPage />);
+
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(screen.queryByText('GR-2026-00007')).toBeNull();
+  });
 });

@@ -109,7 +109,7 @@ export function ProcurementInvoiceDetail({ id }) {
       <div className="button-row" style={{flexWrap:'wrap',gap:'8px'}}>
         {actions.canSubmit && <button disabled={!!busy} onClick={() => act('submit')}>Submit</button>}
         {actions.canMatch && <button disabled={!!busy} onClick={() => act('match')}>Run Match</button>}
-        {actions.canApprove && <button disabled={!!busy} onClick={() => act('approve')}>Approve</button>}
+        {actions.canApprove && !systemAdminRequired && <button disabled={!!busy} onClick={() => act('approve')}>Approve</button>}
         {actions.canReject && <button disabled={!!busy} onClick={() => { const r = prompt('Rejection reason'); if (r) act('reject', { reason: r }); }}>Reject</button>}
         {actions.canReturnForCorrection && <button disabled={!!busy} onClick={() => { const r = prompt('Correction reason'); if (r) act('return-for-correction', { reason: r }); }}>Return for Correction</button>}
         {actions.canPlaceHold && <button disabled={!!busy} onClick={() => { const r = prompt('Hold reason'); if (r) act('place-hold', { reason: r }); }}>Place Hold</button>}

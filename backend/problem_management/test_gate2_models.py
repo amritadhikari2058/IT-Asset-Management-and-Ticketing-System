@@ -181,6 +181,13 @@ class Gate2ModelTests(TransactionTestCase):
         self.assertEqual(action.action_type, "preventive")
         self.assertEqual(action.status, "in_progress")
 
+    def test_problem_action_lifecycle_status_choices(self):
+        choices = {value for value, _ in ProblemAction.STATUS_CHOICES}
+        self.assertEqual(choices, {
+            "planned", "approved", "in_progress", "completed",
+            "verified", "ineffective", "cancelled", "closed",
+        })
+
     def test_problem_workaround_creation(self):
         problem = Problem.objects.create(
             title="Test problem for workaround",

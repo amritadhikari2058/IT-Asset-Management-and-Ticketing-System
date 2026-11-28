@@ -308,15 +308,29 @@ class ReopenProblemSerializer(ExpectedVersionMixin):
 
 class ProblemTicketLinkSerializer(serializers.ModelSerializer):
     ticket_display = serializers.SerializerMethodField()
+    ticket_title = serializers.CharField(source="ticket.title", read_only=True)
+    ticket_status = serializers.CharField(source="ticket.status", read_only=True)
+    ticket_priority = serializers.CharField(source="ticket.priority", read_only=True)
+    ticket_category_name = serializers.CharField(
+        source="ticket.category.name", read_only=True, default=None)
 
     class Meta:
         model = ProblemTicketLink
         fields = [
-            "id", "problem", "ticket", "ticket_display", "relationship_type",
-            "relevance", "is_primary", "note", "linked_by", "linked_at",
-            "is_deleted",
+            "id", "problem", "ticket", "ticket_display", "ticket_title",
+            "ticket_status", "ticket_priority", "ticket_category_name",
+            "relationship_type", "relevance", "is_primary", "note",
+            "linked_by", "linked_at", "is_deleted",
         ]
-        read_only_fields = ["id", "linked_by", "linked_at", "is_deleted"]
+        read_only_fields = [
+            "id", "linked_by", "linked_at", "is_deleted",
+            "ticket_title", "ticket_status", "ticket_priority",
+            "ticket_category_name",
+        ]
+        # Model UniqueConstraint includes condition on is_deleted (read-only).
+        # DRF's auto validator breaks partial updates with KeyError; create
+        # duplicates are validated explicitly below and enforced by DB.
+        validators = []
 
     def get_ticket_display(self, obj):
         return f"#{obj.ticket_id}"

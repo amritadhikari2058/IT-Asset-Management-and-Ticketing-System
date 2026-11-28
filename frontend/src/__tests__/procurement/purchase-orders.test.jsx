@@ -153,4 +153,46 @@ describe('PurchaseOrdersPage reliability', () => {
     expect(mockGet.mock.calls.some((c) => String(c[0]).includes('page_size=20'))).toBe(true);
     Object.defineProperty(window, 'localStorage', { value: original, configurable: true });
   });
+  it('sends search, status, receipt, ordering and ordered-date filters to the API', async () => {
+    render(<PurchaseOrdersPage />);
+    await screen.findByText('PO-2026-00004');
+
+    fireEvent.change(screen.getByPlaceholderText('PO number, vendor, request'), {
+      target: { value: 'PO #2026' },
+    });
+    fireEvent.change(screen.getByLabelText('Status'), {
+      target: { value: 'approved' },
+    });
+    fireEvent.change(screen.getByLabelText('Receipt status'), {
+      target: { value: 'received' },
+    });
+    fireEvent.change(screen.getByLabelText('Order by'), {
+      target: { value: 'total' },
+    });
+    fireEvent.change(screen.getByLabelText('Ordered from'), {
+      target: { value: '2026-11-01' },
+    });
+    fireEvent.change(screen.getByLabelText('Ordered to'), {
+      target: { value: '2026-11-28' },
+    });
+
+    await waitFor(() => {
+      const matchingCall = mockGet.mock.calls.find(([url]) => {
+        const text = String(url);
+        if (!text.includes('/procurement/purchase-orders/')) return false;
+
+        const params = new URLSearchParams(text.split('?')[1] || '');
+        return (
+          params.get('search') === 'PO #2026'
+          && params.get('status') === 'approved'
+          && params.get('receipt_status') === 'received'
+          && params.get('ordering') === 'total'
+          && params.get('created_from') === '2026-11-01'
+          && params.get('created_to') === '2026-11-28'
+        );
+      });
+
+      expect(matchingCall).toBeTruthy();
+    });
+  });
 });

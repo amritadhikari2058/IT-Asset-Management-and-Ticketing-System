@@ -266,20 +266,60 @@ export const linkedTickets = async (problemId, params = {}) => {
   const response = await api.get(`/problems/${problemId}/linked-tickets/`, { params });
   return response.data;
 };
+export const createTicketLink = async (data) => {
+  const response = await api.post('/ticket-links/', data);
+  return response.data;
+};
+export const deleteTicketLink = async (linkId) => {
+  const response = await api.delete(`/ticket-links/${linkId}/`);
+  return response.data;
+};
 export const linkedCIs = async (problemId, params = {}) => {
   const response = await api.get(`/problems/${problemId}/linked-cis/`, { params });
+  return response.data;
+};
+export const createCiLink = async (data) => {
+  const response = await api.post('/ci-links/', data);
+  return response.data;
+};
+export const deleteCiLink = async (linkId) => {
+  const response = await api.delete(`/ci-links/${linkId}/`);
   return response.data;
 };
 export const linkedAssets = async (problemId, params = {}) => {
   const response = await api.get(`/problems/${problemId}/linked-assets/`, { params });
   return response.data;
 };
+export const createAssetLink = async (data) => {
+  const response = await api.post('/asset-links/', data);
+  return response.data;
+};
+export const deleteAssetLink = async (linkId) => {
+  const response = await api.delete(`/asset-links/${linkId}/`);
+  return response.data;
+};
 export const linkedServices = async (problemId, params = {}) => {
   const response = await api.get(`/problems/${problemId}/linked-services/`, { params });
   return response.data;
 };
+export const createServiceLink = async (data) => {
+  const response = await api.post('/service-links/', data);
+  return response.data;
+};
+export const deleteServiceLink = async (linkId) => {
+  const response = await api.delete(`/service-links/${linkId}/`);
+  return response.data;
+};
 export const linkedProducts = async (problemId, params = {}) => {
   const response = await api.get(`/problems/${problemId}/linked-products/`, { params });
+  return response.data;
+};
+export const createSoftwareLink = async (data) => {
+  const response = await api.post('/software-links/', data);
+  return response.data;
+};
+export const deleteSoftwareLink = async (linkId) => {
+  const response = await api.delete(`/software-links/${linkId}/`);
   return response.data;
 };
 export const linkedKBs = async (problemId, params = {}) => {

@@ -16,6 +16,10 @@ from .models import (
 )
 from .permissions import ProblemManagementPermission
 
+# Action services re-check the version against a freshly locked row. Other
+# resources keep the transport-level check below.
+SERVICE_VERSIONED_RESOURCE = "actions"
+
 TRANSITIONS = {
     "root-cause-analyses": (RootCauseAnalysis, RootCauseAnalysisSerializer, "analysis", {
         "submit": services.submit_root_cause_analysis,
@@ -77,10 +81,16 @@ class TransitionView(APIView):
         # Archived evidence stays addressable so the service can answer 400.
         if getattr(obj, "is_deleted", False) and resource != "evidence":
             raise NotFound("Record not found.")
-        # Evidence has no version column; every other domain does.
-        assert_version(obj, request.data.get("expected_record_version"), label=resource)
+        # Evidence has no version column; Action services check the token
+        # against their locked row instead of this pre-lock object.
+        if resource != SERVICE_VERSIONED_RESOURCE:
+            assert_version(obj, request.data.get("expected_record_version"), label=resource)
         payload = {}
         if "reason" in request.data:
             payload["reason"] = request.data.get("reason") or ""
+        if (resource == SERVICE_VERSIONED_RESOURCE
+                and "expected_record_version" in request.data):
+            payload["expected_record_version"] = request.data.get(
+                "expected_record_version")
         result = guarded(service, actor=request.user, **{kwarg: obj}, **payload)
         return Response(serializer_class(result).data)
